@@ -6,6 +6,8 @@ import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.ui.unit.IntOffset
+import androidx.compose.foundation.layout.offset
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.foundation.layout.requiredSize
@@ -167,15 +169,23 @@ fun PlayerScreen(session: Session, onBack: () -> Unit, onAddSubtitle: () -> Unit
 
     CompositionLocalProvider(LocalPlates provides plates) {
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        // Mode direct : la surface a le format exact de la vidéo (le décodeur y dessine tel quel) ;
-        // le zoom et « remplir » agrandissent la surface depuis le centre.
+        // Mode direct : la surface a le format exact de la vidéo (le décodeur y dessine tel quel).
+        // Par défaut, la partie utile de l'image (sans ses bandes noires incrustées) remplit
+        // l'écran sans être rognée : seules restent les bandes dues au format de l'écran.
+        // Le zoom et « remplir » agrandissent la surface depuis le centre.
         BoxWithConstraints(Modifier.fillMaxSize()) {
             val sw = constraints.maxWidth.toFloat()
             val sh = constraints.maxHeight.toFloat()
             val a = mpv.aspect.toFloat().takeIf { it > 0f } ?: (16f / 9f)
             val (vw, vh) = if (sw / sh > a) sh * a to sh else sw to sw / a
-            val base = if (session.fill) maxOf(sw / vw, sh / vh) else 1f
+            val c = session.content
+            val cw = vw * (c.right - c.left)
+            val ch = vh * (c.bottom - c.top)
+            val base = (if (session.fill) maxOf(sw / cw, sh / ch) else minOf(sw / cw, sh / ch)).coerceAtLeast(1f)
             val z = base * session.zoom.toFloat()
+            // Centre de la partie utile ramené au centre de l'écran.
+            val dx = -((c.left + c.right) / 2f - 0.5f) * vw * z
+            val dy = -((c.top + c.bottom) / 2f - 0.5f) * vh * z
             val density = LocalDensity.current
             AndroidView(
                 factory = { ctx ->
@@ -191,9 +201,11 @@ fun PlayerScreen(session: Session, onBack: () -> Unit, onAddSubtitle: () -> Unit
                         })
                     }
                 },
-                modifier = Modifier.align(Alignment.Center).requiredSize(with(density) { (vw * z).toDp() }, with(density) { (vh * z).toDp() }),
+                modifier = Modifier.align(Alignment.Center)
+                    .offset { IntOffset(dx.roundToInt(), dy.roundToInt()) }
+                    .requiredSize(with(density) { (vw * z).toDp() }, with(density) { (vh * z).toDp() }),
             )
-            if (panel == null) Subtitles(session, plates, sw, sh, vh * z)
+            if (panel == null) Subtitles(session, plates, sw, sh, ch * z)
         }
 
         val context = LocalContext.current

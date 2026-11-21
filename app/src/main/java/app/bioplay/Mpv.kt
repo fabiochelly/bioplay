@@ -26,7 +26,11 @@ class Track(
     val external: String?,
     val forced: Boolean,
     val default: Boolean,
+    /** Drapeau « piste originale » du conteneur (la VO). */
+    val original: Boolean = false,
 ) {
+    /** Sous-titres en images (PGS, VobSub) : non affichés en mode direct. */
+    val image get() = codec in setOf("hdmv_pgs_subtitle", "dvd_subtitle", "dvb_subtitle", "pgs", "vobsub")
     /** « Français », « English (ASS) », sinon la langue lisible, sinon « Piste 3 ». */
     val label: String
         get() = title.ifBlank { languageName(lang) ?: "${t("Piste", "Track")} $id" }
@@ -417,6 +421,11 @@ class Mpv(context: Context) : MPVLib.EventObserver {
         }
     }
 
+    fun currentDuration(): Double = if (alive) lib.getPropertyDouble("duration") ?: 0.0 else 0.0
+
+    /** Pistes lues à l'instant (au chargement, avant que l'état observé n'arrive). */
+    fun currentTracks(): List<Track> = if (alive) parseTracks(lib.getPropertyString("track-list") ?: "[]") else emptyList()
+
     private fun parseTracks(json: String): List<Track> = runCatching {
         val a = JSONArray(json)
         List(a.length()) { i ->
@@ -432,6 +441,7 @@ class Mpv(context: Context) : MPVLib.EventObserver {
                 external = if (o.optBoolean("external")) o.optString("external-filename") else null,
                 forced = o.optBoolean("forced"),
                 default = o.optBoolean("default"),
+                original = o.optBoolean("original"),
             )
         }
     }.getOrElse { emptyList() }

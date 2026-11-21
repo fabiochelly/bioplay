@@ -35,6 +35,13 @@ class Session(private val context: Context) {
     val external = mutableStateMapOf<String, SubIndex>()
     var indexing by mutableStateOf(false); private set
 
+    /** Partie utile de l'image (bandes noires incrustées exclues), mesurée une fois par fichier. */
+    var content by mutableStateOf(Content.FULL); private set
+
+    init {
+        mpv.onLoaded = { pickTracks(); measurePicture() }
+    }
+
     var zoom by mutableDoubleStateOf(1.0); private set
     var panX by mutableDoubleStateOf(0.0); private set
     var panY by mutableDoubleStateOf(0.0); private set
@@ -59,6 +66,7 @@ class Session(private val context: Context) {
         embedded = emptyMap()
         external.clear()
         resetZoom()
+        content = Content.decode(prefs.getString("crop:$key", null)) ?: Content.FULL
         val url = mpvUrl(target) ?: return say(t("Fichier illisible", "Unreadable file"))
         val resume = prefs.getFloat("pos:$key", 0f).toDouble()
         mpv.load(url, resume)
@@ -89,6 +97,47 @@ class Session(private val context: Context) {
                 context.contentResolver.openFileDescriptor(target, "r")?.detachFd()?.let { SubIndex.parse(Core.index(it)) }
             }.getOrNull()?.firstOrNull()
             if (found != null) mpv.post { external[url] = found }
+        }
+    }
+
+    // --- Pistes par défaut ----------------------------------------------------------------
+
+    /** Choix mémorisé pour ce fichier, sinon la VO et les premiers sous-titres complets. */
+    private fun pickTracks() {
+        val tracks = mpv.currentTracks()
+        val a = prefs.getInt("aid:$key", 0)
+        val s = prefs.getInt("sid:$key", 0)
+        if (a > 0) mpv.setAudio(a) else Picks.audio(tracks)?.let { mpv.setAudio(it.id) }
+        when {
+            s > 0 -> mpv.setSub(s)
+            s < 0 -> mpv.setSub(null)
+            else -> mpv.setSub(Picks.sub(tracks)?.id)
+        }
+    }
+
+    fun chooseAudio(t: Track) {
+        mpv.setAudio(t.id)
+        prefs.edit().putInt("aid:$key", t.id).apply()
+        say("${t("Audio", "Audio")} : ${t.label}")
+    }
+
+    fun chooseSub(t: Track?) {
+        mpv.setSub(t?.id)
+        prefs.edit().putInt("sid:$key", t?.id ?: -1).apply()
+        say(if (t == null) t("Sous-titres désactivés", "Subtitles off") else "${t("Sous-titres", "Subtitles")} : ${t.label}")
+    }
+
+    /** Bandes noires incrustées : mesurées une fois par fichier, en arrière-plan. */
+    private fun measurePicture() {
+        if (prefs.contains("crop:$key")) return
+        val u = uri ?: return
+        val k = key
+        val dur = mpv.duration.takeIf { it > 0 } ?: (mpv.currentDuration())
+        if (dur <= 0) return
+        worker.execute {
+            val c = Picture.measure(context, u, dur) ?: return@execute
+            prefs.edit().putString("crop:$k", c.encode()).apply()
+            mpv.post { if (key == k) content = c }
         }
     }
 

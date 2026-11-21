@@ -113,15 +113,15 @@ fun TracksPanel(session: Session, onAddSubtitle: () -> Unit) {
         Column(Modifier.weight(1f)) {
             Header(t("Audio", "Audio"), "${audio.size}")
             LazyColumn(Modifier.heightIn(max = listMax)) {
-                items(audio, key = { it.id }) { t -> TrackChoice(t, mpv.aid == t.id) { mpv.setAudio(t.id); session.say("${t("Audio", "Audio")} : ${t.label}") } }
+                items(audio, key = { it.id }) { t -> TrackChoice(t, mpv.aid == t.id) { session.chooseAudio(t) } }
                 if (audio.isEmpty()) item { BasicText(t("Aucune piste audio", "No audio track"), style = text(14, color = Ink.faint), modifier = Modifier.padding(14.dp)) }
             }
         }
         Column(Modifier.weight(1f)) {
             Header(t("Sous-titres", "Subtitles"), "${subs.size}")
             LazyColumn(Modifier.heightIn(max = listMax)) {
-                item { Choice(mpv.sid == null, { mpv.setSub(null); session.say(t("Sous-titres désactivés", "Subtitles off")) }, t("Désactivés", "Off")) }
-                items(subs, key = { it.id }) { t -> TrackChoice(t, mpv.sid == t.id) { mpv.setSub(t.id); session.say("${t("Sous-titres", "Subtitles")} : ${t.label}") } }
+                item { Choice(mpv.sid == null, { session.chooseSub(null) }, t("Désactivés", "Off")) }
+                items(subs, key = { it.id }) { t -> TrackChoice(t, mpv.sid == t.id) { session.chooseSub(t) } }
                 item {
                     Row(
                         Modifier.fillMaxWidth().padding(top = 4.dp).clip16().clickable(onClick = onAddSubtitle).padding(horizontal = 14.dp, vertical = 8.dp),
