@@ -66,7 +66,7 @@ class Session(private val context: Context) {
         embedded = emptyMap()
         external.clear()
         resetZoom()
-        content = Content.decode(prefs.getString("crop:$key", null)) ?: Content.FULL
+        content = Content.decode(prefs.getString("crop3:$key", null)) ?: Content.FULL
         val url = mpvUrl(target) ?: return say(t("Fichier illisible", "Unreadable file"))
         val resume = prefs.getFloat("pos:$key", 0f).toDouble()
         mpv.load(url, resume)
@@ -129,14 +129,14 @@ class Session(private val context: Context) {
 
     /** Bandes noires incrustées : mesurées une fois par fichier, en arrière-plan. */
     private fun measurePicture() {
-        if (prefs.contains("crop:$key")) return
+        if (prefs.contains("crop3:$key")) return
         val u = uri ?: return
         val k = key
         val dur = mpv.duration.takeIf { it > 0 } ?: (mpv.currentDuration())
         if (dur <= 0) return
         worker.execute {
             val c = Picture.measure(context, u, dur) ?: return@execute
-            prefs.edit().putString("crop:$k", c.encode()).apply()
+            prefs.edit().putString("crop3:$k", c.encode()).apply()
             mpv.post { if (key == k) content = c }
         }
     }

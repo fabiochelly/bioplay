@@ -4,6 +4,7 @@ import android.content.Context
 import android.graphics.Bitmap
 import android.media.MediaMetadataRetriever
 import android.net.Uri
+import kotlin.math.abs
 
 /** Partie utile de l'image, en fractions de l'image entière (bandes noires incrustées ôtées). */
 data class Content(val left: Float, val top: Float, val right: Float, val bottom: Float) {
@@ -19,7 +20,7 @@ data class Content(val left: Float, val top: Float, val right: Float, val bottom
 
 /**
  * Mesure les bandes noires incrustées dans l'image : six images réparties dans le film,
- * réduites, dont on garde l'union des zones non noires (une scène sombre ne rogne rien).
+ * réduites, bord par bord, la mesure la plus fréquente.
  * Une seule fois par fichier, en arrière-plan.
  */
 object Picture {
@@ -30,18 +31,19 @@ object Picture {
         val r = MediaMetadataRetriever()
         try {
             r.setDataSource(context, uri)
-            var top = 1f; var bottom = 0f; var left = 1f; var right = 0f
-            var seen = 0
+            val found = mutableListOf<Content>()
             for (f in listOf(0.12, 0.27, 0.42, 0.57, 0.72, 0.87)) {
                 val bmp = r.getScaledFrameAtTime((durationS * f * 1e6).toLong(), MediaMetadataRetriever.OPTION_CLOSEST_SYNC, W, H) ?: continue
-                val c = bounds(bmp)
+                bounds(bmp)?.let { found += it }
                 bmp.recycle()
-                c ?: continue
-                seen++
-                top = minOf(top, c.top); bottom = maxOf(bottom, c.bottom)
-                left = minOf(left, c.left); right = maxOf(right, c.right)
             }
-            if (seen < 3) return@runCatching null
+            if (found.size < 3) return@runCatching null
+            // Vote par bord : une scène sombre (bords noirs) ou un passage plein cadre ne
+            // décident pas seuls ; à égalité, la valeur la plus prudente (moins de rognage).
+            val left = vote(found.map { it.left }, low = true)
+            val top = vote(found.map { it.top }, low = true)
+            val right = vote(found.map { it.right }, low = false)
+            val bottom = vote(found.map { it.bottom }, low = false)
             // Bandes trop fines : rien à rogner (évite un zoom inutile de 1 %).
             val c = Content(
                 if (left > 0.02f) left else 0f, if (top > 0.02f) top else 0f,
@@ -52,6 +54,14 @@ object Picture {
             r.release()
         }
     }.getOrNull()
+
+    /** Valeur sur laquelle le plus d'images s'accordent (à 1,5 % près). */
+    private fun vote(values: List<Float>, low: Boolean): Float {
+        val best = values.map { v -> v to values.count { abs(it - v) <= 0.015f } }
+        val n = best.maxOf { it.second }
+        val pick = best.filter { it.second == n }.map { it.first }
+        return if (low) pick.min() else pick.max()
+    }
 
     /** Lignes et colonnes où l'image n'est pas noire ; null si l'image est presque toute noire. */
     private fun bounds(b: Bitmap): Content? {
