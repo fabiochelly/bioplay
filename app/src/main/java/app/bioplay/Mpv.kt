@@ -128,7 +128,9 @@ class Mpv(context: Context) : MPVLib.EventObserver {
             "gpu-context" to "android",
             "opengl-es" to "yes",
             "profile" to "fast",
-            "ao" to "aaudio,audiotrack,opensles",
+            // Pas d'AAudio : avec certaines pistes (E-AC3 5.1), l'image se figeait après un
+            // changement de piste audio.
+            "ao" to "audiotrack,opensles",
             "audio-buffer" to "0.4",
             "audio-pitch-correction" to "yes",
             "input-default-bindings" to "no",
