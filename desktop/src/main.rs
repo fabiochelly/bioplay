@@ -35,6 +35,8 @@ WHEEL_UP script-binding main/wheel-up
 WHEEL_DOWN script-binding main/wheel-down";
 /// Actifs quand un tiroir est ouvert : Échap le ferme au lieu de quitter.
 const PANEL_BINDINGS: &str = "ESC script-binding main/esc";
+/// Marge basse des sous-titres (unités mpv : pixels rapportés à une image de 720 lignes).
+const SUB_MARGIN: i32 = 46;
 
 enum Message {
     Indexed { path: String, external: Option<String>, tracks: Vec<bioplay_core::Track> },
@@ -62,6 +64,7 @@ struct App {
     last_save: Instant,
     seek_from: Option<f64>,
     indexing: Vec<String>,
+    sub_margin: i32,
 }
 
 impl App {
@@ -367,6 +370,21 @@ impl App {
             self.shader_opts = opts;
         }
 
+        // La barre ne cache jamais les sous-titres : tant qu'elle est là, ils remontent au-dessus.
+        let bottom_ui = plates.iter().filter(|g| g.y + g.h > h - 40.0 * scale && g.alpha > 0.3).map(|g| g.y).fold(f32::MAX, f32::min);
+        let video_h = (h as f64 - s.margin_top - s.margin_bottom).max(1.0);
+        let video_bottom = h as f64 - s.margin_bottom;
+        let margin = if bottom_ui < f32::MAX {
+            let needed = (video_bottom - bottom_ui as f64 + 14.0 * scale as f64) * 720.0 / video_h;
+            (needed.ceil() as i32).max(SUB_MARGIN)
+        } else {
+            SUB_MARGIN
+        };
+        if margin != self.sub_margin {
+            self.player.mpv.set("sub-margin-y", &margin.to_string());
+            self.sub_margin = margin;
+        }
+
         // Souris sur l'interface : molette et double clic pour elle, pas pour mpv.
         let over = self.pointer.and_then(|p| self.ctx.layer_id_at(p)).is_some_and(|l| l.order != Order::Background);
         self.player.over_ui = over;
@@ -490,6 +508,7 @@ fn main() {
         last_save: Instant::now(),
         seek_from: None,
         indexing: Vec::new(),
+        sub_margin: SUB_MARGIN,
     };
     app.player.panel = match panel.as_deref() {
         Some("list") => Some(Panel::List),

@@ -107,6 +107,7 @@ pub struct State {
     pub osd_h: f64,
     pub margin_left: f64,
     pub margin_top: f64,
+    pub margin_bottom: f64,
     pub scale: f64,
     /// Souris dans la fenêtre (pixels), None si elle en est sortie.
     pub mouse: Option<(f64, f64)>,
@@ -194,13 +195,17 @@ impl Mpv {
         m.set("save-position-on-quit", "yes"); // reprise toujours, quoi qu'il arrive
         m.set("resume-playback", "yes");
         m.set("input-cursor", "no");
-        // Sous-titres sobres : taille raisonnable, liseré noir fin, aucune ombre, y compris pour
-        // les ASS dont le style imposait des tailles démesurées. L'épaisseur du liseré reste celle
-        // de mpv.conf.
+        // Sous-titres dans l'image (pas dans les bandes noires), en gras, blanc adouci, liseré
+        // noir net et sans ombre ; appliqué aussi aux ASS dont le style imposait des tailles démesurées.
         for (k, v) in [
-            ("sub-font-size", "34"),
-            ("sub-color", "#FFFFFF"),
-            ("sub-outline-color", "#000000"),
+            ("sub-use-margins", "no"),
+            ("sub-ass-force-margins", "no"),
+            ("sub-font-size", "40"),
+            ("sub-bold", "yes"),
+            ("sub-margin-y", "46"),
+            ("sub-color", "#EBEBEB"),
+            ("sub-outline-size", "1.6"),
+            ("sub-outline-color", "#0A0A0A"),
             ("sub-shadow-offset", "0"),
             ("sub-blur", "0"),
             ("sub-back-color", "#00000000"),
@@ -358,7 +363,7 @@ impl Mpv {
             "osd-dimensions" => {
                 if let Some(v) = string().and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok()) {
                     let f = |k: &str| v.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
-                    (s.osd_w, s.osd_h, s.margin_left, s.margin_top) = (f("w"), f("h"), f("ml"), f("mt"));
+                    (s.osd_w, s.osd_h, s.margin_left, s.margin_top, s.margin_bottom) = (f("w"), f("h"), f("ml"), f("mt"), f("mb"));
                 }
             }
             "mouse-pos" => {
