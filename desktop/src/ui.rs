@@ -24,12 +24,14 @@ pub const ACCENT: Color32 = Color32::from_rgb(143, 216, 255);
 pub const ACCENT_DEEP: Color32 = Color32::from_rgb(79, 178, 240);
 
 pub fn fonts(ctx: &egui::Context) {
-    let mut f = egui::FontDefinitions::default();
+    // Inter seule : les polices par défaut d'egui (Ubuntu, Hack, emoji) ne sont pas chargées.
+    let mut f = egui::FontDefinitions::empty();
     let medium = include_bytes!("../../app/src/main/assets/inter-medium.ttf");
     let semi = include_bytes!("../../app/src/main/assets/inter-semibold.ttf");
     f.font_data.insert("inter".into(), egui::FontData::from_static(medium).into());
     f.font_data.insert("inter-semi".into(), egui::FontData::from_static(semi).into());
-    f.families.get_mut(&FontFamily::Proportional).unwrap().insert(0, "inter".into());
+    f.families.insert(FontFamily::Proportional, vec!["inter".into()]);
+    f.families.insert(FontFamily::Monospace, vec!["inter".into()]);
     f.families.insert(FontFamily::Name("semi".into()), vec!["inter-semi".into(), "inter".into()]);
     ctx.set_fonts(f);
     ctx.all_styles_mut(|s| {

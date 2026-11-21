@@ -17,8 +17,8 @@ const BUFFERS: usize = 3;
 struct Texture {
     w: usize,
     h: usize,
-    /// RGBA prémultiplié.
-    px: Vec<[f32; 4]>,
+    /// RGBA prémultiplié, un octet par canal (4 octets par pixel).
+    px: Vec<[u8; 4]>,
 }
 
 pub struct Overlay {
@@ -40,7 +40,7 @@ impl Overlay {
           for d in list {
             let ImageData::Color(img) = &d.image;
             let [w, h] = img.size;
-            let px: Vec<[f32; 4]> = img.pixels.iter().map(|c| [c.r() as f32, c.g() as f32, c.b() as f32, c.a() as f32]).collect();
+            let px: Vec<[u8; 4]> = img.pixels.iter().map(|c| c.to_array()).collect();
             match d.pos {
                 Some([x0, y0]) => {
                     if let Some(t) = self.textures.get_mut(id) {
@@ -280,13 +280,11 @@ fn sample(t: &Texture, x: f32, y: f32) -> [f32; 4] {
     let cx = |i: i32| i.clamp(0, t.w as i32 - 1) as usize;
     let cy = |i: i32| i.clamp(0, t.h as i32 - 1) as usize;
     let (x0, y0) = (xf as i32, yf as i32);
-    let p00 = t.px[cy(y0) * t.w + cx(x0)];
-    let p10 = t.px[cy(y0) * t.w + cx(x0 + 1)];
-    let p01 = t.px[cy(y0 + 1) * t.w + cx(x0)];
-    let p11 = t.px[cy(y0 + 1) * t.w + cx(x0 + 1)];
+    let px = |x: i32, y: i32| t.px[cy(y) * t.w + cx(x)];
+    let (p00, p10, p01, p11) = (px(x0, y0), px(x0 + 1, y0), px(x0, y0 + 1), px(x0 + 1, y0 + 1));
     std::array::from_fn(|k| {
-        let a = p00[k] + (p10[k] - p00[k]) * fx;
-        let b = p01[k] + (p11[k] - p01[k]) * fx;
+        let a = p00[k] as f32 + (p10[k] as f32 - p00[k] as f32) * fx;
+        let b = p01[k] as f32 + (p11[k] as f32 - p01[k] as f32) * fx;
         a + (b - a) * fy
     })
 }
