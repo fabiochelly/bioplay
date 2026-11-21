@@ -424,7 +424,7 @@ impl App {
         loop {
             let now = Instant::now();
             // Réveils : prochaine image prévue, masquage de l'interface après inactivité.
-            let hide_at = self.player.activity + if self.player.over_ui { Duration::from_millis(6100) } else { Duration::from_millis(2300) };
+            let hide_at = self.player.activity + if self.player.over_ui { ui::HIDE_AFTER_HOVER } else { ui::HIDE_AFTER } + Duration::from_millis(100);
             let mut wake = now + Duration::from_secs(1);
             if let Some(t) = self.next_frame {
                 wake = wake.min(t);
@@ -517,13 +517,6 @@ fn main() {
         indexing: Vec::new(),
         sub_margin: SUB_MARGIN,
     };
-    app.player.panel = match panel.as_deref() {
-        Some("list") => Some(Panel::List),
-        Some("tracks") => Some(Panel::Tracks),
-        Some("speed") => Some(Panel::Speed),
-        Some("zoom") => Some(Panel::Zoom),
-        _ => None,
-    };
     for (i, f) in files.iter().enumerate() {
         if i == 0 {
             app.open(f);
@@ -531,6 +524,13 @@ fn main() {
             app.player.mpv.command(&["loadfile", f, "append"]);
         }
     }
+    app.player.panel = match panel.as_deref() {
+        Some("list") => Some(Panel::List),
+        Some("tracks") => Some(Panel::Tracks),
+        Some("speed") => Some(Panel::Speed),
+        Some("zoom") => Some(Panel::Zoom),
+        _ => None,
+    };
     app.run();
     app.player.save();
     app.overlay.hide(&app.player.mpv);

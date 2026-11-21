@@ -97,7 +97,7 @@ fun PlayerScreen(session: Session, onBack: () -> Unit, onAddSubtitle: () -> Unit
     // Les contrôles s'effacent seuls pendant la lecture, jamais pendant un réglage.
     LaunchedEffect(controls, poke, mpv.paused, panel) {
         if (controls && !mpv.paused && panel == null) {
-            delay(3200)
+            delay(2000)
             controls = false
         }
     }

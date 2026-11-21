@@ -12,6 +12,11 @@ use crate::i18n::{en, tr};
 use crate::mpv::{track_detail, track_label};
 use crate::player::{clock, speed_label, Panel, Player, Zone};
 
+/// Le contrôleur s'efface 1,5 s après le dernier mouvement de souris…
+pub const HIDE_AFTER: Duration = Duration::from_millis(1500);
+/// … ou 3 s si la souris reste posée dessus (le temps de viser un bouton).
+pub const HIDE_AFTER_HOVER: Duration = Duration::from_millis(3000);
+
 pub const INK: Color32 = Color32::from_rgb(247, 248, 250);
 pub const INK2: Color32 = Color32::from_rgba_premultiplied(181, 182, 184, 184);
 pub const FAINT: Color32 = Color32::from_rgba_premultiplied(99, 99, 100, 102);
@@ -51,6 +56,24 @@ pub enum Action {
 }
 
 /// Plaques de verre de l'image en cours, en pixels.
+/// Contour d'un rectangle arrondi (coins en arcs de 10 segments), dans le sens horaire.
+fn rounded_outline(r: Rect, radius: f32) -> Vec<Pos2> {
+    let mut pts = Vec::with_capacity(44);
+    let corners = [
+        (pos2(r.max.x - radius, r.min.y + radius), -90.0f32),
+        (pos2(r.max.x - radius, r.max.y - radius), 0.0),
+        (pos2(r.min.x + radius, r.max.y - radius), 90.0),
+        (pos2(r.min.x + radius, r.min.y + radius), 180.0),
+    ];
+    for (c, start) in corners {
+        for k in 0..=10 {
+            let a = (start + 9.0 * k as f32).to_radians();
+            pts.push(pos2(c.x + radius * a.cos(), c.y + radius * a.sin()));
+        }
+    }
+    pts
+}
+
 /// Plaque de verre, en pixels de la fenêtre : le shader de mpv floute la vidéo dessous.
 pub struct Plate {
     pub x: f32,
@@ -84,20 +107,23 @@ impl Plates {
         let cr = CornerRadius::same(radius.min(r.height() / 2.0).min(127.0) as u8);
         let painter = &self.painter;
         painter.rect_filled(r, cr, Color32::from_black_alpha((255.0 * tint * a) as u8));
-        // Reflet : lumière venue du haut, qui s'éteint vers le milieu.
-        // Fondu en 16 bandes très fines : aucune limite visible.
-        let steps = 16;
-        let span = r.height() * 0.6;
-        for i in 0..steps {
-            let t = i as f32 / steps as f32;
-            let band = Rect::from_min_max(pos2(r.min.x, r.min.y + span * t), pos2(r.max.x, r.min.y + span * (t + 1.0 / steps as f32)));
-            let alpha = 18.0 * a * (1.0 - t) * (1.0 - t);
-            painter.with_clip_rect(band).rect_filled(r, cr, Color32::from_white_alpha(alpha as u8));
+        // Reflet : dégradé continu du haut vers le bas, sur la forme arrondie elle-même
+        // (variation linéaire, donc exacte entre les sommets : ni bandes, ni arêtes).
+        let radius = radius.min(r.height() / 2.0).min(r.width() / 2.0);
+        let outline = rounded_outline(r, radius);
+        let shade = |y: f32| Color32::from_white_alpha((20.0 * a * (1.0 - (y - r.min.y) / r.height())).round() as u8);
+        let mut mesh = egui::Mesh::default();
+        mesh.colored_vertex(r.center(), shade(r.center().y));
+        for p in &outline {
+            mesh.colored_vertex(*p, shade(p.y));
         }
-        // Liseré : discret partout, plus vif en haut.
-        painter.rect_stroke(r, cr, Stroke::new(1.0, Color32::from_white_alpha((46.0 * a) as u8)), StrokeKind::Inside);
-        let rim = painter.with_clip_rect(Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + radius.max(14.0))));
-        rim.rect_stroke(r, cr, Stroke::new(1.0, Color32::from_white_alpha((120.0 * a) as u8)), StrokeKind::Inside);
+        let n = outline.len() as u32;
+        for i in 0..n {
+            mesh.add_triangle(0, 1 + i, 1 + (i + 1) % n);
+        }
+        painter.add(Shape::mesh(mesh));
+        // Liseré : fin et régulier, sans trait plus vif en haut.
+        painter.rect_stroke(r, cr, Stroke::new(1.0, Color32::from_white_alpha((38.0 * a) as u8)), StrokeKind::Inside);
     }
 }
 
@@ -112,10 +138,10 @@ pub fn draw(ctx: &egui::Context, p: &mut Player, ppp: f32) -> (Vec<Plate>, Vec<A
         return (plates.list, actions);
     }
 
-    let idle = p.activity.elapsed() > Duration::from_millis(2200);
+    let idle = p.activity.elapsed() > HIDE_AFTER;
     // La souris posée sur l'interface la garde affichée (on ne clique pas dans le vide), mais
-    // pas indéfiniment : après 6 s d'immobilité elle s'efface quand même (reprise de lecture).
-    let hovering = p.over_ui && p.activity.elapsed() < Duration::from_secs(6);
+    // pas indéfiniment : après 3 s d'immobilité elle s'efface quand même (reprise de lecture).
+    let hovering = p.over_ui && p.activity.elapsed() < HIDE_AFTER_HOVER;
     let show = !idle || hovering || p.mpv.state.paused || p.panel.is_some() || p.scrub.is_some();
     let alpha = ctx.animate_bool_with_time(Id::new("overlay"), show, if show { 0.14 } else { 0.35 });
 

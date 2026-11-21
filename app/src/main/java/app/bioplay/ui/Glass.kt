@@ -88,9 +88,9 @@ fun Modifier.glass(shape: Shape, tint: Float = 0.28f, glow: Float = 1f): Modifie
     .border(
         1.dp,
         Brush.verticalGradient(
-            0f to Color.White.copy(alpha = 0.55f * glow),
-            0.5f to Color.White.copy(alpha = 0.10f * glow),
-            1f to Color.White.copy(alpha = 0.26f * glow),
+            0f to Color.White.copy(alpha = 0.24f * glow),
+            0.5f to Color.White.copy(alpha = 0.12f * glow),
+            1f to Color.White.copy(alpha = 0.16f * glow),
         ),
         shape,
     )

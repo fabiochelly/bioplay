@@ -160,12 +160,6 @@ float sd(vec2 p, vec2 b, float r) {
     vec2 q = abs(p) - b + r;
     return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
 }
-vec2 grad(vec2 p, vec2 b, float r) {
-    vec2 q = abs(p) - b + r;
-    vec2 s = sign(p);
-    if (q.x > 0.0 && q.y > 0.0) return s * normalize(q);
-    return q.x > q.y ? vec2(s.x, 0.0) : vec2(0.0, s.y);
-}
 vec4 plate(vec4 c, vec2 px, vec4 rect, float radius, float alpha) {
     if (alpha <= 0.0) return c;
     vec2 half_size = rect.zw * 0.5;
@@ -173,11 +167,8 @@ vec4 plate(vec4 c, vec2 px, vec4 rect, float radius, float alpha) {
     float d = sd(p, half_size, min(radius, min(half_size.x, half_size.y)));
     if (d > 0.5) return c;
     float e = -d;
-    vec2 n = grad(p, half_size, radius);
-    // Lentille : près du bord, l'image est tirée vers l'extérieur, comme à travers un verre épais.
-    float lens = pow(1.0 - smoothstep(0.0, 30.0, e), 2.0);
-    vec2 sp = px - n * lens * 22.0;
-    vec3 b = GLASS_BLUR_tex(sp / HOOKED_size).rgb;
+    // Flou seul : pas d'effet de lentille sur les bords (il dessinait un anneau et des bandes).
+    vec3 b = GLASS_BLUR_tex(px / HOOKED_size).rgb;
     float l = dot(b, vec3(0.299, 0.587, 0.114));
     b = mix(vec3(l), b, 1.3);
     float aa = smoothstep(-0.5, 0.5, e);
