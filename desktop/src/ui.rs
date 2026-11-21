@@ -523,14 +523,12 @@ fn drawer(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, screen: Rect
             ui.set_width(w - 44.0);
             let inner = avail - 44.0;
             match panel {
+                // Pas de défilement du tiroir entier : il épouse son contenu, et seules ses
+                // listes raccourcissent quand la place manque.
                 Panel::List => list_panel(ui, p, inner),
-                _ => {
-                    egui::ScrollArea::vertical().id_salt("drawer").max_height(inner).auto_shrink([false, true]).show(ui, |ui| match panel {
-                        Panel::Tracks => tracks_panel(ui, p),
-                        Panel::Speed => speed_panel(ui, p),
-                        _ => zoom_panel(ui, p),
-                    });
-                }
+                Panel::Tracks => tracks_panel(ui, p, inner),
+                Panel::Speed => speed_panel(ui, p),
+                Panel::Zoom => zoom_panel(ui, p),
             }
         });
     });
@@ -551,12 +549,14 @@ fn header(ui: &mut Ui, title: &str, trailing: &str) {
     ui.add_space(6.0);
 }
 
-fn tracks_panel(ui: &mut Ui, p: &mut Player) {
+fn tracks_panel(ui: &mut Ui, p: &mut Player, max_height: f32) {
+    // En-têtes, séparateur et ligne des décalages occupent ~130 pt ; les listes prennent le reste.
+    let lists = (max_height - 130.0).clamp(90.0, 260.0);
     let audio: Vec<_> = p.mpv.state.tracks.iter().filter(|t| t.kind == "audio").cloned().collect();
     let subs: Vec<_> = p.mpv.state.tracks.iter().filter(|t| t.kind == "sub").cloned().collect();
     ui.columns(2, |cols| {
         header(&mut cols[0], "Audio", &audio.len().to_string());
-        egui::ScrollArea::vertical().id_salt("audio").max_height(250.0).show(&mut cols[0], |ui| {
+        egui::ScrollArea::vertical().id_salt("audio").max_height(lists).show(&mut cols[0], |ui| {
             for t in &audio {
                 if choice(ui, p.mpv.state.aid == Some(t.id), &track_label(t), &track_detail(t)).clicked() {
                     p.mpv.set("aid", &t.id.to_string());
@@ -565,7 +565,7 @@ fn tracks_panel(ui: &mut Ui, p: &mut Player) {
             }
         });
         header(&mut cols[1], "Sous-titres", &subs.len().to_string());
-        egui::ScrollArea::vertical().id_salt("subs").max_height(250.0).show(&mut cols[1], |ui| {
+        egui::ScrollArea::vertical().id_salt("subs").max_height(lists).show(&mut cols[1], |ui| {
             if choice(ui, p.mpv.state.sid.is_none(), "Désactivés", "").clicked() {
                 p.mpv.set("sid", "no");
                 p.say("Sous-titres désactivés");

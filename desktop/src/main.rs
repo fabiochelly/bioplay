@@ -227,9 +227,18 @@ impl App {
                 p.panel = if p.panel == Some(Panel::List) { None } else { Some(Panel::List) };
                 return;
             }
-            // Ligne précédente / suivante, exactes grâce à l'index.
-            Key::Named(NamedKey::ArrowLeft) if ctrl && !self.mods.shift_key() => return p.step_sub(-1),
-            Key::Named(NamedKey::ArrowRight) if ctrl && !self.mods.shift_key() => return p.step_sub(1),
+            // Flèches seules : sous-titre précédent / suivant, ou 10 s s'il est plus loin.
+            // Ctrl + flèche : 10 s, sans tenir compte des sous-titres.
+            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight) if !self.mods.shift_key() && !self.mods.alt_key() => {
+                let dir = if matches!(key, Key::Named(NamedKey::ArrowRight)) { 1 } else { -1 };
+                if ctrl {
+                    let t = p.mpv.state.position + 10.0 * dir as f64;
+                    p.mpv.seek(t, true);
+                } else {
+                    p.step_line_or_ten(dir);
+                }
+                return;
+            }
             _ => {}
         }
         if let Some(name) = keys::name(key, location, self.mods) {
@@ -328,6 +337,14 @@ impl ApplicationHandler<UserEvent> for App {
 
         // mpv : configuration de l'utilisateur, rendu dans notre contexte OpenGL.
         let mut m = mpv::Mpv::new(on_wakeup, self.proxy_ptr).expect("libmpv");
+        // Options mpv en ligne de commande, comme mpv : `bioplay --mute=yes --sub-delay=0.5 film.mkv`.
+        for a in std::env::args().skip(1) {
+            if let Some((k, v)) = a.strip_prefix("--").and_then(|o| o.split_once('=')) {
+                if k != "panel" {
+                    m.set(k, v);
+                }
+            }
+        }
         let wl = match window.display_handle().map(|h| h.as_raw()) {
             Ok(RawDisplayHandle::Wayland(h)) => h.display.as_ptr(),
             _ => std::ptr::null_mut(),
@@ -416,8 +433,10 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
             WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
+                // Le clavier n'affiche pas le contrôleur (il masquerait les sous-titres) :
+                // seule la souris le fait apparaître.
                 self.key(&event.logical_key, event.location);
-                self.poke();
+                self.redraw();
             }
             WindowEvent::CursorMoved { .. } => self.poke(),
             WindowEvent::MouseWheel { delta, .. } => {

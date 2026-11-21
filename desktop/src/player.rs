@@ -128,6 +128,22 @@ impl Player {
         }
     }
 
+    /// Flèches : saut à la ligne suivante (ou précédente), limité à 10 s. Sans index de
+    /// sous-titres (MP4, AVI…), simple saut de 10 s.
+    pub fn step_line_or_ten(&mut self, dir: i32) {
+        let pos = self.mpv.state.position;
+        let ten = pos + 10.0 * dir as f64;
+        let target = match self.cue_after(dir, pos) {
+            Some(c) => {
+                let t = self.cue_time(&c);
+                let ahead = (t - pos) * dir as f64;
+                if ahead > 0.05 && ahead <= 10.0 { t } else { ten }
+            }
+            None => ten,
+        };
+        self.mpv.seek(target, true);
+    }
+
     pub fn preview(&self, zone: Zone, steps: i32, from: f64) -> Scrub {
         let max = if self.mpv.state.duration > 0.0 { self.mpv.state.duration } else { f64::MAX };
         match zone {
