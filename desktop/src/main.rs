@@ -354,7 +354,8 @@ impl App {
             actions = a;
         });
         let prims = self.ctx.tessellate(std::mem::take(&mut out.shapes), out.pixels_per_point);
-        self.overlay.present(&self.player.mpv, &prims, &mut out.textures_delta, [w as u32, h as u32], out.pixels_per_point);
+        let home = !self.player.has_file();
+        self.overlay.present(&self.player.mpv, &prims, &mut out.textures_delta, [w as u32, h as u32], out.pixels_per_point, home);
         self.visible = !prims.is_empty();
         self.last_frame = Instant::now();
 

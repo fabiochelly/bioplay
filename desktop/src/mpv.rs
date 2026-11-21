@@ -194,13 +194,14 @@ impl Mpv {
         m.set("osd-level", "0"); // les messages sont les nôtres, en verre
         m.set("save-position-on-quit", "yes"); // reprise toujours, quoi qu'il arrive
         m.set("resume-playback", "yes");
-        // Sous-titres dans l'image (pas dans les bandes noires), en gras, blanc adouci, liseré
+        // Sous-titres dans l'image (pas dans les bandes noires), Inter SemiBold, blanc adouci, liseré
         // noir net et sans ombre ; appliqué aussi aux ASS dont le style imposait des tailles démesurées.
         for (k, v) in [
             ("sub-use-margins", "no"),
             ("sub-ass-force-margins", "no"),
             ("sub-font-size", "40"),
-            ("sub-bold", "yes"),
+            ("sub-font", "Inter SemiBold"),
+            ("sub-bold", "no"),
             ("sub-margin-y", "46"),
             ("sub-color", "#EBEBEB"),
             ("sub-outline-size", "1.6"),
