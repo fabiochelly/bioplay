@@ -14,6 +14,7 @@ import dev.jdtech.mpv.MPVLib.MpvFormat
 import org.json.JSONArray
 import java.io.File
 import java.util.Locale
+import kotlin.math.abs
 
 class Track(
     val id: Int,
@@ -75,7 +76,12 @@ class Mpv(context: Context) : MPVLib.EventObserver {
     private val lib = MPVLib.create(context) ?: error("libmpv indisponible")
     private val main = Handler(Looper.getMainLooper())
 
+    /** Position pour l'interface, rafraîchie 4 fois par seconde (pas à chaque image). */
     var position by mutableDoubleStateOf(0.0); private set
+    /** Position exacte, lue à la demande (sauts de sous-titre). */
+    fun now(): Double = if (alive && loaded) lib.getPropertyDouble("time-pos") ?: position else position
+    @Volatile private var lastPos = -1.0
+    @Volatile private var lastCache = -10.0
     var duration by mutableDoubleStateOf(0.0); private set
     var cached by mutableDoubleStateOf(0.0); private set
     var paused by mutableStateOf(false); private set
@@ -89,9 +95,12 @@ class Mpv(context: Context) : MPVLib.EventObserver {
     var loaded by mutableStateOf(false); private set
     var ended by mutableStateOf(false); private set
     var hwdec by mutableStateOf(""); private set
-    /** Position de l'image vidéo dans la surface (bandes noires), pour le verre. */
-    var marginLeft by mutableDoubleStateOf(0.0); private set
-    var marginTop by mutableDoubleStateOf(0.0); private set
+    /** Mode direct (décodeur matériel → écran) ; faux pendant un repli sur le rendu de mpv. */
+    var direct by mutableStateOf(true); private set
+    private val currentVo get() = if (direct) DIRECT_VO else VO
+    /** Sous-titre affiché (texte), dessiné par l'app en mode direct. */
+    var subText by mutableStateOf(""); private set
+
 
     var onLoaded: (() -> Unit)? = null
 
@@ -100,51 +109,44 @@ class Mpv(context: Context) : MPVLib.EventObserver {
         File(fonts, "inter-semibold.ttf").takeUnless { it.exists() }?.let { f ->
             context.assets.open("inter-semibold.ttf").use { i -> f.outputStream().use { i.copyTo(it) } }
         }
-        // Verre : le même shader que sur le bureau, recopié à chaque lancement (mises à jour).
-        val glass = File(context.filesDir, "glass.glsl")
-        context.assets.open("glass.glsl").use { i -> glass.outputStream().use { i.copyTo(it) } }
+
         listOf(
             "config" to "no",
-            // Téléphone : réglages légers (mise à l'échelle bilinéaire, pas d'analyse du pic HDR ni de
-            // tramage) — invisibles sur un petit écran, nettement moins coûteux en 4K.
-            "profile" to "fast",
-            "vo" to VO,
+            // Mode direct : les images du décodeur matériel vont droit à l'écran (comme MX
+            // Player), sans copie ni rendu OpenGL. Repli sur le rendu de mpv si le téléphone ne
+            // sait pas décoder un format (voir [checkDirect]).
+            "vo" to DIRECT_VO,
+            "hwdec" to "mediacodec",
+            "hwdec-codecs" to "all",
             "gpu-context" to "android",
             "opengl-es" to "yes",
-            // Décodage matériel, recopié vers le rendu de mpv : zoom, sous-titres et rendu
-            // de qualité restent possibles. Repli automatique sur FFmpeg sinon.
-            "hwdec" to "mediacodec-copy",
-            "hwdec-codecs" to "h264,hevc,mpeg4,mpeg2video,vp8,vp9,av1",
+            "profile" to "fast",
             "ao" to "audiotrack,opensles",
             "audio-pitch-correction" to "yes",
             "input-default-bindings" to "no",
             "force-window" to "no",
             "idle" to "yes",
             "keep-open" to "yes",
-            // Cache qui garde aussi l'arrière : retour en arrière instantané.
+            // Cache qui garde aussi l'arrière : retour en arrière instantané, mémoire contenue.
             "cache" to "yes",
             "demuxer-readahead-secs" to "10",
-            "demuxer-max-bytes" to "32MiB",
-            "demuxer-max-back-bytes" to "16MiB",
+            "demuxer-max-bytes" to "24MiB",
+            "demuxer-max-back-bytes" to "8MiB",
             "demuxer-seekable-cache" to "yes",
             "hr-seek" to "yes",
             "hr-seek-framedrop" to "yes",
+            // Sous-titres : dessinés par l'app (texte fourni par mpv) ; en repli, par mpv.
             "sub-fonts-dir" to fonts.path,
             "sub-font" to "Inter 18pt SemiBold",
-            // Liseré noir fin, sans ombre ; appliqué aussi aux ASS (tailles parfois démesurées).
-            "sub-use-margins" to "no",
-            "sub-ass-force-margins" to "no",
             "sub-font-size" to "60",
             "sub-color" to "#EBEBEB",
             "sub-outline-size" to "1.6",
             "sub-outline-color" to "#0A0A0A",
             "sub-shadow-offset" to "0",
-            "sub-blur" to "0",
             "sub-ass-override" to "force",
             "sub-margin-y" to "46",
             "sub-auto" to "no",
             "osd-level" to "0",
-            "glsl-shaders" to glass.path,
             "screenshot-directory" to context.cacheDir.path,
         ).forEach { (k, v) -> lib.setOptionString(k, v) }
         lib.init()
@@ -172,7 +174,7 @@ class Mpv(context: Context) : MPVLib.EventObserver {
             "video-params/aspect" to MpvFormat.MPV_FORMAT_DOUBLE,
             "eof-reached" to MpvFormat.MPV_FORMAT_FLAG,
             "hwdec-current" to MpvFormat.MPV_FORMAT_STRING,
-            "osd-dimensions" to MpvFormat.MPV_FORMAT_STRING,
+            "sub-text" to MpvFormat.MPV_FORMAT_STRING,
         ).forEach { (k, f) -> lib.observeProperty(k, f) }
     }
 
@@ -189,7 +191,7 @@ class Mpv(context: Context) : MPVLib.EventObserver {
         surface = true
         val p = pending
         pending = null
-        if (p != null) p() else lib.setPropertyString("vo", VO)
+        if (p != null) p() else lib.setPropertyString("vo", currentVo)
     }
 
     /** Taille de la surface vidéo (pixels), pour le zoom. */
@@ -229,7 +231,12 @@ class Mpv(context: Context) : MPVLib.EventObserver {
             pending = { load(url, start) }
             return
         }
-        lib.setPropertyString("vo", VO)
+        // Chaque fichier repart en mode direct.
+        if (!direct) {
+            direct = true
+            lib.setPropertyString("hwdec", "mediacodec")
+        }
+        lib.setPropertyString("vo", currentVo)
         lib.setPropertyString("start", if (start > 0) "%.3f".format(Locale.ROOT, start) else "none")
         lib.command(arrayOf("loadfile", url, "replace"))
     }
@@ -289,13 +296,6 @@ class Mpv(context: Context) : MPVLib.EventObserver {
         lib.command(arrayOf("sub-add", url, "select", title))
     }
 
-    /** Zoom libre : [scale] 1 = image entière ; décalage en fraction de l'image. */
-    fun setZoom(scale: Double, panX: Double, panY: Double) {
-        if (!alive) return
-        lib.setPropertyDouble("video-zoom", kotlin.math.log2(scale))
-        lib.setPropertyDouble("video-pan-x", panX)
-        lib.setPropertyDouble("video-pan-y", panY)
-    }
 
     private var subMargin = 46
 
@@ -306,36 +306,10 @@ class Mpv(context: Context) : MPVLib.EventObserver {
         lib.setPropertyString("sub-margin-y", m.toString())
     }
 
-    private var glassOpts = ""
 
-    fun setGlass(opts: String) {
-        if (!alive || opts == glassOpts) return
-        glassOpts = opts
-        lib.setPropertyString("glsl-shader-opts", opts)
-    }
 
-    /** Sous-titres masqués sous un tiroir : mpv les dessine après le flou, ils resteraient nets. */
-    fun subsHidden(hidden: Boolean) {
-        if (!alive) return
-        lib.setPropertyString("sub-visibility", if (hidden) "no" else "yes")
-    }
 
-    /** Sous-titres liés à l'écran (zoom, remplissage) ou à l'image (taille normale). */
-    fun subsOnScreen(on: Boolean) {
-        if (!alive) return
-        lib.setPropertyString("sub-use-margins", if (on) "yes" else "no")
-        lib.setPropertyString("sub-ass-force-margins", if (on) "yes" else "no")
-    }
 
-    fun setPanscan(fill: Boolean) {
-        if (!alive) return
-        lib.setPropertyDouble("panscan", if (fill) 1.0 else 0.0)
-    }
-
-    fun setUnscaled(on: Boolean) {
-        if (!alive) return
-        lib.setPropertyString("video-unscaled", if (on) "yes" else "no")
-    }
 
     /** Exécute [r] sur le fil principal (là où l'état est écrit). */
     fun post(r: () -> Unit) {
@@ -355,7 +329,17 @@ class Mpv(context: Context) : MPVLib.EventObserver {
         }
     }.let {}
 
-    override fun eventProperty(property: String, value: Double) = post {
+    override fun eventProperty(property: String, value: Double) {
+        // Mises à jour fréquentes filtrées sur le fil de mpv : le fil principal ne se réveille
+        // que 4 fois par seconde pour la position, une fois pour le cache.
+        when (property) {
+            "time-pos" -> if (abs(value - lastPos) < 0.25) return else lastPos = value
+            "demuxer-cache-time" -> if (abs(value - lastCache) < 1.0) return else lastCache = value
+        }
+        dispatch(property, value)
+    }
+
+    private fun dispatch(property: String, value: Double) = post {
         when (property) {
             "time-pos" -> position = value
             "duration" -> duration = value
@@ -366,7 +350,7 @@ class Mpv(context: Context) : MPVLib.EventObserver {
             "container-fps" -> fps = value
             "video-params/aspect" -> if (value > 0) aspect = value
         }
-    }.let {}
+    }
 
     override fun eventProperty(property: String, value: String) {
         when (property) {
@@ -377,9 +361,7 @@ class Mpv(context: Context) : MPVLib.EventObserver {
             "aid" -> post { aid = value.toIntOrNull() }
             "sid" -> post { sid = value.toIntOrNull() }
             "hwdec-current" -> post { hwdec = value }
-            "osd-dimensions" -> runCatching { org.json.JSONObject(value) }.getOrNull()?.let { o ->
-                post { marginLeft = o.optDouble("ml", 0.0); marginTop = o.optDouble("mt", 0.0) }
-            }
+            "sub-text" -> post { subText = value }
         }
     }
 
@@ -389,11 +371,28 @@ class Mpv(context: Context) : MPVLib.EventObserver {
                 loaded = true
                 lib.setPropertyString("start", "none")
                 onLoaded?.invoke()
+                // Le décodeur matériel a-t-il pris la vidéo ? Sinon, repli pour ce fichier.
+                main.postDelayed({ if (alive) checkDirect() }, 1200)
             }
         }
     }
 
     override fun eventEndFile(reason: Int, error: Int) {}
+
+    /**
+     * Repli : si la vidéo n'est pas décodée par le matériel (format que le téléphone ne gère
+     * pas), le mode direct ne peut pas l'afficher ; on passe au rendu de mpv pour ce fichier.
+     */
+    private fun checkDirect() {
+        if (!direct || !loaded) return
+        val hasVideo = tracks.any { it.type == "video" }
+        if (hasVideo && !hwdec.startsWith("mediacodec")) {
+            direct = false
+            lib.setPropertyString("hwdec", "mediacodec-copy")
+            lib.setPropertyString("vo", VO)
+            lib.command(arrayOf("video-reload"))
+        }
+    }
 
     private fun parseTracks(json: String): List<Track> = runCatching {
         val a = JSONArray(json)
@@ -416,5 +415,6 @@ class Mpv(context: Context) : MPVLib.EventObserver {
 
     companion object {
         const val VO = "gpu-next"
+        const val DIRECT_VO = "mediacodec_embed"
     }
 }

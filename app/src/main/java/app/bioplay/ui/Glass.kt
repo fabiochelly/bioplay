@@ -85,7 +85,7 @@ val LocalPlates = staticCompositionLocalOf<GlassPlates?> { null }
  * Verre liquide : teinte sombre légère, reflet vertical, liseré spéculaire plus vif en haut,
  * et halo lumineux. Tout est dessiné en une passe, sans calque hors écran.
  */
-fun Modifier.glass(shape: Shape, tint: Float = 0.28f, glow: Float = 1f): Modifier = composed {
+fun Modifier.glass(shape: Shape, tint: Float = 0.42f, glow: Float = 1f): Modifier = composed {
     // Chaque plaque signale sa place : le shader de mpv floute la vidéo exactement dessous.
     val plates = LocalPlates.current
     val key = remember { Any() }

@@ -228,9 +228,8 @@ fun ZoomPanel(session: Session) {
     GlassSlider(session.zoom, 1.0, 4.0, 0.1, marks = listOf(2.0, 3.0)) { session.setZoomLevel(it) }
     Spacer(Modifier.height(14.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Chip(t("Image entière", "Fit"), !session.fill && !session.unscaled && session.zoom <= 1.01) { session.resetZoom() }
+        Chip(t("Image entière", "Fit"), !session.fill && session.zoom <= 1.01) { session.resetZoom() }
         Chip(t("Remplir l'écran", "Fill screen"), session.fill) { session.toggleFill() }
-        Chip(t("Taille réelle", "Actual size"), session.unscaled) { session.toggleUnscaled() }
     }
 }
 

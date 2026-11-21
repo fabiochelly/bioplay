@@ -102,12 +102,12 @@ class Session(private val context: Context) {
         }
 
     /** Position dans le temps des sous-titres (décalage compris), en ms. */
-    fun subClock(seconds: Double = mpv.position) = ((seconds - mpv.subDelay) * 1000).toLong()
+    fun subClock(seconds: Double = mpv.now()) = ((seconds - mpv.subDelay) * 1000).toLong()
 
     fun cueTime(c: Cue) = c.start / 1000.0 + mpv.subDelay
 
     /** Ligne visée par [steps] crans, sans bouger (aperçu pendant le glissé). */
-    fun cueAfter(steps: Int, from: Double = mpv.position): Cue? {
+    fun cueAfter(steps: Int, from: Double = mpv.now()): Cue? {
         val idx = subIndex ?: return null
         val i = idx.step(subClock(from), steps) ?: return null
         return idx.cues[i]
@@ -119,7 +119,7 @@ class Session(private val context: Context) {
         return c.takeIf { subClock(seconds) < it.end }
     }
 
-    fun stepSub(steps: Int, from: Double = mpv.position) {
+    fun stepSub(steps: Int, from: Double = mpv.now()) {
         if (steps == 0) return
         val cue = cueAfter(steps, from)
         if (cue != null) mpv.seek(cueTime(cue)) else mpv.subSeek(steps)
@@ -127,60 +127,28 @@ class Session(private val context: Context) {
 
     // --- Zoom ----------------------------------------------------------------------------
 
-    /**
-     * Zoom autour du point pincé ([fx], [fy] en pixels de l'écran), puis déplacement de [dx], [dy]
-     * pixels. Sur un axe où l'image zoomée ne déborde pas de l'écran, elle reste centrée.
-     */
-    fun zoomBy(factor: Double, dx: Double = 0.0, dy: Double = 0.0, fx: Double? = null, fy: Double? = null) {
-        val w = mpv.surfaceW.toDouble()
-        val h = mpv.surfaceH.toDouble()
-        // Image à zoom 1 (ajustée à l'écran), en pixels.
-        val vw = minOf(w, h * mpv.aspect)
-        val vh = minOf(h, w / mpv.aspect)
-        val old = zoom
+    /** Zoom depuis le centre : la surface vidéo est agrandie (mode direct compris). */
+    fun zoomBy(factor: Double) {
         zoom = (zoom * factor).coerceIn(1.0, 8.0)
-        // Le point sous les doigts reste sous les doigts.
-        val px = (fx ?: (w / 2)) - w / 2
-        val py = (fy ?: (h / 2)) - h / 2
-        panX += px / (vw * zoom) - px / (vw * old) + dx / (vw * zoom)
-        panY += py / (vh * zoom) - py / (vh * old) + dy / (vh * zoom)
-        val limX = ((vw * zoom - w) / (2 * vw * zoom)).coerceAtLeast(0.0)
-        val limY = ((vh * zoom - h) / (2 * vh * zoom)).coerceAtLeast(0.0)
-        panX = panX.coerceIn(-limX, limX)
-        panY = panY.coerceIn(-limY, limY)
-        if (zoom <= 1.001) { panX = 0.0; panY = 0.0 }
-        mpv.setZoom(zoom, panX, panY)
-        // Zoomé, les sous-titres se placent par rapport à l'écran : taille et place fixes.
-        mpv.subsOnScreen(zoom > 1.001 || fill)
     }
 
-    fun setZoomLevel(z: Double) = zoomBy(z / zoom, 0.0, 0.0)
+    fun setZoomLevel(z: Double) = zoomBy(z / zoom)
 
     fun resetZoom() {
         zoom = 1.0; panX = 0.0; panY = 0.0; fill = false; unscaled = false
-        mpv.setZoom(1.0, 0.0, 0.0)
-        mpv.setPanscan(false)
-        mpv.setUnscaled(false)
-        mpv.subsOnScreen(false)
     }
 
     fun toggleFill() {
         fill = !fill
-        mpv.setPanscan(fill)
-        mpv.subsOnScreen(fill || zoom > 1.001)
         say(if (fill) t("Remplir l'écran", "Fill screen") else t("Image entière", "Fit"))
     }
 
-    fun toggleUnscaled() {
-        unscaled = !unscaled
-        mpv.setUnscaled(unscaled)
-    }
 
     // --- Mémoire -------------------------------------------------------------------------
 
     fun save() {
         val u = uri ?: return
-        val pos = mpv.position
+        val pos = mpv.now()
         val dur = mpv.duration
         val done = dur > 0 && (dur - pos < 20 || pos / dur > 0.97)
         prefs.edit().apply {

@@ -12,17 +12,12 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.remember
-import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import app.bioplay.Session
-import kotlinx.coroutines.flow.distinctUntilChanged
-import java.util.Locale
 
 /**
  * Tiroir de verre, dans l'écran : un toucher à côté le ferme. Le flou de la vidéo dessous
@@ -36,7 +31,7 @@ fun GlassDrawer(onDismiss: () -> Unit, width: Dp, content: @Composable ColumnSco
         Column(
             Modifier.align(Alignment.BottomCenter).padding(horizontal = 14.dp, vertical = 8.dp)
                 .widthIn(max = width).fillMaxWidth().heightIn(max = screenH * 0.92f)
-                .glass(RoundedCornerShape(30.dp), tint = 0.5f)
+                .glass(RoundedCornerShape(30.dp), tint = 0.62f)
                 .clickable(remember { MutableInteractionSource() }, indication = null) {}
                 .padding(horizontal = 20.dp, vertical = 16.dp),
             content = content,
@@ -44,36 +39,9 @@ fun GlassDrawer(onDismiss: () -> Unit, width: Dp, content: @Composable ColumnSco
     }
 }
 
-/**
- * Transmet à mpv la place des plaques de verre (en pixels de l'image vidéo, bandes noires
- * retirées). Aucune plaque : glass_n=0, le shader ne coûte rien.
- */
+/** Haut de la carte de commandes du bas (pixels), ou null si elle n'est pas affichée. */
 @Composable
-fun GlassSync(session: Session, plates: GlassPlates) {
-    val mpv = session.mpv
-    LaunchedEffect(plates) {
-        snapshotFlow {
-            val list = plates.map.values.take(8)
-            buildString {
-                append("glass_n=").append(list.size)
-                list.forEachIndexed { i, p ->
-                    append(String.format(Locale.ROOT, ",r%dx=%.1f,r%dy=%.1f,r%dw=%.1f,r%dh=%.1f,r%dr=%.1f,r%da=1",
-                        i, p.x - mpv.marginLeft, i, p.y - mpv.marginTop, i, p.w, i, p.h, i, p.radius, i))
-                }
-            }
-        }.distinctUntilChanged().collect { mpv.setGlass(it) }
-    }
-    // La carte de commandes ne cache jamais les sous-titres : tant qu'elle est là, ils remontent.
+fun bottomUiTop(plates: GlassPlates, screenH: Float): Float? {
     val density = androidx.compose.ui.platform.LocalDensity.current.density
-    LaunchedEffect(plates) {
-        snapshotFlow {
-            val h = mpv.surfaceH.toFloat()
-            val top = plates.map.values.filter { it.y + it.h > h - 40 * density }.minOfOrNull { it.y }
-            if (top == null) 46 else {
-                val mt = mpv.marginTop.coerceAtLeast(0.0).toFloat()
-                val videoH = (h - 2 * mt).coerceAtLeast(1f)
-                (((h - mt) - top + 10 * density) * 720f / videoH).toInt().coerceAtLeast(46)
-            }
-        }.distinctUntilChanged().collect { mpv.subMarginTo(it) }
-    }
+    return plates.map.values.filter { it.y + it.h > screenH - 40 * density }.minOfOrNull { it.y }
 }

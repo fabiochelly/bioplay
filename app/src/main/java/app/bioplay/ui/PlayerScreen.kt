@@ -6,6 +6,11 @@ import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.foundation.layout.requiredSize
+import androidx.compose.foundation.layout.BoxScope
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.activity.compose.BackHandler
 import androidx.compose.ui.graphics.graphicsLayer
@@ -80,6 +85,34 @@ import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
+/**
+ * Sous-titres du mode direct : texte fourni par mpv, dessiné ici en Inter SemiBold avec un liseré
+ * noir. Placés dans l'image, et au-dessus de la carte de commandes quand elle est affichée.
+ */
+@Composable
+private fun BoxScope.Subtitles(session: Session, plates: GlassPlates, sw: Float, sh: Float, videoH: Float) {
+    val mpv = session.mpv
+    val text = mpv.subText
+    if (!mpv.direct || text.isBlank()) return
+    val density = LocalDensity.current
+    val shownH = minOf(videoH, sh)
+    val fontPx = shownH * 0.072f
+    val videoBottom = (sh + shownH) / 2
+    var bottom = sh - videoBottom + shownH * 0.05f
+    bottomUiTop(plates, sh)?.let { top -> bottom = maxOf(bottom, sh - top + 10 * density.density) }
+    val style = text(16, FontWeight.SemiBold, Color(0xFFEBEBEB)).copy(
+        fontSize = with(density) { fontPx.toSp() },
+        lineHeight = with(density) { (fontPx * 1.18f).toSp() },
+        textAlign = TextAlign.Center,
+        letterSpacing = 0.sp,
+    )
+    val outline = style.copy(color = Color(0xF20A0A0A), drawStyle = androidx.compose.ui.graphics.drawscope.Stroke(width = fontPx * 0.11f, join = androidx.compose.ui.graphics.StrokeJoin.Round))
+    Box(Modifier.align(Alignment.BottomCenter).padding(bottom = with(density) { bottom.toDp() }).widthIn(max = with(density) { (sw * 0.86f).toDp() })) {
+        BasicText(text, style = outline)
+        BasicText(text, style = style)
+    }
+}
+
 /** Bandes de l'écran : la hauteur du doigt choisit le pas du glissé horizontal. */
 enum class Zone { MINUTE, TEN, LINE }
 
@@ -125,22 +158,34 @@ fun PlayerScreen(session: Session, onBack: () -> Unit, onAddSubtitle: () -> Unit
 
     CompositionLocalProvider(LocalPlates provides plates) {
     Box(Modifier.fillMaxSize().background(Color.Black)) {
-        AndroidView(
-            factory = { ctx ->
-                SurfaceView(ctx).apply {
-                    holder.addCallback(object : SurfaceHolder.Callback {
-                        override fun surfaceCreated(h: SurfaceHolder) {
-                            mpv.attach(h.surface); surfaceHolder = h
-                        }
-                        override fun surfaceChanged(h: SurfaceHolder, format: Int, w: Int, hgt: Int) = mpv.resize(w, hgt)
-                        override fun surfaceDestroyed(h: SurfaceHolder) {
-                            surfaceHolder = null; mpv.detach()
-                        }
-                    })
-                }
-            },
-            modifier = Modifier.fillMaxSize(),
-        )
+        // Mode direct : la surface a le format exact de la vidéo (le décodeur y dessine tel quel) ;
+        // le zoom et « remplir » agrandissent la surface depuis le centre.
+        BoxWithConstraints(Modifier.fillMaxSize()) {
+            val sw = constraints.maxWidth.toFloat()
+            val sh = constraints.maxHeight.toFloat()
+            val a = mpv.aspect.toFloat().takeIf { it > 0f } ?: (16f / 9f)
+            val (vw, vh) = if (sw / sh > a) sh * a to sh else sw to sw / a
+            val base = if (session.fill) maxOf(sw / vw, sh / vh) else 1f
+            val z = base * session.zoom.toFloat()
+            val density = LocalDensity.current
+            AndroidView(
+                factory = { ctx ->
+                    SurfaceView(ctx).apply {
+                        holder.addCallback(object : SurfaceHolder.Callback {
+                            override fun surfaceCreated(h: SurfaceHolder) {
+                                mpv.attach(h.surface); surfaceHolder = h
+                            }
+                            override fun surfaceChanged(h: SurfaceHolder, format: Int, w: Int, hgt: Int) = mpv.resize(w, hgt)
+                            override fun surfaceDestroyed(h: SurfaceHolder) {
+                                surfaceHolder = null; mpv.detach()
+                            }
+                        })
+                    }
+                },
+                modifier = Modifier.align(Alignment.Center).requiredSize(with(density) { (vw * z).toDp() }, with(density) { (vh * z).toDp() }),
+            )
+            if (panel == null) Subtitles(session, plates, sw, sh, vh * z)
+        }
 
         val context = LocalContext.current
         Gestures(
@@ -189,8 +234,6 @@ fun PlayerScreen(session: Session, onBack: () -> Unit, onAddSubtitle: () -> Unit
     }
     }
     BackHandler(panel != null) { panel = null }
-    LaunchedEffect(panel != null) { mpv.subsHidden(panel != null) }
-    GlassSync(session, plates)
 }
 
 /**
@@ -318,7 +361,7 @@ private fun ScrubOsd(s: Scrub, session: Session, modifier: Modifier) {
         Zone.MINUTE -> if (n == 0) "1 min" else "$sign$n min"
     }
     Column(
-        modifier.widthIn(min = 220.dp, max = 560.dp).glass(RoundedCornerShape(28.dp), tint = 0.42f).padding(horizontal = 26.dp, vertical = 18.dp),
+        modifier.widthIn(min = 220.dp, max = 560.dp).glass(RoundedCornerShape(28.dp), tint = 0.58f).padding(horizontal = 26.dp, vertical = 18.dp),
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         BasicText(head, style = text(30, FontWeight.SemiBold))
@@ -355,7 +398,7 @@ private fun Message(session: Session, modifier: Modifier) {
     ) {
         BasicText(
             session.message, style = text(15, FontWeight.SemiBold),
-            modifier = Modifier.glass(Capsule, tint = 0.4f).padding(horizontal = 18.dp, vertical = 10.dp),
+            modifier = Modifier.glass(Capsule, tint = 0.55f).padding(horizontal = 18.dp, vertical = 10.dp),
         )
     }
 }
@@ -388,7 +431,7 @@ private fun Controls(session: Session, onBack: () -> Unit, onPanel: (Panel) -> U
         Column(
             Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.displayCutout)
                 .padding(horizontal = 14.dp, vertical = 12.dp).fillMaxWidth()
-                .glass(RoundedCornerShape(30.dp), tint = 0.34f).padding(horizontal = 16.dp, vertical = 10.dp),
+                .glass(RoundedCornerShape(30.dp), tint = 0.5f).padding(horizontal = 16.dp, vertical = 10.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Clock(session, Modifier.width(72.dp)) { it }
