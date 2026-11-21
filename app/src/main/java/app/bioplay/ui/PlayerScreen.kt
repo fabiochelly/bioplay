@@ -255,6 +255,18 @@ fun PlayerScreen(session: Session, onBack: () -> Unit, onAddSubtitle: () -> Unit
     }
     }
     BackHandler(panel != null) { panel = null }
+    // Tiroir ouvert : la lecture s'arrête, tout va à l'interface ; elle reprend à la fermeture
+    // si elle tournait avant.
+    var resumeAfterPanel by remember { mutableStateOf(false) }
+    LaunchedEffect(panel != null) {
+        if (panel != null) {
+            resumeAfterPanel = !mpv.paused && mpv.loaded
+            if (resumeAfterPanel) mpv.pauseTo(true)
+        } else if (resumeAfterPanel) {
+            resumeAfterPanel = false
+            mpv.pauseTo(false)
+        }
+    }
 }
 
 /**

@@ -69,6 +69,8 @@ struct App {
     last_frame: Instant,
     /// Aperçu des sous-titres affiché (incrustation mpv).
     preview_on: bool,
+    /// La lecture tournait à l'ouverture du tiroir : elle reprend à sa fermeture.
+    resume_after_panel: bool,
     visible: bool,
     shader_opts: String,
     hover_section: bool,
@@ -465,6 +467,16 @@ impl App {
             self.section("bioplay-panel", panel);
             // Sous un tiroir, les sous-titres (dessinés après le flou) resteraient nets : masqués.
             self.player.mpv.set("sub-visibility", if panel { "no" } else { "yes" });
+            // Tiroir ouvert : la lecture s'arrête, toute la machine est à l'interface. Elle
+            // reprend à la fermeture si elle tournait avant.
+            if panel {
+                self.resume_after_panel = !self.player.mpv.state.paused && self.player.has_file();
+                if self.resume_after_panel {
+                    self.player.mpv.set("pause", "yes");
+                }
+            } else if std::mem::take(&mut self.resume_after_panel) {
+                self.player.mpv.set("pause", "no");
+            }
             self.panel_section = panel;
         }
 
@@ -597,6 +609,7 @@ fn main() {
         indexing: Vec::new(),
         sub_margin: SUB_MARGIN,
         preview_on: false,
+        resume_after_panel: false,
     };
     for (i, f) in files.iter().enumerate() {
         if i == 0 {
