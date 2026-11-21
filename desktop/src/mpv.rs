@@ -350,7 +350,9 @@ impl Mpv {
             "sub-delay" => s.sub_delay = double().unwrap_or(0.0),
             "audio-delay" => s.audio_delay = double().unwrap_or(0.0),
             "video-zoom" => s.zoom = double().unwrap_or(0.0),
-            "pause" => s.paused = flag().unwrap_or(false),
+            "pause" => {
+                s.paused = flag().unwrap_or(false);
+            }
             "fullscreen" => s.fullscreen = flag().unwrap_or(false),
             "idle-active" => s.idle = flag().unwrap_or(false),
             "track-list" => s.tracks = string().map(|j| parse_tracks(&j)).unwrap_or_default(),

@@ -124,17 +124,21 @@ impl App {
     // --- Raccourcis et souris -------------------------------------------------------------------
 
     fn binding(&mut self, name: &str, state: &str) {
+        if std::env::var_os("BIOPLAY_DEBUG").is_some() {
+            eprintln!("raccourci {name} {state} souris {:?}", self.pointer);
+        }
         let down = state.starts_with('d') || state.starts_with('r') || state.starts_with('p');
         let up = state.starts_with('u');
         if matches!(name, "mouse-left" | "wheel-up" | "wheel-down") {
             let pos = self.pointer.unwrap_or(egui::Pos2::ZERO);
+            let button = |pressed| Event::PointerButton { pos, button: PointerButton::Primary, pressed, modifiers: Default::default() };
             match name {
-                "mouse-left" if down || up => self.events.push(Event::PointerButton {
-                    pos,
-                    button: PointerButton::Primary,
-                    pressed: down,
-                    modifiers: Default::default(),
-                }),
+                // « p » : appui et relâchement en un seul message (clic bref) → les deux.
+                "mouse-left" if state.starts_with('p') => {
+                    self.events.push(button(true));
+                    self.events.push(button(false));
+                }
+                "mouse-left" if down || up => self.events.push(button(down)),
                 "wheel-up" | "wheel-down" if down => self.events.push(Event::MouseWheel {
                     unit: egui::MouseWheelUnit::Line,
                     delta: vec2(0.0, if name == "wheel-up" { 1.0 } else { -1.0 }),
@@ -143,6 +147,9 @@ impl App {
                     source: egui::MouseWheelSource::Wheel,
                 }),
                 _ => {}
+            }
+            if name == "mouse-left" && down {
+                self.player.activity = Instant::now();
             }
             self.dirty = true;
             return;
@@ -417,7 +424,7 @@ impl App {
         loop {
             let now = Instant::now();
             // Réveils : prochaine image prévue, masquage de l'interface après inactivité.
-            let hide_at = self.player.activity + Duration::from_millis(2300);
+            let hide_at = self.player.activity + if self.player.over_ui { Duration::from_millis(6100) } else { Duration::from_millis(2300) };
             let mut wake = now + Duration::from_secs(1);
             if let Some(t) = self.next_frame {
                 wake = wake.min(t);

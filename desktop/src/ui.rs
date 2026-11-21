@@ -113,8 +113,10 @@ pub fn draw(ctx: &egui::Context, p: &mut Player, ppp: f32) -> (Vec<Plate>, Vec<A
     }
 
     let idle = p.activity.elapsed() > Duration::from_millis(2200);
-    // Survoler la barre ne la garde pas affichée : seule une activité récente compte.
-    let show = !idle || p.mpv.state.paused || p.panel.is_some() || p.scrub.is_some();
+    // La souris posée sur l'interface la garde affichée (on ne clique pas dans le vide), mais
+    // pas indéfiniment : après 6 s d'immobilité elle s'efface quand même (reprise de lecture).
+    let hovering = p.over_ui && p.activity.elapsed() < Duration::from_secs(6);
+    let show = !idle || hovering || p.mpv.state.paused || p.panel.is_some() || p.scrub.is_some();
     let alpha = ctx.animate_bool_with_time(Id::new("overlay"), show, if show { 0.14 } else { 0.35 });
 
     surface(ctx, p, screen);
