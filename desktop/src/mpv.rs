@@ -6,8 +6,6 @@ use std::ptr;
 
 #[allow(non_camel_case_types)]
 type mpv_handle = c_void;
-#[allow(non_camel_case_types)]
-type mpv_render_context = c_void;
 
 #[repr(C)]
 struct Event {
@@ -18,30 +16,16 @@ struct Event {
 }
 
 #[repr(C)]
+struct ClientMessage {
+    num_args: c_int,
+    args: *const *const c_char,
+}
+
+#[repr(C)]
 struct EventProperty {
     name: *const c_char,
     format: c_int,
     data: *mut c_void,
-}
-
-#[repr(C)]
-struct RenderParam {
-    kind: c_int,
-    data: *mut c_void,
-}
-
-#[repr(C)]
-struct GlInitParams {
-    get_proc_address: unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void,
-    ctx: *mut c_void,
-}
-
-#[repr(C)]
-struct GlFbo {
-    fbo: c_int,
-    w: c_int,
-    h: c_int,
-    internal_format: c_int,
 }
 
 #[link(name = "mpv")]
@@ -57,15 +41,9 @@ extern "C" {
     fn mpv_command(h: *mut mpv_handle, args: *mut *const c_char) -> c_int;
     fn mpv_observe_property(h: *mut mpv_handle, reply: u64, name: *const c_char, format: c_int) -> c_int;
     fn mpv_wait_event(h: *mut mpv_handle, timeout: c_double) -> *mut Event;
-    fn mpv_set_wakeup_callback(h: *mut mpv_handle, cb: extern "C" fn(*mut c_void), d: *mut c_void);
     fn mpv_free(data: *mut c_void);
+    fn mpv_wakeup(h: *mut mpv_handle);
 
-    fn mpv_render_context_create(res: *mut *mut mpv_render_context, h: *mut mpv_handle, params: *mut RenderParam) -> c_int;
-    fn mpv_render_context_set_update_callback(ctx: *mut mpv_render_context, cb: extern "C" fn(*mut c_void), d: *mut c_void);
-    fn mpv_render_context_update(ctx: *mut mpv_render_context) -> u64;
-    fn mpv_render_context_render(ctx: *mut mpv_render_context, params: *mut RenderParam) -> c_int;
-    fn mpv_render_context_report_swap(ctx: *mut mpv_render_context);
-    fn mpv_render_context_free(ctx: *mut mpv_render_context);
 }
 
 const FORMAT_STRING: c_int = 1;
@@ -76,7 +54,20 @@ const FORMAT_DOUBLE: c_int = 5;
 const EVENT_SHUTDOWN: c_int = 1;
 const EVENT_END_FILE: c_int = 7;
 const EVENT_FILE_LOADED: c_int = 8;
+const EVENT_CLIENT_MESSAGE: c_int = 16;
+const EVENT_SEEK: c_int = 20;
+const EVENT_PLAYBACK_RESTART: c_int = 21;
 const EVENT_PROPERTY_CHANGE: c_int = 22;
+
+#[derive(Clone, Copy)]
+pub struct Waker(usize);
+
+impl Waker {
+    pub fn wake(&self) {
+        // mpv_wakeup est sûr depuis n'importe quel fil tant que le lecteur existe.
+        unsafe { mpv_wakeup(self.0 as *mut mpv_handle) };
+    }
+}
 
 #[derive(Clone, Debug, Default)]
 pub struct Track {
@@ -111,12 +102,24 @@ pub struct State {
     pub hwdec: String,
     pub idle: bool,
     pub zoom: f64,
+    /// Fenêtre (pixels) et position de l'image vidéo dedans (marges des bandes noires).
+    pub osd_w: f64,
+    pub osd_h: f64,
+    pub margin_left: f64,
+    pub margin_top: f64,
+    pub scale: f64,
+    /// Souris dans la fenêtre (pixels), None si elle en est sortie.
+    pub mouse: Option<(f64, f64)>,
 }
 
 pub enum Change {
     Loaded,
     Ended,
     Shutdown,
+    /// Message d'une section de raccourcis (`script-binding main/<nom>`) : nom, état (d-, u-…).
+    Binding(String, String),
+    /// Début d'un saut (position encore celle d'avant).
+    Seeking,
     /// Lecture reprise après un saut : position définitive.
     Restarted,
     /// Propriété modifiée : nom, pour les messages à l'écran.
@@ -141,12 +144,16 @@ const OBSERVED: &[(&str, c_int)] = &[
     ("hwdec-current", FORMAT_STRING),
     ("idle-active", FORMAT_FLAG),
     ("video-zoom", FORMAT_DOUBLE),
+    ("osd-dimensions", FORMAT_STRING),
+    ("mouse-pos", FORMAT_STRING),
+    ("display-hidpi-scale", FORMAT_DOUBLE),
 ];
 
 pub struct Mpv {
     h: *mut mpv_handle,
-    render: *mut mpv_render_context,
     pub state: State,
+    /// Sauts lancés par bioplay (les autres viennent des raccourcis : annoncés dans une bulle).
+    pub own_seeks: std::cell::Cell<u32>,
 }
 
 fn cs(s: &str) -> CString {
@@ -156,20 +163,26 @@ fn cs(s: &str) -> CString {
 impl Mpv {
     /// Crée mpv avec la configuration de l'utilisateur (`~/.config/mpv/mpv.conf` et
     /// `input.conf`) : mêmes réglages, mêmes raccourcis que son mpv habituel.
-    pub fn new(wakeup: extern "C" fn(*mut c_void), data: *mut c_void) -> Result<Self, String> {
+    pub fn new() -> Result<Self, String> {
         let h = unsafe { mpv_create() };
         if h.is_null() {
             return Err("mpv_create a échoué".into());
         }
-        let mut m = Self { h, render: ptr::null_mut(), state: State { speed: 1.0, ..Default::default() } };
+        let mut m = Self { h, state: State { speed: 1.0, scale: 1.0, ..Default::default() }, own_seeks: Default::default() };
+        // mpv ouvre et dessine sa propre fenêtre en gpu-next : même image, même coût que mpv
+        // (Dolby Vision et HDR compris). bioplay y ajoute son interface en superposition.
         for (k, v) in [
             ("config", "yes"),
-            ("vo", "libmpv"),
             ("input-default-bindings", "yes"),
+            ("input-vo-keyboard", "yes"),
+            ("force-window", "yes"),
             ("idle", "yes"),
             ("keep-open", "yes"),
             ("terminal", "no"),
             ("msg-level", "all=warn"),
+            ("wayland-app-id", "bioplay"),
+            ("title", "${?media-title:${media-title} — }bioplay"),
+            ("osc", "no"),
         ] {
             m.option(k, v);
         }
@@ -177,7 +190,6 @@ impl Mpv {
             return Err("mpv_initialize a échoué".into());
         }
         // Après la configuration : nos choix qui priment sur mpv.conf.
-        m.set("vo", "libmpv"); // rendu dans notre fenêtre, sous l'interface
         m.set("osd-level", "0"); // les messages sont les nôtres, en verre
         m.set("save-position-on-quit", "yes"); // reprise toujours, quoi qu'il arrive
         m.set("resume-playback", "yes");
@@ -199,7 +211,6 @@ impl Mpv {
         for (i, (name, f)) in OBSERVED.iter().enumerate() {
             unsafe { mpv_observe_property(h, i as u64, cs(name).as_ptr(), *f) };
         }
-        unsafe { mpv_set_wakeup_callback(h, wakeup, data) };
         Ok(m)
     }
 
@@ -251,63 +262,24 @@ impl Mpv {
     pub fn seek(&self, t: f64, exact: bool) {
         let max = if self.state.duration > 0.0 { self.state.duration } else { f64::MAX };
         let t = t.clamp(0.0, max);
+        self.own_seeks.set(self.own_seeks.get() + 1);
         self.command(&["seek", &format!("{t:.3}"), if exact { "absolute+exact" } else { "absolute+keyframes" }]);
     }
 
-    // --- Rendu -----------------------------------------------------------------------------
-
-    pub fn init_render(
-        &mut self,
-        get_proc: unsafe extern "C" fn(*mut c_void, *const c_char) -> *mut c_void,
-        ctx: *mut c_void,
-        wl_display: *mut c_void,
-        update: extern "C" fn(*mut c_void),
-        data: *mut c_void,
-    ) -> Result<(), String> {
-        let api = cs("opengl");
-        let mut init = GlInitParams { get_proc_address: get_proc, ctx };
-        let mut advanced: c_int = 1;
-        let mut params = vec![
-            RenderParam { kind: 1, data: api.as_ptr() as *mut c_void },
-            RenderParam { kind: 2, data: &mut init as *mut _ as *mut c_void },
-            RenderParam { kind: 10, data: &mut advanced as *mut _ as *mut c_void },
-        ];
-        // Wayland : nécessaire au décodage matériel VA-API sans copie.
-        if !wl_display.is_null() {
-            params.push(RenderParam { kind: 9, data: wl_display });
-        }
-        params.push(RenderParam { kind: 0, data: ptr::null_mut() });
-        let r = unsafe { mpv_render_context_create(&mut self.render, self.h, params.as_mut_ptr()) };
-        if r < 0 {
-            return Err(format!("mpv_render_context_create : {r}"));
-        }
-        unsafe { mpv_render_context_set_update_callback(self.render, update, data) };
-        Ok(())
+    /// Réveille `wait` depuis un autre fil (index des sous-titres prêt, fichier choisi…).
+    pub fn waker(&self) -> Waker {
+        Waker(self.h as usize)
     }
 
-    /// Vrai si une nouvelle image vidéo est à dessiner.
-    pub fn frame_ready(&self) -> bool {
-        !self.render.is_null() && unsafe { mpv_render_context_update(self.render) } & 1 != 0
-    }
-
-    pub fn render(&self, fbo: u32, w: i32, h: i32, flip: bool) {
-        if self.render.is_null() {
-            return;
+    /// Attend un événement de mpv (au plus `timeout` secondes), puis vide la file.
+    pub fn wait(&mut self, timeout: f64) -> Vec<Change> {
+        let mut out = Vec::new();
+        let first = unsafe { &*mpv_wait_event(self.h, timeout) };
+        self.handle(first, &mut out);
+        if !matches!(out.last(), Some(Change::Shutdown)) {
+            out.extend(self.poll());
         }
-        let mut target = GlFbo { fbo: fbo as c_int, w, h, internal_format: 0 };
-        let mut flip_y: c_int = flip as c_int;
-        let mut params = [
-            RenderParam { kind: 3, data: &mut target as *mut _ as *mut c_void },
-            RenderParam { kind: 4, data: &mut flip_y as *mut _ as *mut c_void },
-            RenderParam { kind: 0, data: ptr::null_mut() },
-        ];
-        unsafe { mpv_render_context_render(self.render, params.as_mut_ptr()) };
-    }
-
-    pub fn report_swap(&self) {
-        if !self.render.is_null() {
-            unsafe { mpv_render_context_report_swap(self.render) };
-        }
+        out
     }
 
     // --- Événements ------------------------------------------------------------------------
@@ -317,25 +289,43 @@ impl Mpv {
         let mut out = Vec::new();
         loop {
             let e = unsafe { &*mpv_wait_event(self.h, 0.0) };
-            match e.event_id {
-                0 => break,
-                EVENT_SHUTDOWN => {
-                    out.push(Change::Shutdown);
-                    break;
-                }
-                EVENT_FILE_LOADED => out.push(Change::Loaded),
-                EVENT_END_FILE => out.push(Change::Ended),
-                21 => out.push(Change::Restarted),
-                EVENT_PROPERTY_CHANGE => {
-                    let p = unsafe { &*(e.data as *const EventProperty) };
-                    let Some(&(name, _)) = OBSERVED.get(e.reply_userdata as usize) else { continue };
-                    self.apply(name, p);
-                    out.push(Change::Property(name));
-                }
-                _ => {}
+            if e.event_id == 0 {
+                break;
+            }
+            self.handle(e, &mut out);
+            if matches!(out.last(), Some(Change::Shutdown)) {
+                break;
             }
         }
         out
+    }
+
+    fn handle(&mut self, e: &Event, out: &mut Vec<Change>) {
+        match e.event_id {
+            EVENT_SHUTDOWN => out.push(Change::Shutdown),
+            EVENT_FILE_LOADED => out.push(Change::Loaded),
+            EVENT_END_FILE => out.push(Change::Ended),
+            EVENT_SEEK => out.push(Change::Seeking),
+            EVENT_PLAYBACK_RESTART => out.push(Change::Restarted),
+            EVENT_CLIENT_MESSAGE => {
+                let m = unsafe { &*(e.data as *const ClientMessage) };
+                let args: Vec<String> = (0..m.num_args as usize)
+                    .map(|i| unsafe { CStr::from_ptr(*m.args.add(i)).to_string_lossy().into_owned() })
+                    .collect();
+                // script-binding : ["key-binding", nom, état, touche, …]
+                if args.len() >= 3 && args[0] == "key-binding" {
+                    out.push(Change::Binding(args[1].clone(), args[2].clone()));
+                }
+            }
+            EVENT_PROPERTY_CHANGE => {
+                let p = unsafe { &*(e.data as *const EventProperty) };
+                if let Some(&(name, _)) = OBSERVED.get(e.reply_userdata as usize) {
+                    self.apply(name, p);
+                    out.push(Change::Property(name));
+                }
+            }
+            _ => {}
+        }
     }
 
     fn apply(&mut self, name: &str, p: &EventProperty) {
@@ -364,6 +354,21 @@ impl Mpv {
             "media-title" => s.title = string().unwrap_or_default(),
             "path" => s.path = string().unwrap_or_default(),
             "hwdec-current" => s.hwdec = string().unwrap_or_default(),
+            "display-hidpi-scale" => s.scale = double().filter(|v| *v > 0.0).unwrap_or(1.0),
+            "osd-dimensions" => {
+                if let Some(v) = string().and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok()) {
+                    let f = |k: &str| v.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);
+                    (s.osd_w, s.osd_h, s.margin_left, s.margin_top) = (f("w"), f("h"), f("ml"), f("mt"));
+                }
+            }
+            "mouse-pos" => {
+                s.mouse = string().and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok()).and_then(|v| {
+                    let hover = v.get("hover").and_then(|h| h.as_bool()).unwrap_or(false);
+                    let x = v.get("x").and_then(|x| x.as_f64())?;
+                    let y = v.get("y").and_then(|y| y.as_f64())?;
+                    hover.then_some((x, y))
+                });
+            }
             _ => {}
         }
         let _ = FORMAT_INT64;
@@ -372,12 +377,7 @@ impl Mpv {
 
 impl Drop for Mpv {
     fn drop(&mut self) {
-        unsafe {
-            if !self.render.is_null() {
-                mpv_render_context_free(self.render);
-            }
-            mpv_terminate_destroy(self.h);
-        }
+        unsafe { mpv_terminate_destroy(self.h) };
     }
 }
 

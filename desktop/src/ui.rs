@@ -8,7 +8,6 @@ use egui::{
     StrokeKind, Ui,
 };
 
-use crate::gfx::Glass;
 use crate::i18n::{en, tr};
 use crate::mpv::{track_detail, track_label};
 use crate::player::{clock, speed_label, Panel, Player, Zone};
@@ -52,28 +51,59 @@ pub enum Action {
 }
 
 /// Plaques de verre de l'image en cours, en pixels.
+/// Plaque de verre, en pixels de la fenêtre : le shader de mpv floute la vidéo dessous.
+pub struct Plate {
+    pub x: f32,
+    pub y: f32,
+    pub w: f32,
+    pub h: f32,
+    pub radius: f32,
+    pub alpha: f32,
+}
+
 pub struct Plates {
-    pub list: Vec<Glass>,
+    pub list: Vec<Plate>,
     ppp: f32,
     alpha: f32,
+    painter: egui::Painter,
 }
 
 impl Plates {
+    /// Une plaque : le flou vient du shader ; ici la teinte, le reflet et le liseré, dessinés
+    /// sous le contenu. Sur les bandes noires (hors vidéo), la teinte seule fait le verre.
     fn add(&mut self, r: Rect, radius: f32, tint: f32) {
-        self.list.push(Glass {
+        let a = self.alpha;
+        self.list.push(Plate {
             x: r.min.x * self.ppp,
             y: r.min.y * self.ppp,
             w: r.width() * self.ppp,
             h: r.height() * self.ppp,
             radius: radius * self.ppp,
-            tint,
-            alpha: self.alpha,
+            alpha: a,
         });
+        let cr = CornerRadius::same(radius.min(r.height() / 2.0).min(127.0) as u8);
+        let painter = &self.painter;
+        painter.rect_filled(r, cr, Color32::from_black_alpha((255.0 * tint * a) as u8));
+        // Reflet : lumière venue du haut, qui s'éteint vers le milieu.
+        // Fondu en 16 bandes très fines : aucune limite visible.
+        let steps = 16;
+        let span = r.height() * 0.6;
+        for i in 0..steps {
+            let t = i as f32 / steps as f32;
+            let band = Rect::from_min_max(pos2(r.min.x, r.min.y + span * t), pos2(r.max.x, r.min.y + span * (t + 1.0 / steps as f32)));
+            let alpha = 18.0 * a * (1.0 - t) * (1.0 - t);
+            painter.with_clip_rect(band).rect_filled(r, cr, Color32::from_white_alpha(alpha as u8));
+        }
+        // Liseré : discret partout, plus vif en haut.
+        painter.rect_stroke(r, cr, Stroke::new(1.0, Color32::from_white_alpha((46.0 * a) as u8)), StrokeKind::Inside);
+        let rim = painter.with_clip_rect(Rect::from_min_max(r.min, pos2(r.max.x, r.min.y + radius.max(14.0))));
+        rim.rect_stroke(r, cr, Stroke::new(1.0, Color32::from_white_alpha((120.0 * a) as u8)), StrokeKind::Inside);
     }
 }
 
-pub fn draw(ctx: &egui::Context, p: &mut Player, ppp: f32) -> (Vec<Glass>, Vec<Action>) {
-    let mut plates = Plates { list: Vec::new(), ppp, alpha: 1.0 };
+pub fn draw(ctx: &egui::Context, p: &mut Player, ppp: f32) -> (Vec<Plate>, Vec<Action>) {
+    let painter = ctx.layer_painter(egui::LayerId::new(Order::Background, Id::new("plates")));
+    let mut plates = Plates { list: Vec::new(), ppp, alpha: 1.0, painter };
     let mut actions = Vec::new();
     let screen = ctx.content_rect();
 
@@ -135,6 +165,7 @@ fn surface(ctx: &egui::Context, p: &mut Player, screen: Rect) {
             if let Some(s) = p.scrub.take() {
                 if s.steps != 0 {
                     if s.zone == Zone::Line && s.cue.is_none() {
+                        p.mpv.own_seeks.set(p.mpv.own_seeks.get() + 1);
                         p.mpv.command(&["sub-seek", &s.steps.to_string()]);
                     } else {
                         p.mpv.seek(s.target, true);
@@ -144,19 +175,10 @@ fn surface(ctx: &egui::Context, p: &mut Player, screen: Rect) {
                 }
             }
         }
+        // Un clic sur la vidéo ferme le tiroir ouvert ; le reste des clics (double clic,
+        // clic droit…) est traité par mpv lui-même, selon input.conf.
         if r.clicked() {
-            if p.panel.take().is_none() {
-                p.mpv.command(&["keypress", "MBTN_LEFT"]);
-            }
-        }
-        if r.double_clicked() {
-            p.mpv.command(&["keypress", "MBTN_LEFT_DBL"]);
-        }
-        if r.secondary_clicked() {
-            p.mpv.command(&["keypress", "MBTN_RIGHT"]);
-        }
-        if r.middle_clicked() {
-            p.mpv.command(&["keypress", "MBTN_MID"]);
+            p.panel = None;
         }
     });
 }
@@ -899,12 +921,50 @@ fn scrub_osd(ctx: &egui::Context, p: &Player, s: &crate::player::Scrub, plates: 
     }
 }
 
+/// Fond de l'accueil : trois lumières en dégradés continus, calculés sur une grille fine.
+fn backdrop(painter: &egui::Painter, screen: Rect) {
+    let (nx, ny) = (64usize, 40usize);
+    let aspect = screen.width() / screen.height();
+    let glow = |u: f32, v: f32| {
+        let g = |cx: f32, cy: f32, r: f32, c: [f32; 3], k: f32| {
+            let dx = (u - cx) * aspect;
+            let dy = v - cy;
+            let d2 = (dx * dx + dy * dy) / (r * r);
+            let e = (-d2 * 2.2).exp() * k;
+            [c[0] * e, c[1] * e, c[2] * e]
+        };
+        let mut c = [0.020, 0.027, 0.047];
+        for l in [g(0.18, 0.25, 0.75, [0.16, 0.30, 0.75], 0.55), g(0.85, 0.80, 0.85, [0.50, 0.22, 0.85], 0.45), g(0.60, 0.08, 0.50, [0.10, 0.70, 0.65], 0.25)] {
+            for i in 0..3 {
+                c[i] += l[i];
+            }
+        }
+        Color32::from_rgb((c[0].min(1.0) * 255.0) as u8, (c[1].min(1.0) * 255.0) as u8, (c[2].min(1.0) * 255.0) as u8)
+    };
+    let mut mesh = egui::Mesh::default();
+    for j in 0..=ny {
+        for i in 0..=nx {
+            let (u, v) = (i as f32 / nx as f32, j as f32 / ny as f32);
+            mesh.colored_vertex(pos2(screen.min.x + u * screen.width(), screen.min.y + v * screen.height()), glow(u, v));
+        }
+    }
+    let w = (nx + 1) as u32;
+    for j in 0..ny as u32 {
+        for i in 0..nx as u32 {
+            let a = j * w + i;
+            mesh.add_triangle(a, a + 1, a + w);
+            mesh.add_triangle(a + 1, a + w + 1, a + w);
+        }
+    }
+    painter.add(Shape::mesh(mesh));
+}
+
 // --- Accueil -------------------------------------------------------------------------------------
 
 fn home(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actions: &mut Vec<Action>, screen: Rect) {
     egui::Area::new(Id::new("home-bg")).order(Order::Background).fixed_pos(screen.min).show(ctx, |ui| {
         ui.allocate_rect(screen, Sense::hover());
-        // Les lumières de fond sont dessinées par le GPU (gfx.rs), sans paliers.
+        backdrop(ui.painter(), screen);
     });
     let w = 560.0f32.min(screen.width() - 48.0);
     let id = Id::new("home");

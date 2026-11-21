@@ -1,124 +1,101 @@
-//! bioplay pour le bureau : mpv (configuration et raccourcis de l'utilisateur) rendu dans une
-//! fenêtre OpenGL, sous une interface de verre liquide plein écran.
+//! bioplay pour le bureau. mpv ouvre et dessine sa fenêtre en gpu-next, avec la configuration
+//! et les raccourcis de l'utilisateur ; bioplay y pose son interface (superposition egui) et le
+//! verre (shader mpv qui floute la vidéo sous les plaques). Interface masquée : aucun coût.
 
-mod gfx;
 mod i18n;
-mod keys;
 mod mpv;
+mod overlay;
 mod player;
 mod ui;
 
-use std::ffi::{c_char, c_void, CStr};
-use std::num::NonZeroU32;
-use std::path::Path;
-use std::sync::Arc;
+use std::path::{Path, PathBuf};
+use std::sync::mpsc::{channel, Receiver, Sender};
 use std::time::{Duration, Instant};
 
-use egui_glow::glow;
-use egui_winit::winit;
-use glutin::config::{ConfigTemplateBuilder, GlConfig};
-use glutin::context::{ContextApi, ContextAttributesBuilder, GlProfile, NotCurrentGlContext, PossiblyCurrentContext, Version};
-use glutin::display::{GetGlDisplay, GlDisplay};
-use glutin::surface::{GlSurface, Surface, SwapInterval, WindowSurface};
-use glutin_winit::{DisplayBuilder, GlWindow};
-use raw_window_handle::{HasDisplayHandle, HasWindowHandle, RawDisplayHandle};
-use winit::application::ApplicationHandler;
-use winit::event::{ElementState, MouseScrollDelta, WindowEvent};
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy};
-use winit::keyboard::{Key, ModifiersState, NamedKey};
-use winit::window::{Fullscreen, Window, WindowId};
+use egui::{pos2, vec2, Event, Order, PointerButton, Rect};
 
 use i18n::tr;
 use player::{Panel, Player};
 
-const SUBTITLE_EXT: &[&str] = &["srt", "ass", "ssa", "vtt", "sub", "sup"];
+const GLASS_SHADER: &str = include_str!("../shaders/glass.glsl");
 const VIDEO_EXT: &[&str] = &["mkv", "mp4", "m4v", "avi", "webm", "mov", "ts", "m2ts", "wmv", "flv", "mpg", "mpeg", "ogv", "3gp"];
+const SUBTITLE_EXT: &[&str] = &["srt", "ass", "ssa", "vtt", "sub", "sup"];
 
-enum UserEvent {
-    MpvEvents,
-    MpvFrame,
+/// Raccourcis propres à bioplay. Tout le reste (input.conf, raccourcis par défaut) reste à mpv.
+const BINDINGS: &str = "RIGHT script-binding main/right
+LEFT script-binding main/left
+Ctrl+RIGHT script-binding main/ctrl-right
+Ctrl+LEFT script-binding main/ctrl-left
+TAB script-binding main/tab
+MBTN_LEFT script-binding main/mouse-left";
+/// Actifs quand la souris est sur l'interface : la molette fait défiler, pas de plein écran.
+const HOVER_BINDINGS: &str = "MBTN_LEFT_DBL ignore
+MBTN_RIGHT ignore
+WHEEL_UP script-binding main/wheel-up
+WHEEL_DOWN script-binding main/wheel-down";
+/// Actifs quand un tiroir est ouvert : Échap le ferme au lieu de quitter.
+const PANEL_BINDINGS: &str = "ESC script-binding main/esc";
+
+enum Message {
     Indexed { path: String, external: Option<String>, tracks: Vec<bioplay_core::Track> },
     Picked(String),
 }
 
-extern "C" fn on_wakeup(d: *mut c_void) {
-    let proxy = unsafe { &*(d as *const EventLoopProxy<UserEvent>) };
-    let _ = proxy.send_event(UserEvent::MpvEvents);
-}
-
-extern "C" fn on_frame(d: *mut c_void) {
-    let proxy = unsafe { &*(d as *const EventLoopProxy<UserEvent>) };
-    let _ = proxy.send_event(UserEvent::MpvFrame);
-}
-
-unsafe extern "C" fn get_proc(ctx: *mut c_void, name: *const c_char) -> *mut c_void {
-    let display = &*(ctx as *const glutin::display::Display);
-    display.get_proc_address(CStr::from_ptr(name)) as *mut c_void
-}
-
-struct Gl {
-    window: Arc<Window>,
-    surface: Surface<WindowSurface>,
-    context: PossiblyCurrentContext,
-    display: Box<glutin::display::Display>,
-    gl: Arc<glow::Context>,
-    painter: egui_glow::Painter,
-    egui: egui_winit::State,
-    gfx: gfx::Gfx,
-}
-
 struct App {
-    proxy: EventLoopProxy<UserEvent>,
-    proxy_ptr: *mut c_void,
-    player: Option<Player>,
-    gl: Option<Gl>,
+    player: Player,
+    overlay: overlay::Overlay,
     ctx: egui::Context,
-    files: Vec<String>,
-    mods: ModifiersState,
+    start: Instant,
+    events: Vec<Event>,
+    pointer: Option<egui::Pos2>,
+    tx: Sender<Message>,
+    rx: Receiver<Message>,
+    waker: mpv::Waker,
+    /// Prochaine image de l'interface (animation, horloge), None si rien n'est prévu.
+    next_frame: Option<Instant>,
+    dirty: bool,
+    last_frame: Instant,
+    visible: bool,
+    shader_opts: String,
+    hover_section: bool,
+    panel_section: bool,
     last_save: Instant,
-    resized: bool,
-    frame_pending: bool,
-    /// La texture vidéo n'a plus la dernière image (rendu direct entre-temps).
-    texture_stale: bool,
+    seek_from: Option<f64>,
+    indexing: Vec<String>,
 }
 
 impl App {
-    fn player(&mut self) -> &mut Player {
-        self.player.as_mut().unwrap()
-    }
-
     fn open(&mut self, path: &str) {
         let ext = Path::new(path).extension().map(|e| e.to_string_lossy().to_ascii_lowercase()).unwrap_or_default();
         if SUBTITLE_EXT.contains(&ext.as_str()) {
-            let p = self.player();
             let title = Path::new(path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-            p.mpv.command(&["sub-add", path, "select", &title]);
-            p.say(format!("{} : {title}", tr("Sous-titres", "Subtitles")));
-            self.index(path.to_owned(), Some(path.to_owned()));
+            self.player.mpv.command(&["sub-add", path, "select", &title]);
+            self.player.say(format!("{} : {title}", tr("Sous-titres", "Subtitles")));
         } else {
-            self.player().save();
-            let p = self.player();
-            p.embedded.clear();
-            p.external.clear();
-            p.panel = None;
-            p.mpv.command(&["loadfile", path, "replace"]);
+            self.player.save();
+            self.player.embedded.clear();
+            self.player.external.clear();
+            self.player.panel = None;
+            self.player.mpv.command(&["loadfile", path, "replace"]);
         }
+        self.dirty = true;
     }
 
-    /// Lit l'index des sous-titres dans un fil à part : la lecture démarre sans l'attendre.
+    /// Index des sous-titres lu dans un fil à part : la lecture démarre sans l'attendre.
     fn index(&mut self, path: String, external: Option<String>) {
         if external.is_none() {
-            self.player().indexing = true;
+            self.player.indexing = true;
         }
-        let proxy = self.proxy.clone();
+        let (tx, waker) = (self.tx.clone(), self.waker);
         std::thread::spawn(move || {
             let tracks = std::fs::File::open(&path).ok().and_then(|f| bioplay_core::index(f).ok()).unwrap_or_default();
-            let _ = proxy.send_event(UserEvent::Indexed { path, external, tracks });
+            let _ = tx.send(Message::Indexed { path, external, tracks });
+            waker.wake();
         });
     }
 
     fn pick(&self) {
-        let proxy = self.proxy.clone();
+        let (tx, waker) = (self.tx.clone(), self.waker);
         std::thread::spawn(move || {
             let f = rfd::FileDialog::new()
                 .set_title(tr("Ouvrir une vidéo", "Open a video"))
@@ -126,312 +103,206 @@ impl App {
                 .add_filter(tr("Tous les fichiers", "All files"), &["*"])
                 .pick_file();
             if let Some(f) = f {
-                let _ = proxy.send_event(UserEvent::Picked(f.to_string_lossy().into_owned()));
+                let _ = tx.send(Message::Picked(f.to_string_lossy().into_owned()));
+                waker.wake();
             }
         });
     }
 
-    fn redraw(&self) {
-        if let Some(g) = &self.gl {
-            g.window.request_redraw();
-        }
+    fn section(&self, name: &str, on: bool) {
+        self.player.mpv.command(&[if on { "enable-section" } else { "disable-section" }, name]);
     }
 
     fn poke(&mut self) {
-        if let Some(p) = self.player.as_mut() {
-            p.activity = Instant::now();
-        }
-        self.redraw();
+        self.player.activity = Instant::now();
+        self.dirty = true;
     }
 
-    fn sync_window(&mut self) {
-        let Some(g) = &self.gl else { return };
-        let Some(p) = &self.player else { return };
-        let want = p.mpv.state.fullscreen;
-        if want != g.window.fullscreen().is_some() {
-            g.window.set_fullscreen(want.then_some(Fullscreen::Borderless(None)));
+    // --- Raccourcis et souris -------------------------------------------------------------------
+
+    fn binding(&mut self, name: &str, state: &str) {
+        let down = state.starts_with('d') || state.starts_with('r') || state.starts_with('p');
+        let up = state.starts_with('u');
+        if matches!(name, "mouse-left" | "wheel-up" | "wheel-down") {
+            let pos = self.pointer.unwrap_or(egui::Pos2::ZERO);
+            match name {
+                "mouse-left" if down || up => self.events.push(Event::PointerButton {
+                    pos,
+                    button: PointerButton::Primary,
+                    pressed: down,
+                    modifiers: Default::default(),
+                }),
+                "wheel-up" | "wheel-down" if down => self.events.push(Event::MouseWheel {
+                    unit: egui::MouseWheelUnit::Line,
+                    delta: vec2(0.0, if name == "wheel-up" { 1.0 } else { -1.0 }),
+                    modifiers: Default::default(),
+                    phase: egui::TouchPhase::Move,
+                    source: egui::MouseWheelSource::Wheel,
+                }),
+                _ => {}
+            }
+            self.dirty = true;
+            return;
         }
-        let title = if p.has_file() { format!("{} — bioplay", p.mpv.state.title) } else { "bioplay".into() };
-        g.window.set_title(&title);
-    }
-
-    /// Fréquence réelle de l'écran : avec le rendu intégré, mpv ne la connaît pas, et il en a
-    /// besoin pour caler les images (statistiques de synchro, `video-sync=display-*`).
-    fn tell_refresh_rate(&mut self) {
-        let Some(g) = &self.gl else { return };
-        let hz = g.window.current_monitor().and_then(|m| m.refresh_rate_millihertz()).map(|m| m as f64 / 1000.0);
-        if let (Some(hz), Some(p)) = (hz, self.player.as_ref()) {
-            p.mpv.set_f64("override-display-fps", hz);
+        if !down {
+            return;
         }
-    }
-
-    fn render(&mut self) {
-        let (Some(g), Some(p)) = (self.gl.as_mut(), self.player.as_mut()) else { return };
-        let size = g.window.inner_size();
-        let (w, h) = (size.width.max(1) as i32, size.height.max(1) as i32);
-        let has_video = p.has_file();
-        let new_frame = has_video && p.mpv.frame_ready();
-
-        // L'interface d'abord : elle dit s'il y a du verre à l'écran.
-        let raw = g.egui.take_egui_input(&g.window);
-        let ppp = g.window.scale_factor() as f32;
-        let mut glass = Vec::new();
-        let mut actions = Vec::new();
-        let mut out = self.ctx.run_ui(raw, |ui| {
-            let (gl_list, a) = ui::draw(ui.ctx(), p, ppp);
-            glass = gl_list;
-            actions = a;
-        });
-        g.egui.handle_platform_output(&g.window, out.platform_output);
-        let prims = self.ctx.tessellate(out.shapes, out.pixels_per_point);
-
-        if has_video && glass.is_empty() {
-            // Interface masquée : mpv dessine directement à l'écran, comme mpv seul. Aucune
-            // copie ni flou : en 4K, le coût est exactement celui de mpv.
-            p.mpv.render(0, w, h, true);
-            self.texture_stale = true;
-        } else {
-            if has_video {
-                // Verre visible : mpv dessine dans une texture que le verre floute et réfracte.
-                let fbo = g.gfx.video_fbo(&g.gl, w, h);
-                if new_frame || self.resized || self.frame_pending || self.texture_stale {
-                    p.mpv.render(fbo, w, h, true);
-                    g.gfx.mark_frame();
-                    self.texture_stale = false;
-                }
+        let p = &mut self.player;
+        match name {
+            // Flèches : ligne suivante / précédente (au plus 10 s) ; Ctrl : 10 s tout court.
+            "right" => p.step_line_or_ten(1),
+            "left" => p.step_line_or_ten(-1),
+            "ctrl-right" | "ctrl-left" => {
+                let dir = if name == "ctrl-right" { 1.0 } else { -1.0 };
+                p.mpv.seek(p.mpv.state.position + 10.0 * dir, true);
+                p.say(if dir > 0.0 { "+10 s" } else { "−10 s" });
             }
-            g.gfx.compose(&g.gl, w, h, has_video, &glass);
-        }
-        self.resized = false;
-        self.frame_pending = false;
-        g.painter.paint_and_update_textures([w as u32, h as u32], out.pixels_per_point, &prims, &mut out.textures_delta);
-        g.window.pre_present_notify();
-        let _ = g.surface.swap_buffers(&g.context);
-        p.mpv.report_swap();
-
-        let idle = !p.mpv.state.paused && p.panel.is_none() && !p.over_ui && p.activity.elapsed() > Duration::from_millis(2200);
-        g.window.set_cursor_visible(!(has_video && idle));
-
-        if let Some(vo) = out.viewport_output.get(&egui::ViewportId::ROOT) {
-            if vo.repaint_delay.is_zero() {
-                g.window.request_redraw();
-            }
-        }
-        for a in actions {
-            match a {
-                ui::Action::Open => self.pick(),
-                ui::Action::Play(path) => self.open(&path),
-                ui::Action::Forget(path) => self.player().forget(&path),
-            }
-        }
-    }
-
-    /// Touches gérées ici avant mpv ; tout le reste part à mpv via `keypress`.
-    fn key(&mut self, key: &Key, location: winit::keyboard::KeyLocation) {
-        let p = self.player.as_mut().unwrap();
-        let ctrl = self.mods.control_key();
-        match key {
-            Key::Named(NamedKey::Escape) if p.panel.is_some() => {
-                p.panel = None;
-                return;
-            }
-            Key::Named(NamedKey::Tab) if !ctrl => {
-                p.panel = if p.panel == Some(Panel::List) { None } else { Some(Panel::List) };
-                return;
-            }
-            // Flèches seules : sous-titre précédent / suivant, ou 10 s s'il est plus loin.
-            // Ctrl + flèche : 10 s, sans tenir compte des sous-titres.
-            Key::Named(NamedKey::ArrowLeft | NamedKey::ArrowRight) if !self.mods.shift_key() && !self.mods.alt_key() => {
-                let dir = if matches!(key, Key::Named(NamedKey::ArrowRight)) { 1 } else { -1 };
-                if ctrl {
-                    let t = p.mpv.state.position + 10.0 * dir as f64;
-                    p.mpv.seek(t, true);
-                    p.say(if dir > 0 { "+10 s" } else { "−10 s" });
-                } else {
-                    p.step_line_or_ten(dir);
-                }
-                return;
-            }
+            "tab" => p.panel = if p.panel == Some(Panel::List) { None } else { Some(Panel::List) },
+            "esc" => p.panel = None,
             _ => {}
         }
-        if let Some(name) = keys::name(key, location, self.mods) {
-            p.key_seek = Some((Instant::now(), p.mpv.state.position));
-            p.mpv.command(&["keypress", &name]);
+        // Le clavier n'affiche pas le contrôleur : seule la bulle confirme l'action.
+        self.dirty = true;
+    }
+
+    fn mouse_moved(&mut self) {
+        let s = &self.player.mpv.state;
+        let scale = s.scale as f32;
+        match s.mouse {
+            Some((x, y)) => {
+                let pos = pos2(x as f32 / scale, y as f32 / scale);
+                if self.pointer != Some(pos) {
+                    self.events.push(Event::PointerMoved(pos));
+                    self.pointer = Some(pos);
+                    self.poke();
+                }
+            }
+            None => {
+                if self.pointer.take().is_some() {
+                    self.events.push(Event::PointerGone);
+                    self.dirty = true;
+                }
+            }
         }
     }
+
+    // --- Événements de mpv ----------------------------------------------------------------------
 
     fn on_change(&mut self, change: mpv::Change) {
         match change {
-            mpv::Change::Shutdown => {}
+            mpv::Change::Shutdown | mpv::Change::Ended => {}
+            mpv::Change::Binding(name, state) => self.binding(&name, &state),
             mpv::Change::Loaded => {
-                self.player().loaded_at = Some(Instant::now());
-                let path = self.player().mpv.state.path.clone();
+                self.player.loaded_at = Some(Instant::now());
+                let path = self.player.mpv.state.path.clone();
                 if Path::new(&path).is_file() {
                     self.index(path, None);
                 }
-                self.player().save();
+                self.player.save();
+                self.dirty = true;
             }
-            mpv::Change::Ended => {}
-            // Saut provoqué par un raccourci mpv (flèches haut/bas…) : annoncé dans une bulle.
+            mpv::Change::Seeking => {
+                let own = self.player.mpv.own_seeks.replace(0) > 0;
+                if !own && self.seek_from.is_none() {
+                    self.seek_from = Some(self.player.mpv.state.position);
+                }
+            }
+            // Saut venu d'un raccourci mpv (flèches haut/bas…) : annoncé dans une bulle.
             mpv::Change::Restarted => {
-                let p = self.player();
-                if let Some((at, before)) = p.key_seek.take() {
-                    let d = p.mpv.state.position - before;
-                    if at.elapsed() < Duration::from_millis(1500) && d.abs() >= 0.9 {
-                        p.say(player::delta(d));
+                if let Some(before) = self.seek_from.take() {
+                    let d = self.player.mpv.state.position - before;
+                    if d.abs() >= 0.9 && self.player.loaded_at.is_some_and(|t| t.elapsed() > Duration::from_secs(1)) {
+                        self.player.say(player::delta(d));
+                        self.dirty = true;
                     }
                 }
             }
-            mpv::Change::Property(name) => {
-                let p = self.player.as_mut().unwrap();
-                let s = &p.mpv.state;
-                let value = match name {
-                    "aid" => s.aid.map(|v| v as f64).unwrap_or(-1.0),
-                    "sid" => s.sid.map(|v| v as f64).unwrap_or(-1.0),
-                    "speed" => s.speed,
-                    "volume" => s.volume,
-                    "sub-delay" => s.sub_delay,
-                    "audio-delay" => s.audio_delay,
-                    _ => f64::NAN,
-                };
-                let settled = p.loaded_at.is_some_and(|t| t.elapsed() > Duration::from_millis(800));
-                let previous = if value.is_nan() { None } else { p.shown.insert(name, value) };
-                // Décalage des sous-titres : passer du négatif au positif (ou l'inverse) s'arrête
-                // d'abord sur 0, sans décalage.
-                if name == "sub-delay" && settled {
-                    if let Some(old) = previous {
-                        if (old < -1e-6 && value > 1e-6) || (old > 1e-6 && value < -1e-6) {
-                            p.mpv.set_f64("sub-delay", 0.0);
-                            return;
-                        }
-                    }
+            mpv::Change::Property(name) => self.on_property(name),
+        }
+    }
+
+    fn on_property(&mut self, name: &'static str) {
+        match name {
+            "mouse-pos" => return self.mouse_moved(),
+            // L'horloge et la barre ne bougent que si l'interface est visible.
+            "time-pos" | "demuxer-cache-time" => {
+                if self.visible && self.last_frame.elapsed() > Duration::from_millis(33) {
+                    self.dirty = true;
                 }
-                let changed = previous.is_some_and(|old| (old - value).abs() > 1e-9);
-                let msg = if !(settled && changed) { None } else { match name {
-                    "speed" if p.has_file() => Some(format!("{} {}", tr("Vitesse", "Speed"), player::speed_label(s.speed))),
-                    "volume" if p.has_file() => Some(format!("Volume {:.0} %", s.volume)),
-                    "sub-delay" if p.has_file() => Some(if s.sub_delay.abs() < 1e-6 { tr("Sous-titres : aucun décalage", "Subtitles: no delay").into() } else { format!("{} {:+.0} ms", tr("Sous-titres", "Subtitles"), s.sub_delay * 1000.0) }),
-                    "audio-delay" if p.has_file() => Some(format!("Audio {:+.0} ms", s.audio_delay * 1000.0)),
-                    "aid" => s.tracks.iter().find(|t| t.kind == "audio" && Some(t.id) == s.aid)
-                        .map(|t| format!("{} : {}", tr("Audio", "Audio"), mpv::track_label(t))),
-                    "sid" => Some(match p.sub_track() {
-                        Some(t) => format!("{} : {}", tr("Sous-titres", "Subtitles"), mpv::track_label(t)),
-                        None => tr("Sous-titres désactivés", "Subtitles off").into(),
-                    }),
-                    _ => None,
-                } };
-                if let Some(m) = msg {
-                    p.say(m);
-                }
-                if matches!(name, "fullscreen" | "media-title") {
-                    self.sync_window();
+                return;
+            }
+            "track-list" => self.index_external(),
+            _ => {}
+        }
+        self.dirty = true;
+        let p = &mut self.player;
+        let s = &p.mpv.state;
+        let value = match name {
+            "aid" => s.aid.map(|v| v as f64).unwrap_or(-1.0),
+            "sid" => s.sid.map(|v| v as f64).unwrap_or(-1.0),
+            "speed" => s.speed,
+            "volume" => s.volume,
+            "sub-delay" => s.sub_delay,
+            "audio-delay" => s.audio_delay,
+            _ => return,
+        };
+        let settled = p.loaded_at.is_some_and(|t| t.elapsed() > Duration::from_millis(800));
+        let previous = p.shown.insert(name, value);
+        // Décalage des sous-titres : changer de signe s'arrête d'abord sur 0.
+        if name == "sub-delay" && settled {
+            if let Some(old) = previous {
+                if (old < -1e-6 && value > 1e-6) || (old > 1e-6 && value < -1e-6) {
+                    p.mpv.set_f64("sub-delay", 0.0);
+                    return;
                 }
             }
         }
-    }
-}
-
-impl ApplicationHandler<UserEvent> for App {
-    fn resumed(&mut self, el: &ActiveEventLoop) {
-        if self.gl.is_some() {
+        if !(settled && previous.is_some_and(|old| (old - value).abs() > 1e-9)) {
             return;
         }
-        // app_id « bioplay » : icône et entrée du lanceur reconnues par le compositeur.
-        let attrs = winit::platform::wayland::WindowAttributesExtWayland::with_name(
-            Window::default_attributes().with_title("bioplay").with_inner_size(winit::dpi::LogicalSize::new(1280.0, 720.0)),
-            "bioplay",
-            "",
-        );
-        let template = ConfigTemplateBuilder::new().with_alpha_size(8).prefer_hardware_accelerated(Some(true));
-        let (window, config) = DisplayBuilder::new()
-            .with_window_attributes(Some(attrs))
-            .build(el, template, |configs| configs.min_by_key(|c| c.num_samples()).unwrap())
-            .expect("fenêtre OpenGL");
-        let window = Arc::new(window.unwrap());
-        let raw = window.window_handle().ok().map(|h| h.as_raw());
-        let display = config.display();
-        let core = ContextAttributesBuilder::new()
-            .with_profile(GlProfile::Core)
-            .with_context_api(ContextApi::OpenGl(Some(Version::new(3, 3))))
-            .build(raw);
-        let context = unsafe { display.create_context(&config, &core) }.expect("contexte OpenGL 3.3");
-        let sattrs = window.build_surface_attributes(Default::default()).unwrap();
-        let surface = unsafe { display.create_window_surface(&config, &sattrs) }.unwrap();
-        let context = context.make_current(&surface).unwrap();
-        // Pas d'attente de la synchro dans swap_buffers : sur un bureau virtuel caché, le compositeur ne
-        // demande plus d'images et l'appel bloquerait l'app (Hyprland la croirait plantée). Le rythme
-        // vient de winit (pre_present_notify + rappels d'image du compositeur).
-        let _ = surface.set_swap_interval(&context, SwapInterval::DontWait);
-        let gl = Arc::new(unsafe { glow::Context::from_loader_function_cstr(|s| display.get_proc_address(s)) });
-        let painter = egui_glow::Painter::new(gl.clone(), "", None, true).expect("egui_glow");
-        let egui = egui_winit::State::new(self.ctx.clone(), egui::ViewportId::ROOT, &window, Some(window.scale_factor() as f32), None, Some(painter.max_texture_side()));
-        let display = Box::new(display);
-
-        // mpv : configuration de l'utilisateur, rendu dans notre contexte OpenGL.
-        let mut m = mpv::Mpv::new(on_wakeup, self.proxy_ptr).expect("libmpv");
-        // Options mpv en ligne de commande, comme mpv : `bioplay --mute=yes --sub-delay=0.5 film.mkv`.
-        for a in std::env::args().skip(1) {
-            if let Some((k, v)) = a.strip_prefix("--").and_then(|o| o.split_once('=')) {
-                if k != "panel" {
-                    m.set(k, v);
-                }
-            }
-        }
-        let wl = match window.display_handle().map(|h| h.as_raw()) {
-            Ok(RawDisplayHandle::Wayland(h)) => h.display.as_ptr(),
-            _ => std::ptr::null_mut(),
-        };
-        m.init_render(get_proc, &*display as *const _ as *mut c_void, wl, on_frame, self.proxy_ptr).expect("rendu mpv");
-        let gfx = gfx::Gfx::new(&gl);
-        self.gl = Some(Gl { window, surface, context, display, gl, painter, egui, gfx });
-        self.player = Some(Player::new(m));
-        let files = std::mem::take(&mut self.files);
-        for (i, f) in files.iter().enumerate() {
-            if i == 0 {
-                self.open(f);
+        let msg = match name {
+            "speed" => Some(format!("{} {}", tr("Vitesse", "Speed"), player::speed_label(s.speed))),
+            "volume" => Some(format!("Volume {:.0} %", s.volume)),
+            "sub-delay" => Some(if s.sub_delay.abs() < 1e-6 {
+                tr("Sous-titres : aucun décalage", "Subtitles: no delay").into()
             } else {
-                self.player().mpv.command(&["loadfile", f, "append"]);
-            }
-        }
-        self.sync_window();
-        self.tell_refresh_rate();
-        // Pour les captures de développement : `--panel=list|tracks|speed|zoom`.
-        if let Some(a) = std::env::args().find_map(|a| a.strip_prefix("--panel=").map(str::to_owned)) {
-            self.player().panel = match a.as_str() {
-                "list" => Some(Panel::List),
-                "tracks" => Some(Panel::Tracks),
-                "speed" => Some(Panel::Speed),
-                "zoom" => Some(Panel::Zoom),
-                _ => None,
-            };
+                format!("{} {:+.0} ms", tr("Sous-titres", "Subtitles"), s.sub_delay * 1000.0)
+            }),
+            "audio-delay" => Some(format!("Audio {:+.0} ms", s.audio_delay * 1000.0)),
+            "aid" => s
+                .tracks
+                .iter()
+                .find(|t| t.kind == "audio" && Some(t.id) == s.aid)
+                .map(|t| format!("{} : {}", tr("Audio", "Audio"), mpv::track_label(t))),
+            "sid" => Some(match p.sub_track() {
+                Some(t) => format!("{} : {}", tr("Sous-titres", "Subtitles"), mpv::track_label(t)),
+                None => tr("Sous-titres désactivés", "Subtitles off").into(),
+            }),
+            _ => None,
+        };
+        if let Some(m) = msg {
+            p.say(m);
         }
     }
 
-    fn user_event(&mut self, el: &ActiveEventLoop, e: UserEvent) {
-        match e {
-            UserEvent::MpvEvents => {
-                let changes = self.player.as_mut().map(|p| p.mpv.poll()).unwrap_or_default();
-                for c in changes {
-                    if matches!(c, mpv::Change::Shutdown) {
-                        el.exit();
-                        return;
-                    }
-                    self.on_change(c);
-                }
-                // L'interface n'a besoin d'être redessinée que si elle est visible.
-                let p = self.player.as_ref().unwrap();
-                if p.mpv.state.paused || p.activity.elapsed() < Duration::from_secs(3) || !p.has_file() || p.message.is_some() {
-                    self.redraw();
-                }
+    /// Sous-titres ajoutés (glisser-déposer, menu) : indexés dès qu'ils apparaissent.
+    fn index_external(&mut self) {
+        let files: Vec<String> = self.player.mpv.state.tracks.iter().filter_map(|t| t.external.clone()).collect();
+        for f in files {
+            if !self.player.external.contains_key(&f) && !self.indexing.contains(&f) && Path::new(&f).is_file() {
+                self.indexing.push(f.clone());
+                self.index(f.clone(), Some(f));
             }
-            UserEvent::MpvFrame => {
-                self.frame_pending = true;
-                self.redraw();
-            }
-            UserEvent::Indexed { path, external, tracks } => {
-                let p = self.player();
+        }
+    }
+
+    fn on_message(&mut self, m: Message) {
+        match m {
+            Message::Indexed { path, external, tracks } => {
+                let p = &mut self.player;
                 match external {
                     Some(f) => {
+                        self.indexing.retain(|x| x != &f);
                         if let Some(t) = tracks.into_iter().next() {
                             p.external.insert(f, t);
                         }
@@ -442,123 +313,199 @@ impl ApplicationHandler<UserEvent> for App {
                     }
                     None => {}
                 }
-                self.redraw();
             }
-            UserEvent::Picked(path) => self.open(&path),
+            Message::Picked(path) => self.open(&path),
+        }
+        self.dirty = true;
+    }
+
+    // --- Image de l'interface ---------------------------------------------------------------------
+
+    fn frame(&mut self) {
+        let s = &self.player.mpv.state;
+        let (w, h, scale) = (s.osd_w as f32, s.osd_h as f32, s.scale as f32);
+        if w < 1.0 || h < 1.0 {
+            return;
+        }
+        let mut raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, vec2(w / scale, h / scale))),
+            time: Some(self.start.elapsed().as_secs_f64()),
+            events: std::mem::take(&mut self.events),
+            focused: true,
+            ..Default::default()
+        };
+        raw.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(scale);
+        let mut plates = Vec::new();
+        let mut actions = Vec::new();
+        let player = &mut self.player;
+        let mut out = self.ctx.run_ui(raw, |ui| {
+            let (p, a) = ui::draw(ui.ctx(), player, scale);
+            plates = p;
+            actions = a;
+        });
+        let prims = self.ctx.tessellate(std::mem::take(&mut out.shapes), out.pixels_per_point);
+        self.overlay.present(&self.player.mpv, &prims, &mut out.textures_delta, [w as u32, h as u32], out.pixels_per_point);
+        self.visible = !prims.is_empty();
+        self.last_frame = Instant::now();
+
+        // Verre : rectangles passés au shader, en pixels de l'image vidéo (hors bandes noires).
+        let s = &self.player.mpv.state;
+        let mut opts = format!("glass_n={}", plates.len().min(4));
+        for (i, g) in plates.iter().take(4).enumerate() {
+            opts += &format!(
+                ",r{i}x={:.1},r{i}y={:.1},r{i}w={:.1},r{i}h={:.1},r{i}r={:.1},r{i}a={:.3}",
+                g.x - s.margin_left as f32,
+                g.y - s.margin_top as f32,
+                g.w,
+                g.h,
+                g.radius,
+                g.alpha
+            );
+        }
+        if opts != self.shader_opts {
+            self.player.mpv.set("glsl-shader-opts", &opts);
+            self.shader_opts = opts;
+        }
+
+        // Souris sur l'interface : molette et double clic pour elle, pas pour mpv.
+        let over = self.pointer.and_then(|p| self.ctx.layer_id_at(p)).is_some_and(|l| l.order != Order::Background);
+        self.player.over_ui = over;
+        if over != self.hover_section {
+            self.section("bioplay-hover", over);
+            self.hover_section = over;
+        }
+        let panel = self.player.panel.is_some();
+        if panel != self.panel_section {
+            self.section("bioplay-panel", panel);
+            self.panel_section = panel;
+        }
+
+        self.next_frame = out
+            .viewport_output
+            .get(&egui::ViewportId::ROOT)
+            .map(|v| v.repaint_delay)
+            .filter(|d| *d < Duration::from_secs(3600))
+            .map(|d| Instant::now() + d.max(Duration::from_millis(8)));
+        for a in actions {
+            match a {
+                ui::Action::Open => self.pick(),
+                ui::Action::Play(path) => self.open(&path),
+                ui::Action::Forget(path) => self.player.forget(&path),
+            }
         }
     }
 
-    fn window_event(&mut self, el: &ActiveEventLoop, _: WindowId, event: WindowEvent) {
-        let Some(g) = self.gl.as_mut() else { return };
-        // Le clavier va à mpv (raccourcis de l'utilisateur), pas à egui.
-        if !matches!(event, WindowEvent::KeyboardInput { .. }) {
-            let r = g.egui.on_window_event(&g.window, &event);
-            if r.repaint {
-                g.window.request_redraw();
+    fn run(&mut self) {
+        loop {
+            let now = Instant::now();
+            // Réveils : prochaine image prévue, masquage de l'interface après inactivité.
+            let hide_at = self.player.activity + Duration::from_millis(2300);
+            let mut wake = now + Duration::from_secs(1);
+            if let Some(t) = self.next_frame {
+                wake = wake.min(t);
             }
-        }
-        match event {
-            WindowEvent::CloseRequested => el.exit(),
-            WindowEvent::Moved(_) | WindowEvent::ScaleFactorChanged { .. } => {
-                self.tell_refresh_rate();
+            if self.visible && hide_at > now {
+                wake = wake.min(hide_at);
             }
-            WindowEvent::Resized(s) => {
-                g.surface.resize(&g.context, NonZeroU32::new(s.width.max(1)).unwrap(), NonZeroU32::new(s.height.max(1)).unwrap());
-                self.resized = true;
-                self.redraw();
-            }
-            WindowEvent::ModifiersChanged(m) => self.mods = m.state(),
-            WindowEvent::KeyboardInput { event, .. } if event.state == ElementState::Pressed => {
-                // Le clavier n'affiche pas le contrôleur (il masquerait les sous-titres) :
-                // seule la souris le fait apparaître.
-                self.key(&event.logical_key, event.location);
-                self.redraw();
-            }
-            WindowEvent::CursorMoved { .. } => self.poke(),
-            WindowEvent::MouseWheel { delta, .. } => {
-                // Panneau ouvert : la molette fait défiler ses listes ; sinon elle va à mpv.
-                if self.player().panel.is_none() {
-                    let dy = match delta {
-                        MouseScrollDelta::LineDelta(_, y) => y,
-                        MouseScrollDelta::PixelDelta(p) => p.y as f32,
-                    };
-                    if dy != 0.0 && !self.ctx.egui_is_using_pointer() {
-                        let mut name = String::new();
-                        if self.mods.control_key() {
-                            name += "Ctrl+";
-                        }
-                        if self.mods.shift_key() {
-                            name += "Shift+";
-                        }
-                        name += if dy > 0.0 { "WHEEL_UP" } else { "WHEEL_DOWN" };
-                        let p = self.player();
-                        if p.panel.is_none() {
-                            p.mpv.command(&["keypress", &name]);
-                        }
-                    }
+            let timeout = if self.dirty { 0.0 } else { wake.saturating_duration_since(now).as_secs_f64() };
+            for c in self.player.mpv.wait(timeout) {
+                if matches!(c, mpv::Change::Shutdown) {
+                    return;
                 }
-                self.poke();
+                self.on_change(c);
             }
-            WindowEvent::DroppedFile(path) => {
-                let s = path.to_string_lossy().into_owned();
-                self.open(&s);
+            while let Ok(m) = self.rx.try_recv() {
+                self.on_message(m);
             }
-            WindowEvent::RedrawRequested => self.render(),
-            _ => {}
-        }
-    }
-
-    /// Tout est libéré tant que la connexion Wayland existe encore : la libérer après faisait
-    /// planter l'app à chaque fermeture.
-    fn exiting(&mut self, _: &ActiveEventLoop) {
-        if let Some(p) = self.player.as_mut() {
-            p.save();
-        }
-        self.player = None;
-        self.gl = None;
-    }
-
-    fn about_to_wait(&mut self, el: &ActiveEventLoop) {
-        // Position notée toutes les 15 s pendant la lecture : reprise même après un arrêt brutal.
-        if let Some(p) = self.player.as_mut() {
-            if p.has_file() && !p.mpv.state.paused && self.last_save.elapsed() > Duration::from_secs(15) {
-                p.save();
+            let now = Instant::now();
+            if self.next_frame.is_some_and(|t| t <= now) || (self.visible && hide_at <= now) {
+                self.dirty = true;
+            }
+            if self.dirty {
+                self.dirty = false;
+                self.frame();
+            }
+            // Position notée toutes les 15 s pendant la lecture : reprise même après un arrêt brutal.
+            if self.player.has_file() && !self.player.mpv.state.paused && self.last_save.elapsed() > Duration::from_secs(15) {
+                self.player.save();
                 self.last_save = Instant::now();
-            }
-            let wake = if p.has_file() && !p.mpv.state.paused { Duration::from_secs(1) } else { Duration::from_secs(5) };
-            // Réveil pour masquer l'interface et le curseur après inactivité.
-            let hide_at = p.activity + Duration::from_millis(2300);
-            let next = if hide_at > Instant::now() { hide_at } else { Instant::now() + wake };
-            el.set_control_flow(ControlFlow::WaitUntil(next));
-            if hide_at <= Instant::now() && hide_at + Duration::from_millis(500) > Instant::now() {
-                self.redraw();
             }
         }
     }
 }
 
+fn runtime_dir() -> PathBuf {
+    std::env::var_os("XDG_RUNTIME_DIR").map(PathBuf::from).unwrap_or_else(std::env::temp_dir)
+}
+
 fn main() {
-    let files: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with("--")).collect();
-    let el = EventLoop::<UserEvent>::with_user_event().build().expect("boucle d'événements");
-    let proxy = el.create_proxy();
-    let proxy_ptr = Box::into_raw(Box::new(proxy.clone())) as *mut c_void;
-    let mut app = App {
-        proxy,
-        proxy_ptr,
-        player: None,
-        gl: None,
-        ctx: egui::Context::default(),
-        files,
-        mods: ModifiersState::empty(),
-        last_save: Instant::now(),
-        resized: true,
-        frame_pending: false,
-        texture_stale: true,
-    };
     i18n::init();
-    ui::fonts(&app.ctx);
-    el.run_app(&mut app).expect("exécution");
-    // mpv d'abord (son rendu utilise le contexte GL), puis le reste.
-    app.player = None;
-    app.gl = None;
+    let mpv = mpv::Mpv::new().expect("libmpv");
+    // Options mpv en ligne de commande, comme mpv : `bioplay --mute=yes --start=20 film.mkv`.
+    let mut files = Vec::new();
+    let mut panel = None;
+    for a in std::env::args().skip(1) {
+        if let Some(o) = a.strip_prefix("--") {
+            match o.split_once('=') {
+                Some(("panel", v)) => panel = Some(v.to_owned()),
+                Some((k, v)) => mpv.set(k, v),
+                None => mpv.set(o, "yes"),
+            }
+        } else {
+            files.push(a);
+        }
+    }
+
+    // Le verre : shader ajouté à ceux de l'utilisateur, inactif tant que glass_n vaut 0.
+    let shader = runtime_dir().join("bioplay-glass.glsl");
+    let _ = std::fs::write(&shader, GLASS_SHADER);
+    mpv.command_sync(&["change-list", "glsl-shaders", "append", &shader.to_string_lossy()]);
+    mpv.command_sync(&["define-section", "bioplay", BINDINGS, "force"]);
+    mpv.command_sync(&["define-section", "bioplay-hover", HOVER_BINDINGS, "force"]);
+    mpv.command_sync(&["define-section", "bioplay-panel", PANEL_BINDINGS, "force"]);
+    mpv.command_sync(&["enable-section", "bioplay"]);
+
+    let overlay = overlay::Overlay::new().expect("contexte GPU de l'interface");
+    let ctx = egui::Context::default();
+    ui::fonts(&ctx);
+    let (tx, rx) = channel();
+    let waker = mpv.waker();
+    let mut app = App {
+        player: Player::new(mpv),
+        overlay,
+        ctx,
+        start: Instant::now(),
+        events: Vec::new(),
+        pointer: None,
+        tx,
+        rx,
+        waker,
+        next_frame: None,
+        dirty: true,
+        last_frame: Instant::now(),
+        visible: false,
+        shader_opts: String::new(),
+        hover_section: false,
+        panel_section: false,
+        last_save: Instant::now(),
+        seek_from: None,
+        indexing: Vec::new(),
+    };
+    app.player.panel = match panel.as_deref() {
+        Some("list") => Some(Panel::List),
+        Some("tracks") => Some(Panel::Tracks),
+        Some("speed") => Some(Panel::Speed),
+        Some("zoom") => Some(Panel::Zoom),
+        _ => None,
+    };
+    for (i, f) in files.iter().enumerate() {
+        if i == 0 {
+            app.open(f);
+        } else {
+            app.player.mpv.command(&["loadfile", f, "append"]);
+        }
+    }
+    app.run();
+    app.player.save();
+    app.overlay.hide(&app.player.mpv);
 }

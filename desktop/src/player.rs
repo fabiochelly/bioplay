@@ -127,7 +127,10 @@ impl Player {
         }
         match self.cue_after(steps, self.mpv.state.position) {
             Some(c) => self.mpv.seek(self.cue_time(&c), true),
-            None => self.mpv.command(&["sub-seek", &steps.to_string()]),
+            None => {
+                self.mpv.own_seeks.set(self.mpv.own_seeks.get() + 1);
+                self.mpv.command(&["sub-seek", &steps.to_string()]);
+            }
         }
     }
 
