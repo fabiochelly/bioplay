@@ -1,0 +1,14 @@
+[package]
+name = "bioplay-core"
+version = "0.1.0"
+edition = "2021"
+description = "Index des sous-titres pour bioplay : lit tous les sous-titres d'un fichier sans décoder la vidéo."
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+miniz_oxide = "0.8"
+
+[target.'cfg(target_os = "android")'.dependencies]
+jni = { version = "0.21", default-features = false }
