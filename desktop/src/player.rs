@@ -62,6 +62,8 @@ pub struct Player {
     /// (unités mpv, image de 720 lignes). Communes à toutes les vidéos, mémorisées.
     pub sub_scale: f64,
     pub sub_lift: i32,
+    /// Dernier réglage de taille ou de hauteur : un aperçu reste à l'écran un instant.
+    pub sub_preview: Option<Instant>,
 }
 
 /// Durée d'un message, de son fondu d'entrée et de son fondu de sortie, en secondes.
@@ -93,6 +95,7 @@ impl Player {
             key_seek: None,
             sub_scale: 1.0,
             sub_lift: 0,
+            sub_preview: None,
         }
         .with_subs()
     }
@@ -116,6 +119,7 @@ impl Player {
         self.sub_scale = ((self.sub_scale * 20.0).round() / 20.0 + steps as f64 * 0.05).clamp(0.5, 2.0);
         self.apply_subs();
         self.save_subs();
+        self.sub_preview = Some(Instant::now());
         self.say(format!("{} {:.0} %", crate::i18n::tr("Taille des sous-titres", "Subtitle size"), self.sub_scale * 100.0));
     }
 
@@ -123,6 +127,7 @@ impl Player {
     pub fn sub_height(&mut self, steps: i32) {
         self.sub_lift = (self.sub_lift + steps * 6).clamp(-36, 396);
         self.save_subs();
+        self.sub_preview = Some(Instant::now());
         self.say(format!("{} {}", crate::i18n::tr("Hauteur des sous-titres", "Subtitle height"), lift_label(self.sub_lift)));
     }
 
@@ -189,6 +194,17 @@ impl Player {
         let idx = self.sub_index()?;
         let i = idx.step(self.sub_clock(from), steps)?;
         Some(clone_cue(&idx.cues[i]))
+    }
+
+    /// Texte de l'aperçu : la réplique la plus proche du film, sinon une phrase d'exemple.
+    pub fn preview_text(&self) -> String {
+        let pos = self.mpv.state.position;
+        self.cue_at(pos)
+            .or_else(|| self.cue_after(-1, pos))
+            .or_else(|| self.cue_after(1, pos))
+            .map(|c| c.text)
+            .filter(|t| !t.trim().is_empty())
+            .unwrap_or_else(|| crate::i18n::tr("Aperçu des sous-titres\nTaille et hauteur", "Subtitle preview\nSize and height").into())
     }
 
     pub fn cue_at(&self, seconds: f64) -> Option<Cue> {

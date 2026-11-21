@@ -21,18 +21,36 @@ struct Texture {
     px: Vec<[u8; 4]>,
 }
 
+enum Drawn {
+    /// Rien à afficher.
+    Empty,
+    /// Image identique à la précédente.
+    Same,
+    /// Nouvelle image dans le dernier tampon rempli, à cette place.
+    New { x: i32, y: i32, w: usize, h: usize },
+}
+
+/// Image précédente : sa place, son tampon et l'empreinte de chacun de ses maillages.
+struct Last {
+    area: [i32; 4],
+    buffer: usize,
+    backdrop: bool,
+    prims: Vec<(u64, [i32; 4])>,
+}
+
 pub struct Overlay {
     textures: HashMap<TextureId, Texture>,
     buffers: [Vec<u8>; BUFFERS],
     next: usize,
     shown: bool,
+    last: Option<Last>,
     /// Fond de l'accueil, calculé une fois par taille d'écran (BGRA).
     backdrop: Option<(usize, usize, Vec<u8>)>,
 }
 
 impl Overlay {
     pub fn new() -> Result<Self, String> {
-        Ok(Self { textures: HashMap::new(), buffers: Default::default(), next: 0, shown: false, backdrop: None })
+        Ok(Self { textures: HashMap::new(), buffers: Default::default(), next: 0, shown: false, last: None, backdrop: None })
     }
 
     fn update_textures(&mut self, delta: &egui::TexturesDelta) {
@@ -71,6 +89,20 @@ impl Overlay {
         ppp: f32,
         backdrop: bool,
     ) {
+        match self.render(prims, textures, size, ppp, backdrop) {
+            Drawn::Empty => self.hide(mpv),
+            Drawn::Same => {}
+            Drawn::New { x, y, w, h } => {
+                let buf = &self.buffers[self.last.as_ref().map_or(0, |l| l.buffer)];
+                let addr = format!("&{}", buf.as_ptr() as usize);
+                mpv.command_sync(&["overlay-add", "0", &x.to_string(), &y.to_string(), &addr, "0", "bgra", &w.to_string(), &h.to_string(), &(w * 4).to_string()]);
+                self.shown = true;
+            }
+        }
+    }
+
+    /// Remplit le prochain tampon ; ne touche pas à mpv.
+    fn render(&mut self, prims: &[egui::ClippedPrimitive], textures: &mut egui::TexturesDelta, size: [u32; 2], ppp: f32, backdrop: bool) -> Drawn {
         self.update_textures(textures);
         let (w, h) = (size[0].max(1) as i32, size[1].max(1) as i32);
         // Zone dessinée : union des maillages, bornée par leurs rectangles de découpe.
@@ -91,8 +123,7 @@ impl Overlay {
             self.textures.remove(id);
         }
         if !bb.is_positive() {
-            self.hide(mpv);
-            return;
+            return Drawn::Empty;
         }
         let x0 = ((bb.min.x * ppp).floor() as i32 - 1).clamp(0, w);
         let y0 = ((bb.min.y * ppp).floor() as i32 - 1).clamp(0, h);
@@ -100,25 +131,107 @@ impl Overlay {
         let y1 = ((bb.max.y * ppp).ceil() as i32 + 1).clamp(0, h);
         let (bw, bh) = ((x1 - x0) as usize, (y1 - y0) as usize);
         if bw == 0 || bh == 0 {
-            return;
+            return Drawn::Same;
         }
         let stride = bw * 4;
+        let area = [x0, y0, bw as i32, bh as i32];
+
+        // Empreinte et emprise (pixels du tampon) de chaque maillage.
+        let prims_info: Vec<(u64, [i32; 4])> = prims
+            .iter()
+            .map(|p| match &p.primitive {
+                Primitive::Mesh(m) => {
+                    let mut r = Rect::NOTHING;
+                    for v in &m.vertices {
+                        r.extend_with(v.pos);
+                    }
+                    let r = r.intersect(p.clip_rect);
+                    let px = [
+                        ((r.min.x * ppp).floor() as i32 - 1 - x0).clamp(0, bw as i32),
+                        ((r.min.y * ppp).floor() as i32 - 1 - y0).clamp(0, bh as i32),
+                        ((r.max.x * ppp).ceil() as i32 + 1 - x0).clamp(0, bw as i32),
+                        ((r.max.y * ppp).ceil() as i32 + 1 - y0).clamp(0, bh as i32),
+                    ];
+                    (mesh_hash(p.clip_rect, m), px)
+                }
+                _ => (0, [0; 4]),
+            })
+            .collect();
+
+        // Seule la zone qui a changé est redessinée (un survol ne touche qu'un bouton) ; rien
+        // n'a changé : rien à faire. Toute l'image si la taille, le fond ou les textures changent.
+        let textures_changed = !textures.set.is_empty() || !textures.free.is_empty();
+        let damage = match &self.last {
+            Some(l) if l.area == area && l.backdrop == backdrop && !textures_changed => {
+                let mut before: HashMap<u64, Vec<[i32; 4]>> = HashMap::new();
+                for (h, r) in &l.prims {
+                    before.entry(*h).or_default().push(*r);
+                }
+                let mut d = [i32::MAX, i32::MAX, i32::MIN, i32::MIN];
+                let mut add = |r: [i32; 4]| {
+                    if r[0] < r[2] && r[1] < r[3] {
+                        d = [d[0].min(r[0]), d[1].min(r[1]), d[2].max(r[2]), d[3].max(r[3])];
+                    }
+                };
+                for (h, r) in &prims_info {
+                    match before.get_mut(h).and_then(|v| v.pop()) {
+                        Some(_) => {}
+                        None => add(*r),
+                    }
+                }
+                for rs in before.values() {
+                    for r in rs {
+                        add(*r);
+                    }
+                }
+                if d[0] >= d[2] {
+                    return Drawn::Same;
+                }
+                Some((l.buffer, d))
+            }
+            _ => None,
+        };
+
         let mut buf = std::mem::take(&mut self.buffers[self.next]);
         buf.clear();
-        if backdrop {
-            buf.extend_from_slice(self.backdrop(w as usize, h as usize));
-        } else {
-            buf.resize(stride * bh, 0);
-        }
+        let full = [0, 0, bw as i32, bh as i32];
+        let zone = match damage {
+            Some((prev, d)) => {
+                // Copie de l'image précédente, zone abîmée remise à neuf (fond ou transparent).
+                buf.extend_from_slice(&self.buffers[prev]);
+                let row = (d[2] - d[0]) as usize * 4;
+                for y in d[1]..d[3] {
+                    let o = y as usize * stride + d[0] as usize * 4;
+                    if backdrop {
+                        let src = &self.backdrop(w as usize, h as usize)[o..o + row];
+                        buf[o..o + row].copy_from_slice(src);
+                    } else {
+                        buf[o..o + row].fill(0);
+                    }
+                }
+                d
+            }
+            None => {
+                if backdrop {
+                    buf.extend_from_slice(self.backdrop(w as usize, h as usize));
+                } else {
+                    buf.resize(stride * bh, 0);
+                }
+                full
+            }
+        };
         let mut canvas = Canvas { buf: &mut buf, w: bw, h: bh, ox: x0 as f32, oy: y0 as f32 };
-        for p in prims {
+        for (p, (_, r)) in prims.iter().zip(&prims_info) {
             let Primitive::Mesh(m) = &p.primitive else { continue };
+            if r[2] <= zone[0] || r[0] >= zone[2] || r[3] <= zone[1] || r[1] >= zone[3] {
+                continue;
+            }
             let Some(tex) = self.textures.get(&m.texture_id) else { continue };
             let clip = [
-                ((p.clip_rect.min.x * ppp).round() as i32 - x0).clamp(0, bw as i32),
-                ((p.clip_rect.min.y * ppp).round() as i32 - y0).clamp(0, bh as i32),
-                ((p.clip_rect.max.x * ppp).round() as i32 - x0).clamp(0, bw as i32),
-                ((p.clip_rect.max.y * ppp).round() as i32 - y0).clamp(0, bh as i32),
+                ((p.clip_rect.min.x * ppp).round() as i32 - x0).clamp(zone[0], zone[2]),
+                ((p.clip_rect.min.y * ppp).round() as i32 - y0).clamp(zone[1], zone[3]),
+                ((p.clip_rect.max.x * ppp).round() as i32 - x0).clamp(zone[0], zone[2]),
+                ((p.clip_rect.max.y * ppp).round() as i32 - y0).clamp(zone[1], zone[3]),
             ];
             if clip[0] >= clip[2] || clip[1] >= clip[3] {
                 continue;
@@ -128,11 +241,10 @@ impl Overlay {
                 canvas.triangle(v, tex, ppp, clip);
             }
         }
-        let addr = format!("&{}", buf.as_ptr() as usize);
-        mpv.command_sync(&["overlay-add", "0", &x0.to_string(), &y0.to_string(), &addr, "0", "bgra", &bw.to_string(), &bh.to_string(), &stride.to_string()]);
+        self.last = Some(Last { area, buffer: self.next, backdrop, prims: prims_info });
         self.buffers[self.next] = buf;
         self.next = (self.next + 1) % BUFFERS;
-        self.shown = true;
+        Drawn::New { x: x0, y: y0, w: bw, h: bh }
     }
 
     /// Retire la superposition et rend la mémoire des tampons.
@@ -140,6 +252,7 @@ impl Overlay {
         if self.shown {
             mpv.command_sync(&["overlay-remove", "0"]);
             self.shown = false;
+            self.last = None;
             for b in &mut self.buffers {
                 *b = Vec::new();
             }
@@ -188,6 +301,28 @@ impl Overlay {
 }
 
 /// Zone de la superposition en cours de dessin (BGRA prémultiplié).
+/// Empreinte d'un maillage : sommets, indices, texture et découpe.
+fn mesh_hash(clip: Rect, m: &egui::Mesh) -> u64 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    let mut mix = |x: u64| h = (h ^ x).wrapping_mul(0x0000_0100_0000_01b3).rotate_left(5);
+    for f in [clip.min.x, clip.min.y, clip.max.x, clip.max.y] {
+        mix(f.to_bits() as u64);
+    }
+    mix(match m.texture_id {
+        TextureId::Managed(n) => n,
+        TextureId::User(n) => n ^ (1 << 63),
+    });
+    for v in &m.vertices {
+        mix((v.pos.x.to_bits() as u64) << 32 | v.pos.y.to_bits() as u64);
+        mix((v.uv.x.to_bits() as u64) << 32 | v.uv.y.to_bits() as u64);
+        mix(u32::from_ne_bytes(v.color.to_array()) as u64);
+    }
+    for i in &m.indices {
+        mix(*i as u64);
+    }
+    h
+}
+
 struct Canvas<'a> {
     buf: &'a mut Vec<u8>,
     w: usize,
@@ -287,4 +422,59 @@ fn sample(t: &Texture, x: f32, y: f32) -> [f32; 4] {
         let b = p01[k] as f32 + (p11[k] as f32 - p01[k] as f32) * fx;
         a + (b - a) * fy
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// Une image d'interface : un grand panneau, du texte, et une rangée de boutons dont
+    /// `lit` est éclairé (comme un survol).
+    fn frame(ctx: &egui::Context, lit: usize) -> (Vec<egui::ClippedPrimitive>, egui::TexturesDelta) {
+        let raw = egui::RawInput {
+            screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640.0, 400.0))),
+            ..Default::default()
+        };
+        let out = ctx.run_ui(raw, |ui| {
+            let p = ui.painter();
+            p.rect_filled(Rect::from_min_size(egui::pos2(20.0, 20.0), egui::vec2(600.0, 360.0)), 24.0, Color32::from_black_alpha(140));
+            p.text(egui::pos2(40.0, 40.0), egui::Align2::LEFT_TOP, "Décalage audio 0 ms", egui::FontId::proportional(16.0), Color32::WHITE);
+            for i in 0..6 {
+                let c = egui::pos2(80.0 + i as f32 * 90.0, 300.0);
+                let a = if i == lit { 90 } else { 20 };
+                p.circle_filled(c, 20.0, Color32::from_white_alpha(a));
+                p.circle_stroke(c, 20.0, egui::Stroke::new(1.0, Color32::from_white_alpha(40)));
+            }
+        });
+        (ctx.tessellate(out.shapes, out.pixels_per_point), out.textures_delta)
+    }
+
+    #[test]
+    fn partial_redraw_matches_full() {
+        let ctx = egui::Context::default();
+        crate::ui::fonts(&ctx);
+        let ppp = 1.5;
+        ctx.set_pixels_per_point(ppp);
+        let size = [960, 600];
+        let mut partial = Overlay::new().unwrap();
+        let mut full = Overlay::new().unwrap();
+        // Quelques images pour que les polices et la mise en page se stabilisent.
+        for _ in 0..3 {
+            let (p, mut t) = frame(&ctx, 0);
+            partial.render(&p, &mut t, size, ppp, false);
+            full.render(&p, &mut t, size, ppp, false);
+        }
+        for lit in [1, 4, 4, 2] {
+            let (p, mut t) = frame(&ctx, lit);
+            assert!(t.set.is_empty(), "les glyphes ne doivent pas changer");
+            let a = partial.render(&p, &mut t, size, ppp, false);
+            full.last = None;
+            full.render(&p, &mut t, size, ppp, false);
+            let pa = &partial.buffers[partial.last.as_ref().unwrap().buffer];
+            let fa = &full.buffers[full.last.as_ref().unwrap().buffer];
+            if !matches!(a, Drawn::Same) {
+                assert_eq!(pa, fa, "rendu partiel différent du rendu complet (bouton {lit})");
+            }
+        }
+    }
 }

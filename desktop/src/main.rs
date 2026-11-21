@@ -40,6 +40,11 @@ WHEEL_UP script-binding main/wheel-up
 WHEEL_DOWN script-binding main/wheel-down";
 /// Actifs quand un tiroir est ouvert : Échap le ferme au lieu de quitter.
 const PANEL_BINDINGS: &str = "ESC script-binding main/esc";
+/// Durée de l'aperçu des sous-titres après un réglage de taille ou de hauteur.
+const PREVIEW_LIFE: Duration = Duration::from_millis(1600);
+/// Numéro de l'incrustation mpv qui porte l'aperçu.
+const PREVIEW_OVERLAY: &str = "7";
+
 /// Marge basse des sous-titres (unités mpv : pixels rapportés à une image de 720 lignes).
 const SUB_MARGIN: i32 = 46;
 
@@ -62,6 +67,8 @@ struct App {
     next_frame: Option<Instant>,
     dirty: bool,
     last_frame: Instant,
+    /// Aperçu des sous-titres affiché (incrustation mpv).
+    preview_on: bool,
     visible: bool,
     shader_opts: String,
     hover_section: bool,
@@ -352,6 +359,37 @@ impl App {
 
     // --- Image de l'interface ---------------------------------------------------------------------
 
+    /// Aperçu dessiné comme un sous-titre : même police, taille, couleurs, liseré et place.
+    fn show_preview(&mut self, margin: i32, video_h: f64, video_bottom: f64) {
+        let s = &self.player.mpv.state;
+        let k = video_h / 720.0;
+        let size = 36.0 * self.player.sub_scale * k;
+        // L'image est centrée dans la fenêtre : le sous-titre aussi.
+        let x = s.osd_w / 2.0;
+        let y = video_bottom - margin as f64 * k;
+        let text: String = self
+            .player
+            .preview_text()
+            .replace('\\', "\\\\")
+            .replace('{', "\\{")
+            .replace('}', "\\}")
+            .replace('\n', "\\N");
+        let ass = format!(
+            "{{\\an2\\pos({x:.0},{y:.0})\\fnInter Medium\\fs{size:.1}\\bord{:.2}\\shad0\\blur0\\1c&HEBEBEB&\\3c&H0A0A0A&}}{text}",
+            1.6 * k
+        );
+        let (w, h) = (format!("{:.0}", s.osd_w), format!("{:.0}", s.osd_h));
+        self.player.mpv.command(&["osd-overlay", PREVIEW_OVERLAY, "ass-events", &ass, &w, &h]);
+        self.preview_on = true;
+    }
+
+    fn hide_preview(&mut self) {
+        if self.preview_on {
+            self.player.mpv.command(&["osd-overlay", PREVIEW_OVERLAY, "none", ""]);
+            self.preview_on = false;
+        }
+    }
+
     fn frame(&mut self) {
         let s = &self.player.mpv.state;
         let (w, h, scale) = (s.osd_w as f32, s.osd_h as f32, s.scale as f32);
@@ -436,6 +474,23 @@ impl App {
             .map(|v| v.repaint_delay)
             .filter(|d| *d < Duration::from_secs(3600))
             .map(|d| Instant::now() + d.max(Duration::from_millis(8)));
+
+        // Réglage de taille ou de hauteur : une réplique reste à l'écran le temps de juger,
+        // même entre deux sous-titres ou sous un tiroir (là où les vrais sont masqués).
+        let preview = self.player.sub_preview.filter(|t| t.elapsed() < PREVIEW_LIFE);
+        if let Some(t) = preview {
+            let real = !panel && self.player.mpv.state.sid.is_some() && self.player.mpv.get("sub-text").is_some_and(|t| !t.trim().is_empty());
+            if real {
+                self.hide_preview();
+            } else {
+                self.show_preview(margin, video_h, video_bottom);
+            }
+            let end = t + PREVIEW_LIFE;
+            self.next_frame = Some(self.next_frame.map_or(end, |n| n.min(end)));
+        } else if self.preview_on {
+            self.player.sub_preview = None;
+            self.hide_preview();
+        }
         for a in actions {
             match a {
                 ui::Action::Open => self.pick(),
@@ -541,6 +596,7 @@ fn main() {
         seek_from: None,
         indexing: Vec::new(),
         sub_margin: SUB_MARGIN,
+        preview_on: false,
     };
     for (i, f) in files.iter().enumerate() {
         if i == 0 {
