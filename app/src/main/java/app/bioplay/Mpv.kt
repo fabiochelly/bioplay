@@ -105,6 +105,9 @@ class Mpv(context: Context) : MPVLib.EventObserver {
         context.assets.open("glass.glsl").use { i -> glass.outputStream().use { i.copyTo(it) } }
         listOf(
             "config" to "no",
+            // Téléphone : réglages légers (mise à l'échelle bilinéaire, pas d'analyse du pic HDR ni de
+            // tramage) — invisibles sur un petit écran, nettement moins coûteux en 4K.
+            "profile" to "fast",
             "vo" to VO,
             "gpu-context" to "android",
             "opengl-es" to "yes",
@@ -121,8 +124,8 @@ class Mpv(context: Context) : MPVLib.EventObserver {
             // Cache qui garde aussi l'arrière : retour en arrière instantané.
             "cache" to "yes",
             "demuxer-readahead-secs" to "10",
-            "demuxer-max-bytes" to "64MiB",
-            "demuxer-max-back-bytes" to "48MiB",
+            "demuxer-max-bytes" to "32MiB",
+            "demuxer-max-back-bytes" to "16MiB",
             "demuxer-seekable-cache" to "yes",
             "hr-seek" to "yes",
             "hr-seek-framedrop" to "yes",
