@@ -11,6 +11,7 @@ import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -165,13 +166,12 @@ private fun Delay(label: String, value: Double, step: Double, modifier: Modifier
 fun LanguageSwitch(compact: Boolean = false) {
     val context = androidx.compose.ui.platform.LocalContext.current
     Row(
-        Modifier.clip(Capsule)
+        Modifier.height(if (compact) 42.dp else 46.dp).clip(Capsule)
             .background(Color.White.copy(alpha = 0.06f))
             .border(1.dp, Color.White.copy(alpha = 0.18f), Capsule),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         LanguageHalf("FR", !Lang.en, compact, french = true) { if (Lang.en) Lang.toggle(context) }
-        Box(Modifier.width(1.dp).height(if (compact) 18.dp else 22.dp).background(Color.White.copy(alpha = 0.16f)))
         LanguageHalf("EN", Lang.en, compact, french = false) { if (!Lang.en) Lang.toggle(context) }
     }
 }
@@ -179,42 +179,49 @@ fun LanguageSwitch(compact: Boolean = false) {
 @Composable
 private fun LanguageHalf(code: String, selected: Boolean, compact: Boolean, french: Boolean, onClick: () -> Unit) {
     Row(
-        Modifier.background(if (selected) Ink.accent.copy(alpha = 0.20f) else Color.Transparent)
+        Modifier.fillMaxHeight().background(if (selected) Ink.accent.copy(alpha = 0.20f) else Color.Transparent)
             .clickable(onClick = onClick)
-            .padding(horizontal = if (compact) 10.dp else 14.dp, vertical = if (compact) 6.dp else 9.dp),
+            .padding(horizontal = if (compact) 12.dp else 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Flag(french, Modifier.width(if (compact) 18.dp else 21.dp).height(if (compact) 12.dp else 14.dp), if (selected) 0.75f else 0.4f)
+        Flag(french, Modifier.width(if (compact) 24.dp else 27.dp).height(if (compact) 16.dp else 18.dp), if (selected) 1f else 0.55f)
         BasicText(code, style = text(if (compact) 12 else 14, FontWeight.SemiBold, if (selected) Ink.accent else Ink.secondary), modifier = Modifier.padding(start = 7.dp))
     }
 }
 
-/** Drapeau en verre : couleurs adoucies, semi-transparent. */
+/**
+ * Drapeau pris dans une dalle de verre : couleurs franches, reflet brillant sur le haut, ombre
+ * douce en bas, liseré lumineux. Une langue inactive est simplement estompée.
+ */
 @Composable
 private fun Flag(french: Boolean, modifier: Modifier, alpha: Float) {
-    Canvas(modifier.clip(RoundedCornerShape(3.dp))) {
-        val blue = Color(0xFF5B74B0).copy(alpha = alpha)
-        val red = Color(0xFFC46A66).copy(alpha = alpha)
-        val white = Color(0xFFEDEFF3).copy(alpha = alpha)
+    Canvas(modifier.clip(RoundedCornerShape(4.dp))) {
+        val a = 0.88f * alpha
         val w = size.width
         val h = size.height
         if (french) {
-            drawRect(blue, Offset.Zero, Size(w / 3, h))
-            drawRect(white, Offset(w / 3, 0f), Size(w / 3, h))
-            drawRect(red, Offset(2 * w / 3, 0f), Size(w / 3, h))
+            drawRect(Color(0xFF2F5DB5).copy(alpha = a), Offset.Zero, Size(w / 3, h))
+            drawRect(Color(0xFFF4F5F7).copy(alpha = a), Offset(w / 3, 0f), Size(w / 3, h))
+            drawRect(Color(0xFFE0473F).copy(alpha = a), Offset(2 * w / 3, 0f), Size(w / 3, h))
         } else {
+            val blue = Color(0xFF233F8C).copy(alpha = a)
+            val red = Color(0xFFD23A48).copy(alpha = a)
+            val white = Color(0xFFF4F5F7).copy(alpha = a)
             drawRect(blue)
-            val diag = h * 0.22f
-            drawLine(white, Offset.Zero, Offset(w, h), diag)
-            drawLine(white, Offset(0f, h), Offset(w, 0f), diag)
-            drawLine(red, Offset.Zero, Offset(w, h), diag * 0.4f)
-            drawLine(red, Offset(0f, h), Offset(w, 0f), diag * 0.4f)
-            drawRect(white, Offset(w * 0.4f, 0f), Size(w * 0.2f, h))
-            drawRect(white, Offset(0f, h * 0.35f), Size(w, h * 0.3f))
-            drawRect(red, Offset(w * 0.44f, 0f), Size(w * 0.12f, h))
-            drawRect(red, Offset(0f, h * 0.41f), Size(w, h * 0.18f))
+            // Proportions officielles ramenées à la hauteur : sautoirs, puis croix.
+            drawLine(white, Offset(-1f, -1f), Offset(w + 1, h + 1), h * 0.2f)
+            drawLine(white, Offset(-1f, h + 1), Offset(w + 1, -1f), h * 0.2f)
+            drawLine(red, Offset(-1f, -1f), Offset(w + 1, h + 1), h * 0.067f)
+            drawLine(red, Offset(-1f, h + 1), Offset(w + 1, -1f), h * 0.067f)
+            drawRect(white, Offset(w / 2 - h * 0.167f, 0f), Size(h * 0.333f, h))
+            drawRect(white, Offset(0f, h * 0.333f), Size(w, h * 0.333f))
+            drawRect(red, Offset(w / 2 - h * 0.1f, 0f), Size(h * 0.2f, h))
+            drawRect(red, Offset(0f, h * 0.4f), Size(w, h * 0.2f))
         }
-        drawRoundRect(Color.White.copy(alpha = 0.25f * alpha), style = androidx.compose.ui.graphics.drawscope.Stroke(1f), cornerRadius = CornerRadius(3.dp.toPx()))
+        // Dalle de verre : reflet en haut, ombre en bas, liseré.
+        drawRect(Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.42f * alpha), Color.White.copy(alpha = 0.06f * alpha)), endY = h * 0.5f), size = Size(w, h * 0.5f))
+        drawRect(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.22f * alpha)), startY = h * 0.55f), Offset(0f, h * 0.55f), Size(w, h * 0.45f))
+        drawRoundRect(Color.White.copy(alpha = 0.5f * alpha), style = androidx.compose.ui.graphics.drawscope.Stroke(1.2f), cornerRadius = CornerRadius(4.dp.toPx()))
     }
 }
 

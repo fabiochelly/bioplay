@@ -7,7 +7,5 @@ description = "bioplay pour le bureau : libmpv, interface de verre liquide plein
 [dependencies]
 bioplay-core = { path = "../core" }
 egui = { version = "0.37", default-features = false, features = ["default_fonts"] }
-egui_glow = { version = "0.37", default-features = false }
-glutin = { version = "0.32", default-features = false, features = ["egl"] }
 rfd = { version = "0.18", default-features = false, features = ["xdg-portal", "pollster", "wayland"] }
 serde_json = "1"

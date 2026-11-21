@@ -32,7 +32,6 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
-import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -225,10 +224,12 @@ private fun Gestures(
                     if (pressed == 0) break
                     if (pressed >= 2 && !dragging) pinching = true
                     if (pinching) {
+                        // Pincement : zoom depuis le centre de l'écran, jamais décalé. Glissé à deux
+                        // doigts sans pincer : déplacement de l'image zoomée.
                         val z = ev.calculateZoom()
                         val pan = ev.calculatePan()
-                        val focus = ev.calculateCentroid()
-                        session.zoomBy(z.toDouble(), pan.x.toDouble(), pan.y.toDouble(), focus.x.toDouble(), focus.y.toDouble())
+                        if (abs(z - 1f) > 0.004f) session.zoomBy(z.toDouble())
+                        else session.zoomBy(1.0, pan.x.toDouble(), pan.y.toDouble())
                         ev.changes.forEach { it.consume() }
                         continue
                     }
