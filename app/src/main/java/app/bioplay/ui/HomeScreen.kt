@@ -33,6 +33,7 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.bioplay.Recent
 import app.bioplay.clock
+import app.bioplay.t
 
 /** Accueil : ouvrir une vidéo ou reprendre une des dernières. */
 @Composable
@@ -49,17 +50,19 @@ fun HomeScreen(recents: List<Recent>, onOpen: () -> Unit, onResume: (Recent) -> 
         Row(Modifier.fillMaxSize().padding(horizontal = 48.dp, vertical = 32.dp), verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(0.9f)) {
                 BasicText("bioplay", style = text(44, FontWeight.SemiBold))
-                BasicText("Lecteur vidéo, rien de superflu.", style = text(16, color = Ink.secondary), modifier = Modifier.padding(top = 4.dp, bottom = 28.dp))
+                BasicText(t("Lecteur vidéo, rien de superflu.", "A video player, nothing superfluous."), style = text(16, color = Ink.secondary), modifier = Modifier.padding(top = 4.dp, bottom = 28.dp))
                 GlassButton(onOpen, shape = Capsule, size = 56.dp) {
                     Row(verticalAlignment = Alignment.CenterVertically) {
                         Icon(Icons.folder, size = 22.dp)
-                        BasicText("Ouvrir une vidéo", style = text(16, FontWeight.SemiBold), modifier = Modifier.padding(start = 10.dp, end = 6.dp))
+                        BasicText(t("Ouvrir une vidéo", "Open a video"), style = text(16, FontWeight.SemiBold), modifier = Modifier.padding(start = 10.dp, end = 6.dp))
                     }
                 }
+                Spacer(Modifier.height(16.dp))
+                LanguageSwitch()
             }
             if (recents.isNotEmpty()) {
                 Column(Modifier.weight(1.1f).widthIn(max = 520.dp).glass(RoundedCornerShape(28.dp)).padding(14.dp)) {
-                    BasicText("Reprendre", style = text(13, FontWeight.SemiBold, Ink.secondary), modifier = Modifier.padding(start = 8.dp, top = 4.dp, bottom = 8.dp))
+                    BasicText(t("Reprendre", "Continue"), style = text(13, FontWeight.SemiBold, Ink.secondary), modifier = Modifier.padding(start = 8.dp, top = 4.dp, bottom = 8.dp))
                     LazyColumn(Modifier.heightIn(max = 320.dp)) {
                         items(recents, key = { it.uri }) { r -> RecentRow(r, { onResume(r) }, { onForget(r) }) }
                     }
@@ -80,9 +83,9 @@ private fun RecentRow(r: Recent, onClick: () -> Unit, onForget: () -> Unit) {
             val f = if (r.duration > 0) (r.position / r.duration).toFloat().coerceIn(0f, 1f) else 0f
             BasicText(
                 when {
-                    r.duration <= 0 -> "Pas encore lue"
-                    r.position < 5 -> "Terminée ou non commencée · ${clock(r.duration)}"
-                    else -> "Reste ${clock(r.duration - r.position)}"
+                    r.duration <= 0 -> t("Pas encore lue", "Not played yet")
+                    r.position < 5 -> "${t("Terminée ou non commencée", "Finished or not started")} · ${clock(r.duration)}"
+                    else -> "${t("Reste", "Left")} ${clock(r.duration - r.position)}"
                 },
                 style = text(12, color = Ink.secondary), modifier = Modifier.padding(top = 2.dp, bottom = 6.dp),
             )

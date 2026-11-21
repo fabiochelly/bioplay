@@ -2,6 +2,7 @@
 //! fenêtre OpenGL, sous une interface de verre liquide plein écran.
 
 mod gfx;
+mod i18n;
 mod keys;
 mod mpv;
 mod player;
@@ -27,6 +28,7 @@ use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, EventLoopProxy}
 use winit::keyboard::{Key, ModifiersState, NamedKey};
 use winit::window::{Fullscreen, Window, WindowId};
 
+use i18n::tr;
 use player::{Panel, Player};
 
 const SUBTITLE_EXT: &[&str] = &["srt", "ass", "ssa", "vtt", "sub", "sup"];
@@ -91,7 +93,7 @@ impl App {
             let p = self.player();
             let title = Path::new(path).file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
             p.mpv.command(&["sub-add", path, "select", &title]);
-            p.say(format!("Sous-titres : {title}"));
+            p.say(format!("{} : {title}", tr("Sous-titres", "Subtitles")));
             self.index(path.to_owned(), Some(path.to_owned()));
         } else {
             self.player().save();
@@ -119,9 +121,9 @@ impl App {
         let proxy = self.proxy.clone();
         std::thread::spawn(move || {
             let f = rfd::FileDialog::new()
-                .set_title("Ouvrir une vidéo")
-                .add_filter("Vidéos", VIDEO_EXT)
-                .add_filter("Tous les fichiers", &["*"])
+                .set_title(tr("Ouvrir une vidéo", "Open a video"))
+                .add_filter(tr("Vidéos", "Videos"), VIDEO_EXT)
+                .add_filter(tr("Tous les fichiers", "All files"), &["*"])
                 .pick_file();
             if let Some(f) = f {
                 let _ = proxy.send_event(UserEvent::Picked(f.to_string_lossy().into_owned()));
@@ -282,9 +284,9 @@ impl App {
                 }
                 let changed = previous.is_some_and(|old| (old - value).abs() > 1e-9);
                 let msg = if !(settled && changed) { None } else { match name {
-                    "speed" if p.has_file() => Some(format!("Vitesse {}", player::speed_label(s.speed))),
+                    "speed" if p.has_file() => Some(format!("{} {}", tr("Vitesse", "Speed"), player::speed_label(s.speed))),
                     "volume" if p.has_file() => Some(format!("Volume {:.0} %", s.volume)),
-                    "sub-delay" if p.has_file() => Some(if s.sub_delay.abs() < 1e-6 { "Sous-titres : aucun décalage".into() } else { format!("Sous-titres {:+.0} ms", s.sub_delay * 1000.0) }),
+                    "sub-delay" if p.has_file() => Some(if s.sub_delay.abs() < 1e-6 { tr("Sous-titres : aucun décalage", "Subtitles: no delay").into() } else { format!("{} {:+.0} ms", tr("Sous-titres", "Subtitles"), s.sub_delay * 1000.0) }),
                     "audio-delay" if p.has_file() => Some(format!("Audio {:+.0} ms", s.audio_delay * 1000.0)),
                     _ => None,
                 } };
@@ -519,6 +521,7 @@ fn main() {
         frame_pending: false,
         texture_stale: true,
     };
+    i18n::init();
     ui::fonts(&app.ctx);
     el.run_app(&mut app).expect("exécution");
     // mpv d'abord (son rendu utilise le contexte GL), puis le reste.

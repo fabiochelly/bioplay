@@ -404,7 +404,7 @@ pub fn track_label(t: &Track) -> String {
     if !t.title.is_empty() {
         return t.title.clone();
     }
-    language(&t.lang).unwrap_or_else(|| format!("Piste {}", t.id))
+    language(&t.lang).unwrap_or_else(|| format!("{} {}", crate::i18n::tr("Piste", "Track"), t.id))
 }
 
 pub fn track_detail(t: &Track) -> String {
@@ -426,43 +426,63 @@ pub fn track_detail(t: &Track) -> String {
     match t.channels {
         0 => {}
         1 => parts.push("Mono".into()),
-        2 => parts.push("Stéréo".into()),
+        2 => parts.push(crate::i18n::tr("Stéréo", "Stereo").into()),
         6 => parts.push("5.1".into()),
         8 => parts.push("7.1".into()),
-        n => parts.push(format!("{n} canaux")),
+        n => parts.push(format!("{n} {}", crate::i18n::tr("canaux", "channels"))),
     }
     if t.forced {
-        parts.push("Forcés".into());
+        parts.push(crate::i18n::tr("Forcés", "Forced").into());
     }
     if t.external.is_some() {
-        parts.push("Externe".into());
+        parts.push(crate::i18n::tr("Externe", "External").into());
     }
     parts.join(" · ")
 }
 
 pub fn language(code: &str) -> Option<String> {
-    let names: HashMap<&str, &str> = [
-        ("fr", "Français"), ("fre", "Français"), ("fra", "Français"),
-        ("en", "Anglais"), ("eng", "Anglais"),
-        ("de", "Allemand"), ("ger", "Allemand"), ("deu", "Allemand"),
-        ("es", "Espagnol"), ("spa", "Espagnol"),
-        ("it", "Italien"), ("ita", "Italien"),
-        ("pt", "Portugais"), ("por", "Portugais"),
-        ("ja", "Japonais"), ("jpn", "Japonais"),
-        ("ko", "Coréen"), ("kor", "Coréen"),
-        ("zh", "Chinois"), ("chi", "Chinois"), ("zho", "Chinois"),
-        ("ru", "Russe"), ("rus", "Russe"),
-        ("nl", "Néerlandais"), ("dut", "Néerlandais"), ("nld", "Néerlandais"),
-        ("ar", "Arabe"), ("ara", "Arabe"),
-        ("pl", "Polonais"), ("pol", "Polonais"),
-        ("sv", "Suédois"), ("swe", "Suédois"),
-        ("tr", "Turc"), ("tur", "Turc"),
-        ("he", "Hébreu"), ("heb", "Hébreu"),
+    let names: HashMap<&str, (&str, &str)> = [
+        ("fr", ("Français", "French")),
+        ("fre", ("Français", "French")),
+        ("fra", ("Français", "French")),
+        ("en", ("Anglais", "English")),
+        ("eng", ("Anglais", "English")),
+        ("de", ("Allemand", "German")),
+        ("ger", ("Allemand", "German")),
+        ("deu", ("Allemand", "German")),
+        ("es", ("Espagnol", "Spanish")),
+        ("spa", ("Espagnol", "Spanish")),
+        ("it", ("Italien", "Italian")),
+        ("ita", ("Italien", "Italian")),
+        ("pt", ("Portugais", "Portuguese")),
+        ("por", ("Portugais", "Portuguese")),
+        ("ja", ("Japonais", "Japanese")),
+        ("jpn", ("Japonais", "Japanese")),
+        ("ko", ("Coréen", "Korean")),
+        ("kor", ("Coréen", "Korean")),
+        ("zh", ("Chinois", "Chinese")),
+        ("chi", ("Chinois", "Chinese")),
+        ("zho", ("Chinois", "Chinese")),
+        ("ru", ("Russe", "Russian")),
+        ("rus", ("Russe", "Russian")),
+        ("nl", ("Néerlandais", "Dutch")),
+        ("dut", ("Néerlandais", "Dutch")),
+        ("nld", ("Néerlandais", "Dutch")),
+        ("ar", ("Arabe", "Arabic")),
+        ("ara", ("Arabe", "Arabic")),
+        ("pl", ("Polonais", "Polish")),
+        ("pol", ("Polonais", "Polish")),
+        ("sv", ("Suédois", "Swedish")),
+        ("swe", ("Suédois", "Swedish")),
+        ("tr", ("Turc", "Turkish")),
+        ("tur", ("Turc", "Turkish")),
+        ("he", ("Hébreu", "Hebrew")),
+        ("heb", ("Hébreu", "Hebrew")),
     ]
     .into_iter()
     .collect();
     if code.is_empty() || code == "und" {
         return None;
     }
-    Some(names.get(code.to_ascii_lowercase().as_str()).map(|s| s.to_string()).unwrap_or_else(|| code.to_uppercase()))
+    Some(names.get(code.to_ascii_lowercase().as_str()).map(|(f, e)| crate::i18n::tr(f, e).to_string()).unwrap_or_else(|| code.to_uppercase()))
 }

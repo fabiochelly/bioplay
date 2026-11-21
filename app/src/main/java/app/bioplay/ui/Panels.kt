@@ -44,6 +44,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import app.bioplay.Session
+import app.bioplay.Lang
+import app.bioplay.t
 import app.bioplay.Track
 import app.bioplay.clock
 import kotlin.math.abs
@@ -103,24 +105,24 @@ fun TracksPanel(session: Session, onAddSubtitle: () -> Unit) {
     val subs = mpv.tracks.filter { it.type == "sub" }
     Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
         Column(Modifier.weight(1f)) {
-            Header("Audio", "${audio.size}")
+            Header(t("Audio", "Audio"), "${audio.size}")
             LazyColumn(Modifier.heightIn(max = 230.dp)) {
-                items(audio, key = { it.id }) { t -> TrackChoice(t, mpv.aid == t.id) { mpv.setAudio(t.id); session.say("Audio : ${t.label}") } }
-                if (audio.isEmpty()) item { BasicText("Aucune piste audio", style = text(14, color = Ink.faint), modifier = Modifier.padding(14.dp)) }
+                items(audio, key = { it.id }) { t -> TrackChoice(t, mpv.aid == t.id) { mpv.setAudio(t.id); session.say("${t("Audio", "Audio")} : ${t.label}") } }
+                if (audio.isEmpty()) item { BasicText(t("Aucune piste audio", "No audio track"), style = text(14, color = Ink.faint), modifier = Modifier.padding(14.dp)) }
             }
         }
         Column(Modifier.weight(1f)) {
-            Header("Sous-titres", "${subs.size}")
+            Header(t("Sous-titres", "Subtitles"), "${subs.size}")
             LazyColumn(Modifier.heightIn(max = 230.dp)) {
-                item { Choice(mpv.sid == null, { mpv.setSub(null); session.say("Sous-titres désactivés") }, "Désactivés") }
-                items(subs, key = { it.id }) { t -> TrackChoice(t, mpv.sid == t.id) { mpv.setSub(t.id); session.say("Sous-titres : ${t.label}") } }
+                item { Choice(mpv.sid == null, { mpv.setSub(null); session.say(t("Sous-titres désactivés", "Subtitles off")) }, t("Désactivés", "Off")) }
+                items(subs, key = { it.id }) { t -> TrackChoice(t, mpv.sid == t.id) { mpv.setSub(t.id); session.say("${t("Sous-titres", "Subtitles")} : ${t.label}") } }
                 item {
                     Row(
                         Modifier.fillMaxWidth().padding(top = 4.dp).clip16().clickable(onClick = onAddSubtitle).padding(horizontal = 14.dp, vertical = 11.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Icon(Icons.add, size = 18.dp, tint = Ink.secondary)
-                        BasicText("Ajouter un fichier…", style = text(14, color = Ink.secondary), modifier = Modifier.padding(start = 10.dp))
+                        BasicText(t("Ajouter un fichier…", "Add a file…"), style = text(14, color = Ink.secondary), modifier = Modifier.padding(start = 10.dp))
                     }
                 }
             }
@@ -128,9 +130,11 @@ fun TracksPanel(session: Session, onAddSubtitle: () -> Unit) {
     }
     Box(Modifier.padding(vertical = 14.dp).fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = 0.12f)))
     Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
-        Delay("Décalage audio", mpv.audioDelay, 0.05, Modifier.weight(1f)) { mpv.audioDelayTo(it) }
-        Delay("Décalage sous-titres", mpv.subDelay, 0.1, Modifier.weight(1f)) { mpv.subDelayTo(it) }
+        Delay(t("Décalage audio", "Audio delay"), mpv.audioDelay, 0.05, Modifier.weight(1f)) { mpv.audioDelayTo(it) }
+        Delay(t("Décalage sous-titres", "Subtitle delay"), mpv.subDelay, 0.1, Modifier.weight(1f)) { mpv.subDelayTo(it) }
     }
+    Spacer(Modifier.height(12.dp))
+    LanguageSwitch()
 }
 
 @Composable
@@ -154,6 +158,16 @@ private fun Delay(label: String, value: Double, step: Double, modifier: Modifier
     }
 }
 
+/** Bascule de langue : « FR · EN », la langue active en couleur. */
+@Composable
+fun LanguageSwitch() {
+    val context = androidx.compose.ui.platform.LocalContext.current
+    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+        Chip("FR", !Lang.en) { if (Lang.en) Lang.toggle(context) }
+        Chip("EN", Lang.en) { if (!Lang.en) Lang.toggle(context) }
+    }
+}
+
 // --- Vitesse ----------------------------------------------------------------------------------
 
 @Composable
@@ -161,8 +175,8 @@ fun SpeedPanel(session: Session) {
     val mpv = session.mpv
     Row(verticalAlignment = Alignment.Bottom) {
         Column(Modifier.weight(1f).padding(start = 4.dp)) {
-            BasicText("Vitesse", style = text(13, FontWeight.SemiBold, Ink.secondary))
-            BasicText("Voix préservée, sans distorsion", style = text(12, color = Ink.faint))
+            BasicText(t("Vitesse", "Speed"), style = text(13, FontWeight.SemiBold, Ink.secondary))
+            BasicText(t("Voix préservée, sans distorsion", "Pitch preserved, no distortion"), style = text(12, color = Ink.faint))
         }
         BasicText(speedLabel(mpv.speed), style = text(34, FontWeight.SemiBold, if (mpv.speed != 1.0) Ink.accent else Ink.primary))
     }
@@ -180,8 +194,8 @@ fun SpeedPanel(session: Session) {
 fun ZoomPanel(session: Session) {
     Row(verticalAlignment = Alignment.Bottom) {
         Column(Modifier.weight(1f).padding(start = 4.dp)) {
-            BasicText("Image", style = text(13, FontWeight.SemiBold, Ink.secondary))
-            BasicText("Pincez l'écran pour zoomer, deux doigts pour déplacer", style = text(12, color = Ink.faint))
+            BasicText(t("Image", "Picture"), style = text(13, FontWeight.SemiBold, Ink.secondary))
+            BasicText(t("Pincez l'écran pour zoomer, deux doigts pour déplacer", "Pinch to zoom, two fingers to move"), style = text(12, color = Ink.faint))
         }
         BasicText("%.1f×".format(session.zoom), style = text(34, FontWeight.SemiBold, if (session.zoom > 1.01) Ink.accent else Ink.primary))
     }
@@ -189,9 +203,9 @@ fun ZoomPanel(session: Session) {
     GlassSlider(session.zoom, 1.0, 4.0, 0.1, marks = listOf(2.0, 3.0)) { session.setZoomLevel(it) }
     Spacer(Modifier.height(14.dp))
     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        Chip("Image entière", !session.fill && !session.unscaled && session.zoom <= 1.01) { session.resetZoom() }
-        Chip("Remplir l'écran", session.fill) { session.toggleFill() }
-        Chip("Taille réelle", session.unscaled) { session.toggleUnscaled() }
+        Chip(t("Image entière", "Fit"), !session.fill && !session.unscaled && session.zoom <= 1.01) { session.resetZoom() }
+        Chip(t("Remplir l'écran", "Fill screen"), session.fill) { session.toggleFill() }
+        Chip(t("Taille réelle", "Actual size"), session.unscaled) { session.toggleUnscaled() }
     }
 }
 
@@ -203,14 +217,14 @@ fun ListPanel(session: Session) {
     val track = session.subTrack
     val height = (LocalConfiguration.current.screenHeightDp * 0.62f).dp
     Header(
-        track?.let { "Sous-titres · ${it.label}" } ?: "Sous-titres",
-        idx?.let { "${it.cues.size} lignes" },
+        track?.let { "${t("Sous-titres", "Subtitles")} · ${it.label}" } ?: t("Sous-titres", "Subtitles"),
+        idx?.let { "${it.cues.size} ${t("lignes", "lines")}" },
     )
     if (idx == null) {
         val why = when {
-            track == null -> "Choisissez une piste de sous-titres."
-            session.indexing -> "Lecture des sous-titres…"
-            else -> "Liste indisponible pour ce format. Les sauts ligne à ligne passent par mpv."
+            track == null -> t("Choisissez une piste de sous-titres.", "Pick a subtitle track.")
+            session.indexing -> t("Lecture des sous-titres…", "Reading subtitles…")
+            else -> t("Liste indisponible pour ce format. Les sauts ligne à ligne passent par mpv.", "No list for this format. Line jumps go through mpv.")
         }
         BasicText(why, style = text(15, color = Ink.secondary), modifier = Modifier.padding(4.dp, 8.dp, 4.dp, 12.dp))
         return

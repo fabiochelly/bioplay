@@ -56,10 +56,10 @@ class Session(private val context: Context) {
         embedded = emptyMap()
         external.clear()
         resetZoom()
-        val url = mpvUrl(target) ?: return say("Fichier illisible")
+        val url = mpvUrl(target) ?: return say(t("Fichier illisible", "Unreadable file"))
         val resume = prefs.getFloat("pos:$key", 0f).toDouble()
         mpv.load(url, resume)
-        if (resume > 5) say("Reprise à ${clock(resume)}")
+        if (resume > 5) say("${t("Reprise à", "Resuming at")} ${clock(resume)}")
         remember(target, title)
         val gen = ++generation
         indexing = true
@@ -77,10 +77,10 @@ class Session(private val context: Context) {
     }
 
     fun addSubtitle(target: Uri) {
-        val url = mpvUrl(target) ?: return say("Sous-titre illisible")
+        val url = mpvUrl(target) ?: return say(t("Sous-titre illisible", "Unreadable subtitle"))
         val name = displayName(target)
         mpv.addSub(url, name.substringBeforeLast('.'))
-        say("Sous-titres : $name")
+        say("${t("Sous-titres", "Subtitles")} : $name")
         worker.execute {
             val found = runCatching {
                 context.contentResolver.openFileDescriptor(target, "r")?.detachFd()?.let { SubIndex.parse(Core.index(it)) }
@@ -147,7 +147,7 @@ class Session(private val context: Context) {
     fun toggleFill() {
         fill = !fill
         mpv.setPanscan(fill)
-        say(if (fill) "Remplir l'écran" else "Image entière")
+        say(if (fill) t("Remplir l'écran", "Fill screen") else t("Image entière", "Fit"))
     }
 
     fun toggleUnscaled() {
@@ -225,7 +225,7 @@ class Session(private val context: Context) {
         context.contentResolver.query(u, arrayOf(OpenableColumns.DISPLAY_NAME), null, null, null)?.use {
             if (it.moveToFirst()) it.getString(0) else null
         }
-    }.getOrNull() ?: u.lastPathSegment?.substringAfterLast('/') ?: "Vidéo"
+    }.getOrNull() ?: u.lastPathSegment?.substringAfterLast('/') ?: t("Vidéo", "Video")
 
     fun close() {
         save()

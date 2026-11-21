@@ -29,15 +29,15 @@ class Track(
 ) {
     /** « Français », « English (ASS) », sinon la langue lisible, sinon « Piste 3 ». */
     val label: String
-        get() = title.ifBlank { languageName(lang) ?: "Piste $id" }
+        get() = title.ifBlank { languageName(lang) ?: "${t("Piste", "Track")} $id" }
 
     val detail: String
         get() = buildList {
             if (title.isNotBlank()) languageName(lang)?.let { add(it) }
             add(codecName(codec))
             if (channels > 0) add(channelName(channels))
-            if (forced) add("Forcés")
-            if (external != null) add("Externe")
+            if (forced) add(t("Forcés", "Forced"))
+            if (external != null) add(t("Externe", "External"))
         }.joinToString(" · ")
 }
 
@@ -50,19 +50,19 @@ private val bibliographic = mapOf(
 fun languageName(code: String): String? {
     if (code.isBlank() || code == "und") return null
     val tag = bibliographic[code] ?: code
-    val name = Locale.forLanguageTag(tag).getDisplayName(Locale.FRENCH)
+    val name = Locale.forLanguageTag(tag).getDisplayName(Lang.locale)
     if (name.isBlank() || name.equals(tag, ignoreCase = true)) return code.uppercase()
-    return name.replaceFirstChar { it.titlecase(Locale.FRENCH) }
+    return name.replaceFirstChar { it.titlecase(Lang.locale) }
 }
 
 private fun codecName(c: String) = when (c) {
     "subrip" -> "SRT"; "ass", "ssa" -> "ASS"; "hdmv_pgs_subtitle" -> "PGS"; "dvd_subtitle" -> "VobSub"
-    "webvtt" -> "WebVTT"; "mov_text" -> "Texte"; "eac3" -> "E-AC3"; "truehd" -> "TrueHD"
+    "webvtt" -> "WebVTT"; "mov_text" -> t("Texte", "Text"); "eac3" -> "E-AC3"; "truehd" -> "TrueHD"
     else -> c.uppercase()
 }
 
 private fun channelName(n: Int) = when (n) {
-    1 -> "Mono"; 2 -> "Stéréo"; 6 -> "5.1"; 8 -> "7.1"; else -> "$n canaux"
+    1 -> "Mono"; 2 -> t("Stéréo", "Stereo"); 6 -> "5.1"; 8 -> "7.1"; else -> "$n ${t("canaux", "channels")}"
 }
 
 /**

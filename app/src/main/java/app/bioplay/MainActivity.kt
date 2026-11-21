@@ -62,6 +62,7 @@ class MainActivity : ComponentActivity() {
         window.setDecorFitsSystemWindows(false)
         window.attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
         loadFonts(assets)
+        Lang.init(this)
         session = Session(this)
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {

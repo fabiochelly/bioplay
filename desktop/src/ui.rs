@@ -9,6 +9,7 @@ use egui::{
 };
 
 use crate::gfx::Glass;
+use crate::i18n::{en, tr};
 use crate::mpv::{track_detail, track_label};
 use crate::player::{clock, speed_label, Panel, Player, Zone};
 
@@ -218,10 +219,11 @@ fn bar(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, screen: Rect, a
         if pill(ui, Rect::from_min_size(pos2(rx, cy - 20.0), vec2(sw, 40.0)), Some(Icon::Speed), &sp, tint).clicked() {
             toggle(p, Panel::Speed);
         }
-        let ts = track_summary(p);
-        let tw = pill_width(ui, &ts, true);
-        rx -= tw + 4.0;
-        if pill(ui, Rect::from_min_size(pos2(rx, cy - 20.0), vec2(tw, 40.0)), Some(Icon::Tracks), &ts, INK).clicked() {
+        let (audio_name, sub_name) = track_names(p);
+        let tw = tracks_width(ui, &audio_name, sub_name.as_deref());
+        rx -= tw + 6.0;
+        let key = (p.mpv.state.aid, p.mpv.state.sid);
+        if tracks_button(ui, Rect::from_min_size(pos2(rx, cy - 21.0), vec2(tw, 42.0)), &audio_name, sub_name.as_deref(), key).clicked() {
             toggle(p, Panel::Tracks);
         }
 
@@ -241,26 +243,108 @@ impl Player {
         let s = &p.mpv.state;
         let t = if s.title.is_empty() { &s.path } else { &s.title };
         let name = std::path::Path::new(t).file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| t.clone());
-        if p.indexing { format!("{name}  ·  lecture des sous-titres…") } else { name }
+        if p.indexing { format!("{name}  ·  {}", tr("lecture des sous-titres…", "reading subtitles…")) } else { name }
     }
+}
+
+/// Langues affichées sur le bouton des pistes : audio, et sous-titres (None = désactivés).
+fn track_names(p: &Player) -> (String, Option<String>) {
+    let s = &p.mpv.state;
+    let name = |t: &crate::mpv::Track| {
+        let n = crate::mpv::language(&t.lang).unwrap_or_else(|| track_label(t));
+        if n.chars().count() > 14 { n.chars().take(13).collect::<String>() + "…" } else { n }
+    };
+    let audio = s.tracks.iter().find(|t| t.kind == "audio" && Some(t.id) == s.aid).map(name).unwrap_or("—".into());
+    (audio, p.sub_track().map(name))
+}
+
+const TB_ICON: f32 = 22.0;
+
+fn tracks_width(ui: &Ui, audio: &str, sub: Option<&str>) -> f32 {
+    let w = |t: &str| ui.painter().layout_no_wrap(t.to_owned(), semi(13.0), INK).size().x;
+    let sub_w = w(sub.unwrap_or(tr("Aucun", "Off")));
+    14.0 + TB_ICON + 7.0 + w(audio) + 13.0 + 1.0 + 13.0 + TB_ICON + 7.0 + sub_w + 16.0
+}
+
+/// Bouton des pistes : haut-parleur + langue audio, sous-titres + leur langue. Liseré d'accent
+/// et reflet qui le traverse au survol, et une fois à chaque changement de piste.
+fn tracks_button(ui: &mut Ui, r: Rect, audio: &str, sub: Option<&str>, key: (Option<i64>, Option<i64>)) -> Response {
+    let resp = ui.interact(r, ui.id().with("tracks-button"), Sense::click());
+    let ctx = ui.ctx().clone();
+    let k = ctx.animate_bool_with_time(resp.id, resp.hovered(), 0.15);
+    let cr = CornerRadius::same((r.height() / 2.0) as u8);
+    let painter = ui.painter();
+    let now = ctx.input(|i| i.time);
+
+    // Changement de piste : on retient l'instant pour lancer le reflet.
+    let mem = Id::new("tracks-key");
+    let last: Option<((Option<i64>, Option<i64>), f64)> = ctx.data(|d| d.get_temp(mem));
+    let changed_at = match last {
+        Some((k0, t)) if k0 == key => t,
+        Some(_) => {
+            ctx.data_mut(|d| d.insert_temp(mem, (key, now)));
+            now
+        }
+        None => {
+            ctx.data_mut(|d| d.insert_temp(mem, (key, -10.0)));
+            -10.0
+        }
+    };
+
+    painter.rect_filled(r, cr, Color32::from_white_alpha((14.0 + 20.0 * k) as u8));
+    // Liseré : dégradé d'accent, plus vif au survol.
+    painter.rect_stroke(r, cr, Stroke::new(1.0, ACCENT.gamma_multiply(0.30 + 0.45 * k)), StrokeKind::Inside);
+
+    // Reflet : une bande lumineuse oblique qui balaie le bouton.
+    let since = (now - changed_at) as f32;
+    let phase = if since < 0.9 { Some(since / 0.9) } else if resp.hovered() { Some(((now * 0.7) % 1.6) as f32 / 1.2) } else { None };
+    if let Some(ph) = phase.filter(|ph| *ph <= 1.0) {
+        let inner = r.shrink2(vec2(r.height() * 0.42, 1.0));
+        let x = inner.min.x - 40.0 + ph * (inner.width() + 80.0);
+        let clip = painter.with_clip_rect(inner);
+        let mut mesh = egui::Mesh::default();
+        let (a, b) = (Color32::TRANSPARENT, Color32::from_white_alpha(46));
+        let sk = 14.0;
+        mesh.colored_vertex(pos2(x - 26.0 + sk, inner.min.y), a);
+        mesh.colored_vertex(pos2(x + sk, inner.min.y), b);
+        mesh.colored_vertex(pos2(x + 26.0 + sk, inner.min.y), a);
+        mesh.colored_vertex(pos2(x - 26.0 - sk, inner.max.y), a);
+        mesh.colored_vertex(pos2(x - sk, inner.max.y), b);
+        mesh.colored_vertex(pos2(x + 26.0 - sk, inner.max.y), a);
+        for t in [[0, 1, 4], [0, 4, 3], [1, 2, 5], [1, 5, 4]] {
+            mesh.add_triangle(t[0], t[1], t[2]);
+        }
+        clip.add(Shape::mesh(mesh));
+        ctx.request_repaint();
+    } else if resp.hovered() {
+        ctx.request_repaint_after(std::time::Duration::from_millis(60));
+    }
+
+    let cy = r.center().y;
+    let mut x = r.min.x + 14.0;
+    icon(painter, pos2(x + TB_ICON / 2.0, cy), TB_ICON, Icon::Speaker, INK);
+    x += TB_ICON + 7.0;
+    let g = painter.layout_no_wrap(audio.to_owned(), semi(13.0), INK);
+    let w = g.size().x;
+    painter.galley(pos2(x, cy - g.size().y / 2.0), g, INK);
+    x += w + 13.0;
+    painter.line_segment([pos2(x, cy - 10.0), pos2(x, cy + 10.0)], Stroke::new(1.0, Color32::from_white_alpha(50)));
+    x += 14.0;
+    let (ic, col, label) = match sub {
+        Some(s) => (Icon::Tracks, ACCENT, s.to_owned()),
+        None => (Icon::SubtitlesOff, INK2, tr("Aucun", "Off").to_owned()),
+    };
+    icon(painter, pos2(x + TB_ICON / 2.0, cy), TB_ICON, ic, col);
+    x += TB_ICON + 7.0;
+    let g = painter.layout_no_wrap(label, semi(13.0), col);
+    painter.galley(pos2(x, cy - g.size().y / 2.0), g, col);
+    resp
 }
 
 fn toggle(p: &mut Player, panel: Panel) {
     p.panel = if p.panel == Some(panel) { None } else { Some(panel) };
 }
 
-fn track_summary(p: &Player) -> String {
-    let s = &p.mpv.state;
-    let short = |t: Option<&crate::mpv::Track>| {
-        t.map(|t| {
-            let base = if !t.lang.is_empty() && t.lang != "und" { t.lang.clone() } else { track_label(t) };
-            base.chars().take(3).collect::<String>().to_uppercase()
-        })
-    };
-    let audio = short(s.tracks.iter().find(|t| t.kind == "audio" && Some(t.id) == s.aid));
-    let sub = short(p.sub_track());
-    format!("{} · {}", audio.unwrap_or("—".into()), sub.unwrap_or("Off".into()))
-}
 
 fn seekbar(ui: &mut Ui, p: &mut Player, rect: Rect) {
     let r = ui.interact(rect, Id::new("seek"), Sense::click_and_drag());
@@ -349,13 +433,15 @@ enum Icon {
     Plus,
     Minus,
     Close,
+    Speaker,
+    SubtitlesOff,
 }
 
-fn icon(painter: &egui::Painter, c: Pos2, size: f32, icon: Icon, color: Color32) {
+fn icon(painter: &egui::Painter, c: Pos2, size: f32, which: Icon, color: Color32) {
     let s = size / 24.0;
     let p = |x: f32, y: f32| pos2(c.x + (x - 12.0) * s, c.y + (y - 12.0) * s);
     let stroke = Stroke::new(2.0 * s, color);
-    match icon {
+    match which {
         Icon::Play => {
             painter.add(Shape::convex_polygon(vec![p(8.0, 5.0), p(19.5, 12.0), p(8.0, 19.0)], color, Stroke::NONE));
         }
@@ -408,6 +494,22 @@ fn icon(painter: &egui::Painter, c: Pos2, size: f32, icon: Icon, color: Color32)
         }
         Icon::Minus => {
             painter.line_segment([p(6.0, 12.0), p(18.0, 12.0)], stroke);
+        }
+        Icon::Speaker => {
+            painter.rect_filled(Rect::from_min_max(p(3.5, 9.0), p(8.0, 15.0)), CornerRadius::same((1.0 * s) as u8), color);
+            painter.add(Shape::convex_polygon(vec![p(7.5, 9.0), p(13.0, 4.5), p(13.0, 19.5), p(7.5, 15.0)], color, Stroke::NONE));
+            for r in [3.6f32, 7.0] {
+                let pts = (0..=10).map(|i| {
+                    let a = (-50.0 + 10.0 * i as f32).to_radians();
+                    p(14.0 + r * a.cos(), 12.0 + r * a.sin())
+                }).collect();
+                painter.add(Shape::line(pts, Stroke::new(1.8 * s, color)));
+            }
+        }
+        Icon::SubtitlesOff => {
+            icon(painter, c, size, Icon::Tracks, color);
+            painter.line_segment([p(3.0, 21.0), p(21.0, 3.0)], Stroke::new(2.6 * s, Color32::from_black_alpha(150)));
+            painter.line_segment([p(3.5, 20.5), p(20.5, 3.5)], stroke);
         }
         Icon::Close => {
             painter.line_segment([p(7.0, 7.0), p(17.0, 17.0)], stroke);
@@ -501,6 +603,19 @@ fn choice(ui: &mut Ui, selected: bool, title: &str, detail: &str) -> Response {
     resp
 }
 
+/// Bascule de langue : deux pastilles « FR · EN », la langue active en couleur.
+fn language_switch(ui: &mut Ui) {
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 6.0;
+        if chip(ui, "FR", !en()).clicked() && en() {
+            crate::i18n::toggle();
+        }
+        if chip(ui, "EN", en()).clicked() && !en() {
+            crate::i18n::toggle();
+        }
+    });
+}
+
 // --- Tiroirs --------------------------------------------------------------------------------------
 
 fn drawer(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, screen: Rect, panel: Panel) {
@@ -555,28 +670,28 @@ fn tracks_panel(ui: &mut Ui, p: &mut Player, max_height: f32) {
     let audio: Vec<_> = p.mpv.state.tracks.iter().filter(|t| t.kind == "audio").cloned().collect();
     let subs: Vec<_> = p.mpv.state.tracks.iter().filter(|t| t.kind == "sub").cloned().collect();
     ui.columns(2, |cols| {
-        header(&mut cols[0], "Audio", &audio.len().to_string());
+        header(&mut cols[0], tr("Audio", "Audio"), &audio.len().to_string());
         egui::ScrollArea::vertical().id_salt("audio").max_height(lists).show(&mut cols[0], |ui| {
             for t in &audio {
                 if choice(ui, p.mpv.state.aid == Some(t.id), &track_label(t), &track_detail(t)).clicked() {
                     p.mpv.set("aid", &t.id.to_string());
-                    p.say(format!("Audio : {}", track_label(t)));
+                    p.say(format!("{} : {}", tr("Audio", "Audio"), track_label(t)));
                 }
             }
         });
-        header(&mut cols[1], "Sous-titres", &subs.len().to_string());
+        header(&mut cols[1], tr("Sous-titres", "Subtitles"), &subs.len().to_string());
         egui::ScrollArea::vertical().id_salt("subs").max_height(lists).show(&mut cols[1], |ui| {
-            if choice(ui, p.mpv.state.sid.is_none(), "Désactivés", "").clicked() {
+            if choice(ui, p.mpv.state.sid.is_none(), tr("Désactivés", "Off"), "").clicked() {
                 p.mpv.set("sid", "no");
-                p.say("Sous-titres désactivés");
+                p.say(tr("Sous-titres désactivés", "Subtitles off"));
             }
             for t in &subs {
                 if choice(ui, p.mpv.state.sid == Some(t.id), &track_label(t), &track_detail(t)).clicked() {
                     p.mpv.set("sid", &t.id.to_string());
-                    p.say(format!("Sous-titres : {}", track_label(t)));
+                    p.say(format!("{} : {}", tr("Sous-titres", "Subtitles"), track_label(t)));
                 }
             }
-            ui.label(egui::RichText::new("Glissez un fichier .srt / .ass sur la fenêtre pour l'ajouter").font(med(12.0)).color(FAINT));
+            ui.label(egui::RichText::new(tr("Glissez un fichier .srt / .ass sur la fenêtre pour l'ajouter", "Drop a .srt / .ass file on the window to add it")).font(med(12.0)).color(FAINT));
         });
     });
     ui.add_space(12.0);
@@ -584,9 +699,11 @@ fn tracks_panel(ui: &mut Ui, p: &mut Player, max_height: f32) {
     ui.painter().rect_filled(line, CornerRadius::ZERO, Color32::from_white_alpha(28));
     ui.add_space(12.0);
     ui.columns(2, |cols| {
-        delay(&mut cols[0], p, "Décalage audio", "audio-delay", 0.05);
-        delay(&mut cols[1], p, "Décalage sous-titres", "sub-delay", 0.1);
+        delay(&mut cols[0], p, tr("Décalage audio", "Audio delay"), "audio-delay", 0.05);
+        delay(&mut cols[1], p, tr("Décalage sous-titres", "Subtitle delay"), "sub-delay", 0.1);
     });
+    ui.add_space(12.0);
+    language_switch(ui);
 }
 
 fn delay(ui: &mut Ui, p: &mut Player, label: &str, prop: &str, step: f64) {
@@ -663,7 +780,7 @@ fn slider(ui: &mut Ui, value: f64, min: f64, max: f64, step: f64, marks: &[f64])
 
 fn speed_panel(ui: &mut Ui, p: &mut Player) {
     let s = p.mpv.state.speed;
-    big_value(ui, "Vitesse", "Voix préservée, sans distorsion", &speed_label(s), (s - 1.0).abs() > 0.001);
+    big_value(ui, tr("Vitesse", "Speed"), tr("Voix préservée, sans distorsion", "Pitch preserved, no distortion"), &speed_label(s), (s - 1.0).abs() > 0.001);
     if let Some(v) = slider(ui, s, 0.5, 2.0, 0.05, &[1.0, 1.5]) {
         p.mpv.set_f64("speed", v);
     }
@@ -679,7 +796,7 @@ fn speed_panel(ui: &mut Ui, p: &mut Player) {
 
 fn zoom_panel(ui: &mut Ui, p: &mut Player) {
     let z = 2f64.powf(p.mpv.state.zoom);
-    big_value(ui, "Image", "Ctrl + molette pour zoomer", &format!("{z:.1}×"), z > 1.01);
+    big_value(ui, tr("Image", "Picture"), tr("Ctrl + molette pour zoomer", "Ctrl + wheel to zoom"), &format!("{z:.1}×"), z > 1.01);
     if let Some(v) = slider(ui, z, 1.0, 4.0, 0.1, &[2.0, 3.0]) {
         p.mpv.set_f64("video-zoom", v.log2());
     }
@@ -687,33 +804,33 @@ fn zoom_panel(ui: &mut Ui, p: &mut Player) {
     ui.horizontal(|ui| {
         let fill = p.mpv.get("panscan").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0) > 0.5;
         let unscaled = p.mpv.get("video-unscaled").as_deref() == Some("yes");
-        if chip(ui, "Image entière", !fill && !unscaled && z <= 1.01).clicked() {
+        if chip(ui, tr("Image entière", "Fit"), !fill && !unscaled && z <= 1.01).clicked() {
             p.mpv.set_f64("video-zoom", 0.0);
             p.mpv.set_f64("video-pan-x", 0.0);
             p.mpv.set_f64("video-pan-y", 0.0);
             p.mpv.set_f64("panscan", 0.0);
             p.mpv.set("video-unscaled", "no");
         }
-        if chip(ui, "Remplir l'écran", fill).clicked() {
+        if chip(ui, tr("Remplir l'écran", "Fill screen"), fill).clicked() {
             p.mpv.set_f64("panscan", if fill { 0.0 } else { 1.0 });
         }
-        if chip(ui, "Taille réelle", unscaled).clicked() {
+        if chip(ui, tr("Taille réelle", "Actual size"), unscaled).clicked() {
             p.mpv.set("video-unscaled", if unscaled { "no" } else { "yes" });
         }
     });
 }
 
 fn list_panel(ui: &mut Ui, p: &mut Player, max_height: f32) {
-    let label = p.sub_track().map(|t| format!("Sous-titres · {}", track_label(t))).unwrap_or("Sous-titres".into());
-    let count = p.sub_index().map(|i| format!("{} lignes", i.cues.len())).unwrap_or_default();
+    let label = p.sub_track().map(|t| format!("{} · {}", tr("Sous-titres", "Subtitles"), track_label(t))).unwrap_or(tr("Sous-titres", "Subtitles").into());
+    let count = p.sub_index().map(|i| format!("{} {}", i.cues.len(), tr("lignes", "lines"))).unwrap_or_default();
     header(ui, &label, &count);
     let Some(idx) = p.sub_index() else {
         let why = if p.sub_track().is_none() {
-            "Choisissez une piste de sous-titres."
+            tr("Choisissez une piste de sous-titres.", "Pick a subtitle track.")
         } else if p.indexing {
-            "Lecture des sous-titres…"
+            tr("Lecture des sous-titres…", "Reading subtitles…")
         } else {
-            "Liste indisponible pour ce format. Les sauts ligne à ligne passent par mpv."
+            tr("Liste indisponible pour ce format. Les sauts ligne à ligne passent par mpv.", "No list for this format. Line jumps go through mpv.")
         };
         ui.label(egui::RichText::new(why).font(med(15.0)).color(INK2));
         return;
@@ -788,15 +905,15 @@ fn scrub_osd(ctx: &egui::Context, p: &Player, s: &crate::player::Scrub, plates: 
     let sign = if s.steps > 0 { "+" } else if s.steps < 0 { "−" } else { "" };
     let n = s.steps.abs();
     let head = match s.zone {
-        Zone::Line if n == 0 => "Sous-titres".to_string(),
-        Zone::Line => format!("{sign}{n} {}", if n > 1 { "lignes" } else { "ligne" }),
+        Zone::Line if n == 0 => tr("Sous-titres", "Subtitles").to_string(),
+        Zone::Line => format!("{sign}{n} {}", if n > 1 { tr("lignes", "lines") } else { tr("ligne", "line") }),
         Zone::Ten if n == 0 => "10 s".into(),
         Zone::Ten => format!("{sign}{} s", n * 10),
         Zone::Minute if n == 0 => "1 min".into(),
         Zone::Minute => format!("{sign}{n} min"),
     };
     let sub = if s.zone == Zone::Line && s.cue.is_none() && p.sub_index().is_none() {
-        "saut par mpv".to_string()
+        tr("saut par mpv", "jump via mpv").to_string()
     } else {
         format!("{}  /  {}", clock(s.target), clock(p.mpv.state.duration))
     };
@@ -843,17 +960,19 @@ fn home(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actions: &mut 
         egui::Frame::NONE.inner_margin(28.0).show(ui, |ui| {
             ui.set_width(w - 56.0);
             ui.label(egui::RichText::new("bioplay").font(semi(40.0)).color(INK));
-            ui.label(egui::RichText::new("Glissez une vidéo ici, ou ouvrez-la.").font(med(15.0)).color(INK2));
+            ui.label(egui::RichText::new(tr("Glissez une vidéo ici, ou ouvrez-la.", "Drop a video here, or open one.")).font(med(15.0)).color(INK2));
             ui.add_space(18.0);
-            let (r, _) = ui.allocate_exact_size(vec2(pill_width(ui, "Ouvrir une vidéo", true) + 8.0, 46.0), Sense::hover());
+            let (r, _) = ui.allocate_exact_size(vec2(pill_width(ui, tr("Ouvrir une vidéo", "Open a video"), true) + 8.0, 46.0), Sense::hover());
             ui.painter().rect_filled(r, CornerRadius::same(23), Color32::from_white_alpha(26));
             ui.painter().rect_stroke(r, CornerRadius::same(23), Stroke::new(1.0, Color32::from_white_alpha(60)), StrokeKind::Inside);
-            if pill(ui, r, Some(Icon::Folder), "Ouvrir une vidéo", INK).clicked() {
+            if pill(ui, r, Some(Icon::Folder), tr("Ouvrir une vidéo", "Open a video"), INK).clicked() {
                 actions.push(Action::Open);
             }
+            ui.add_space(10.0);
+            language_switch(ui);
             if !p.recents.is_empty() {
                 ui.add_space(20.0);
-                ui.label(egui::RichText::new("Reprendre").font(semi(13.0)).color(INK2));
+                ui.label(egui::RichText::new(tr("Reprendre", "Continue")).font(semi(13.0)).color(INK2));
                 ui.add_space(4.0);
                 for r in &p.recents {
                     let (row, resp) = ui.allocate_exact_size(vec2(ui.available_width(), 54.0), Sense::click());
@@ -863,7 +982,7 @@ fn home(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actions: &mut 
                     let clip = ui.painter().with_clip_rect(row.shrink2(vec2(0.0, 0.0)).with_max_x(row.max.x - 44.0));
                     let name = std::path::Path::new(&r.name).file_stem().map(|n| n.to_string_lossy().into_owned()).unwrap_or(r.name.clone());
                     clip.text(pos2(row.min.x + 12.0, row.min.y + 17.0), Align2::LEFT_CENTER, name, semi(15.0), INK);
-                    let rest = if r.duration > 0.0 && r.position > 5.0 { format!("Reste {}", clock(r.duration - r.position)) } else { clock(r.duration) };
+                    let rest = if r.duration > 0.0 && r.position > 5.0 { format!("{} {}", tr("Reste", "Left"), clock(r.duration - r.position)) } else { clock(r.duration) };
                     clip.text(pos2(row.min.x + 12.0, row.min.y + 35.0), Align2::LEFT_CENTER, rest, med(12.0), INK2);
                     let f = if r.duration > 0.0 { (r.position / r.duration).clamp(0.0, 1.0) as f32 } else { 0.0 };
                     let bar = Rect::from_min_size(pos2(row.min.x + 12.0, row.max.y - 7.0), vec2(row.width() - 68.0, 3.0));

@@ -6,6 +6,17 @@ import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.draw.drawWithContent
+import androidx.compose.ui.draw.clip
+import androidx.compose.foundation.interaction.collectIsPressedAsState
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.border
+import androidx.compose.animation.core.spring
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.core.FastOutSlowInEasing
+import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateDpAsState
 import androidx.compose.animation.core.tween
 import androidx.compose.animation.fadeIn
@@ -61,6 +72,7 @@ import androidx.compose.ui.viewinterop.AndroidView
 import app.bioplay.Cue
 import app.bioplay.Session
 import app.bioplay.clock
+import app.bioplay.t
 import kotlinx.coroutines.delay
 import kotlin.math.abs
 import kotlin.math.roundToInt
@@ -257,7 +269,7 @@ private fun ScrubOsd(s: Scrub, session: Session, modifier: Modifier) {
     val sign = if (s.steps > 0) "+" else if (s.steps < 0) "−" else ""
     val n = abs(s.steps)
     val head = when (s.zone) {
-        Zone.LINE -> if (n == 0) "Sous-titres" else "$sign$n ${if (n > 1) "lignes" else "ligne"}"
+        Zone.LINE -> if (n == 0) t("Sous-titres", "Subtitles") else "$sign$n ${if (n > 1) t("lignes", "lines") else t("ligne", "line")}"
         Zone.TEN -> if (n == 0) "10 s" else "$sign${n * 10} s"
         Zone.MINUTE -> if (n == 0) "1 min" else "$sign$n min"
     }
@@ -268,7 +280,7 @@ private fun ScrubOsd(s: Scrub, session: Session, modifier: Modifier) {
         BasicText(head, style = text(30, FontWeight.SemiBold))
         val total = session.mpv.duration
         BasicText(
-            if (s.zone == Zone.LINE && s.cue == null && session.subIndex == null) "saut par mpv"
+            if (s.zone == Zone.LINE && s.cue == null && session.subIndex == null) t("saut par mpv", "jump via mpv")
             else "${clock(s.target)}${if (total > 0) "  /  ${clock(total)}" else ""}",
             style = text(15, color = Ink.secondary),
             modifier = Modifier.padding(top = 2.dp),
@@ -320,8 +332,8 @@ private fun Controls(session: Session, onBack: () -> Unit, onPanel: (Panel) -> U
             Column(Modifier.padding(start = 14.dp).weight(1f)) {
                 BasicText(session.title.substringBeforeLast('.'), maxLines = 1, overflow = TextOverflow.Ellipsis, style = text(17, FontWeight.SemiBold))
                 val info = listOfNotNull(
-                    mpv.hwdec.takeIf { it.isNotBlank() && it != "no" }?.let { "décodage matériel" } ?: "décodage logiciel",
-                    if (session.indexing) "lecture des sous-titres…" else null,
+                    mpv.hwdec.takeIf { it.isNotBlank() && it != "no" }?.let { t("décodage matériel", "hardware decoding") } ?: t("décodage logiciel", "software decoding"),
+                    if (session.indexing) t("lecture des sous-titres…", "reading subtitles…") else null,
                 ).joinToString(" · ")
                 BasicText(info, style = text(12, color = Ink.secondary))
             }
@@ -345,12 +357,7 @@ private fun Controls(session: Session, onBack: () -> Unit, onPanel: (Panel) -> U
                 }
                 Spacer(Modifier.weight(1f))
                 Row(Modifier.glass(Capsule).padding(4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    GlassButton({ onPanel(Panel.TRACKS) }, plain = true, shape = Capsule, size = 48.dp) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.tracks, size = 22.dp)
-                            BasicText(trackSummary(session), style = text(14, FontWeight.SemiBold), modifier = Modifier.padding(start = 8.dp))
-                        }
-                    }
+                    TracksButton(session) { onPanel(Panel.TRACKS) }
                     GlassButton({ onPanel(Panel.SPEED) }, plain = true, shape = Capsule, size = 48.dp) {
                         Row(verticalAlignment = Alignment.CenterVertically) {
                             Icon(Icons.speed, size = 20.dp, tint = if (mpv.speed != 1.0) Ink.accent else Ink.primary)
@@ -369,12 +376,69 @@ private fun Controls(session: Session, onBack: () -> Unit, onPanel: (Panel) -> U
 
 fun speedLabel(s: Double) = if (abs(s - 1.0) < 0.001) "1×" else "%.2f".format(s).trimEnd('0').trimEnd('.', ',') + "×"
 
-private fun trackSummary(session: Session): String {
+/** Langue d'une piste pour le bouton : « Français », sinon son titre, raccourci. */
+private fun shortName(t: app.bioplay.Track): String {
+    val n = app.bioplay.languageName(t.lang) ?: t.label
+    return if (n.length > 14) n.take(13) + "…" else n
+}
+
+/**
+ * Bouton des pistes : haut-parleur + langue audio, sous-titres + leur langue. Liseré d'accent ;
+ * un reflet lumineux le traverse à chaque changement de piste et à chaque appui.
+ */
+@Composable
+private fun TracksButton(session: Session, onClick: () -> Unit) {
     val mpv = session.mpv
     val audio = mpv.tracks.firstOrNull { it.type == "audio" && it.id == mpv.aid }
     val sub = session.subTrack
-    fun short(t: app.bioplay.Track?) = t?.let { (it.lang.takeIf { l -> l.isNotBlank() && l != "und" } ?: it.label).take(3).uppercase() }
-    return "${short(audio) ?: "—"} · ${short(sub) ?: "Off"}"
+    val sheen = remember { Animatable(1f) }
+    val source = remember { MutableInteractionSource() }
+    val pressed by source.collectIsPressedAsState()
+    LaunchedEffect(mpv.aid, mpv.sid) {
+        sheen.snapTo(0f)
+        sheen.animateTo(1f, tween(900, easing = FastOutSlowInEasing))
+    }
+    LaunchedEffect(pressed) {
+        if (pressed) {
+            sheen.snapTo(0f)
+            sheen.animateTo(1f, tween(700, easing = FastOutSlowInEasing))
+        }
+    }
+    val scale by animateFloatAsState(if (pressed) 0.95f else 1f, spring(dampingRatio = 0.55f, stiffness = 900f), label = "press")
+    Row(
+        Modifier
+            .graphicsLayer { scaleX = scale; scaleY = scale }
+            .clip(Capsule)
+            .background(Color.White.copy(alpha = if (pressed) 0.16f else 0.07f))
+            .border(1.dp, Brush.horizontalGradient(listOf(Ink.accent.copy(alpha = 0.55f), Color.White.copy(alpha = 0.18f), Ink.accent.copy(alpha = 0.4f))), Capsule)
+            .drawWithContent {
+                drawContent()
+                val p = sheen.value
+                if (p < 1f) {
+                    val x = -size.width * 0.3f + p * size.width * 1.6f
+                    drawRect(
+                        Brush.linearGradient(
+                            listOf(Color.Transparent, Color.White.copy(alpha = 0.28f), Color.Transparent),
+                            start = Offset(x - 60f, 0f), end = Offset(x + 60f, size.height),
+                        )
+                    )
+                }
+            }
+            .clickable(source, indication = null, onClick = onClick)
+            .height(44.dp)
+            .padding(horizontal = 14.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Icon(Icons.speaker, size = 20.dp)
+        BasicText(audio?.let(::shortName) ?: "—", style = text(13, FontWeight.SemiBold), modifier = Modifier.padding(start = 7.dp))
+        Box(Modifier.padding(horizontal = 12.dp).width(1.dp).height(20.dp).background(Color.White.copy(alpha = 0.22f)))
+        Icon(if (sub != null) Icons.subtitles else Icons.subtitlesOff, size = 20.dp, tint = if (sub != null) Ink.accent else Ink.secondary)
+        BasicText(
+            sub?.let(::shortName) ?: t("Aucun", "Off"),
+            style = text(13, FontWeight.SemiBold, if (sub != null) Ink.accent else Ink.secondary),
+            modifier = Modifier.padding(start = 7.dp),
+        )
+    }
 }
 
 @Composable
