@@ -34,11 +34,11 @@ fun GlassDrawer(onDismiss: () -> Unit, width: Dp, content: @Composable ColumnSco
     Box(Modifier.fillMaxSize()) {
         Box(Modifier.fillMaxSize().clickable(remember { MutableInteractionSource() }, indication = null, onClick = onDismiss))
         Column(
-            Modifier.align(Alignment.BottomCenter).padding(horizontal = 14.dp, vertical = 12.dp)
-                .widthIn(max = width).fillMaxWidth().heightIn(max = screenH * 0.8f)
+            Modifier.align(Alignment.BottomCenter).padding(horizontal = 14.dp, vertical = 8.dp)
+                .widthIn(max = width).fillMaxWidth().heightIn(max = screenH * 0.92f)
                 .glass(RoundedCornerShape(30.dp), tint = 0.5f)
                 .clickable(remember { MutableInteractionSource() }, indication = null) {}
-                .padding(20.dp),
+                .padding(horizontal = 20.dp, vertical = 16.dp),
             content = content,
         )
     }

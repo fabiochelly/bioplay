@@ -127,12 +127,31 @@ class Session(private val context: Context) {
 
     // --- Zoom ----------------------------------------------------------------------------
 
-    fun zoomBy(factor: Double, dx: Double, dy: Double) {
+    /**
+     * Zoom autour du point pincé ([fx], [fy] en pixels de l'écran), puis déplacement de [dx], [dy]
+     * pixels. Sur un axe où l'image zoomée ne déborde pas de l'écran, elle reste centrée.
+     */
+    fun zoomBy(factor: Double, dx: Double = 0.0, dy: Double = 0.0, fx: Double? = null, fy: Double? = null) {
+        val w = mpv.surfaceW.toDouble()
+        val h = mpv.surfaceH.toDouble()
+        // Image à zoom 1 (ajustée à l'écran), en pixels.
+        val vw = minOf(w, h * mpv.aspect)
+        val vh = minOf(h, w / mpv.aspect)
+        val old = zoom
         zoom = (zoom * factor).coerceIn(1.0, 8.0)
-        val limit = 0.5 * (1 - 1 / zoom)
-        panX = if (zoom <= 1.001) 0.0 else (panX + dx / zoom).coerceIn(-limit, limit)
-        panY = if (zoom <= 1.001) 0.0 else (panY + dy / zoom).coerceIn(-limit, limit)
+        // Le point sous les doigts reste sous les doigts.
+        val px = (fx ?: (w / 2)) - w / 2
+        val py = (fy ?: (h / 2)) - h / 2
+        panX += px / (vw * zoom) - px / (vw * old) + dx / (vw * zoom)
+        panY += py / (vh * zoom) - py / (vh * old) + dy / (vh * zoom)
+        val limX = ((vw * zoom - w) / (2 * vw * zoom)).coerceAtLeast(0.0)
+        val limY = ((vh * zoom - h) / (2 * vh * zoom)).coerceAtLeast(0.0)
+        panX = panX.coerceIn(-limX, limX)
+        panY = panY.coerceIn(-limY, limY)
+        if (zoom <= 1.001) { panX = 0.0; panY = 0.0 }
         mpv.setZoom(zoom, panX, panY)
+        // Zoomé, les sous-titres se placent par rapport à l'écran : taille et place fixes.
+        mpv.subsOnScreen(zoom > 1.001 || fill)
     }
 
     fun setZoomLevel(z: Double) = zoomBy(z / zoom, 0.0, 0.0)
@@ -142,11 +161,13 @@ class Session(private val context: Context) {
         mpv.setZoom(1.0, 0.0, 0.0)
         mpv.setPanscan(false)
         mpv.setUnscaled(false)
+        mpv.subsOnScreen(false)
     }
 
     fun toggleFill() {
         fill = !fill
         mpv.setPanscan(fill)
+        mpv.subsOnScreen(fill || zoom > 1.001)
         say(if (fill) t("Remplir l'écran", "Fill screen") else t("Image entière", "Fit"))
     }
 

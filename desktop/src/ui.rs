@@ -575,17 +575,57 @@ fn choice(ui: &mut Ui, selected: bool, title: &str, detail: &str) -> Response {
     resp
 }
 
-/// Bascule de langue : deux pastilles « FR · EN », la langue active en couleur.
+/// Bascule de langue : un bouton double, drapeau discret et code, la langue active teintée.
 fn language_switch(ui: &mut Ui) {
-    ui.horizontal(|ui| {
-        ui.spacing_mut().item_spacing.x = 6.0;
-        if chip(ui, "FR", !en()).clicked() && en() {
+    let half = vec2(62.0, 30.0);
+    let (r, _) = ui.allocate_exact_size(vec2(half.x * 2.0 + 1.0, half.y), Sense::hover());
+    let cr = CornerRadius::same(15);
+    let painter = ui.painter().clone();
+    painter.rect_filled(r, cr, Color32::from_white_alpha(15));
+    for (i, (code, french)) in [("FR", true), ("EN", false)].into_iter().enumerate() {
+        let seg = Rect::from_min_size(pos2(r.min.x + i as f32 * (half.x + 1.0), r.min.y), half);
+        let selected = en() != french;
+        let resp = ui.interact(seg, ui.id().with(("lang", i)), Sense::click());
+        if selected {
+            let seg_cr = if i == 0 { CornerRadius { nw: 15, sw: 15, ne: 0, se: 0 } } else { CornerRadius { nw: 0, sw: 0, ne: 15, se: 15 } };
+            painter.rect_filled(seg, seg_cr, ACCENT.gamma_multiply(0.2));
+        } else if resp.hovered() {
+            painter.rect_filled(seg, cr, Color32::from_white_alpha(10));
+        }
+        let flag = Rect::from_min_size(pos2(seg.min.x + 11.0, seg.center().y - 6.0), vec2(18.0, 12.0));
+        draw_flag(&painter, flag, french, if selected { 0.75 } else { 0.4 });
+        painter.text(pos2(flag.max.x + 7.0, seg.center().y), Align2::LEFT_CENTER, code, semi(12.5), if selected { ACCENT } else { INK2 });
+        if resp.clicked() && !selected {
             crate::i18n::toggle();
         }
-        if chip(ui, "EN", en()).clicked() && !en() {
-            crate::i18n::toggle();
+    }
+    painter.line_segment([pos2(r.center().x, r.min.y + 7.0), pos2(r.center().x, r.max.y - 7.0)], Stroke::new(1.0, Color32::from_white_alpha(40)));
+    painter.rect_stroke(r, cr, Stroke::new(1.0, Color32::from_white_alpha(46)), StrokeKind::Inside);
+}
+
+/// Drapeau en verre : couleurs adoucies, semi-transparent.
+fn draw_flag(painter: &egui::Painter, r: Rect, french: bool, alpha: f32) {
+    let c = |rgb: (u8, u8, u8)| Color32::from_rgba_unmultiplied(rgb.0, rgb.1, rgb.2, (255.0 * alpha) as u8);
+    let (blue, red, white) = (c((91, 116, 176)), c((196, 106, 102)), c((237, 239, 243)));
+    let p = painter.with_clip_rect(r);
+    let (w, h) = (r.width(), r.height());
+    if french {
+        for (k, col) in [blue, white, red].into_iter().enumerate() {
+            p.rect_filled(Rect::from_min_size(pos2(r.min.x + w * k as f32 / 3.0, r.min.y), vec2(w / 3.0, h)), CornerRadius::ZERO, col);
         }
-    });
+    } else {
+        p.rect_filled(r, CornerRadius::ZERO, blue);
+        let d = h * 0.22;
+        p.line_segment([r.left_top(), r.right_bottom()], Stroke::new(d, white));
+        p.line_segment([r.left_bottom(), r.right_top()], Stroke::new(d, white));
+        p.line_segment([r.left_top(), r.right_bottom()], Stroke::new(d * 0.4, red));
+        p.line_segment([r.left_bottom(), r.right_top()], Stroke::new(d * 0.4, red));
+        p.rect_filled(Rect::from_min_size(pos2(r.min.x + w * 0.4, r.min.y), vec2(w * 0.2, h)), CornerRadius::ZERO, white);
+        p.rect_filled(Rect::from_min_size(pos2(r.min.x, r.min.y + h * 0.35), vec2(w, h * 0.3)), CornerRadius::ZERO, white);
+        p.rect_filled(Rect::from_min_size(pos2(r.min.x + w * 0.44, r.min.y), vec2(w * 0.12, h)), CornerRadius::ZERO, red);
+        p.rect_filled(Rect::from_min_size(pos2(r.min.x, r.min.y + h * 0.41), vec2(w, h * 0.18)), CornerRadius::ZERO, red);
+    }
+    painter.rect_stroke(r, CornerRadius::same(2), Stroke::new(1.0, Color32::from_white_alpha((64.0 * alpha) as u8)), StrokeKind::Inside);
 }
 
 // --- Tiroirs --------------------------------------------------------------------------------------
@@ -637,8 +677,8 @@ fn header(ui: &mut Ui, title: &str, trailing: &str) {
 }
 
 fn tracks_panel(ui: &mut Ui, p: &mut Player, max_height: f32) {
-    // En-têtes, séparateur et ligne des décalages occupent ~130 pt ; les listes prennent le reste.
-    let lists = (max_height - 130.0).clamp(90.0, 260.0);
+    // En-têtes, séparateur et ligne des décalages occupent ~110 pt ; les listes prennent le reste.
+    let lists = (max_height - 110.0).clamp(110.0, 420.0);
     let audio: Vec<_> = p.mpv.state.tracks.iter().filter(|t| t.kind == "audio").cloned().collect();
     let subs: Vec<_> = p.mpv.state.tracks.iter().filter(|t| t.kind == "sub").cloned().collect();
     ui.columns(2, |cols| {
@@ -670,12 +710,13 @@ fn tracks_panel(ui: &mut Ui, p: &mut Player, max_height: f32) {
     let (line, _) = ui.allocate_exact_size(vec2(ui.available_width(), 1.0), Sense::hover());
     ui.painter().rect_filled(line, CornerRadius::ZERO, Color32::from_white_alpha(28));
     ui.add_space(12.0);
-    ui.columns(2, |cols| {
-        delay(&mut cols[0], p, tr("Décalage audio", "Audio delay"), "audio-delay", 0.05);
-        delay(&mut cols[1], p, tr("Décalage sous-titres", "Subtitle delay"), "sub-delay", 0.1);
+    // Décalages et langue sur une seule ligne : la place va aux listes de pistes.
+    ui.horizontal(|ui| {
+        let w = (ui.available_width() - 150.0) / 2.0;
+        ui.allocate_ui(vec2(w, 48.0), |ui| delay(ui, p, tr("Décalage audio", "Audio delay"), "audio-delay", 0.05));
+        ui.allocate_ui(vec2(w, 48.0), |ui| delay(ui, p, tr("Décalage sous-titres", "Subtitle delay"), "sub-delay", 0.1));
+        language_switch(ui);
     });
-    ui.add_space(12.0);
-    language_switch(ui);
 }
 
 fn delay(ui: &mut Ui, p: &mut Player, label: &str, prop: &str, step: f64) {

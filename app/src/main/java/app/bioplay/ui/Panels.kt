@@ -69,7 +69,7 @@ private fun Choice(selected: Boolean, onClick: () -> Unit, title: String, detail
             .background(if (selected) Ink.accent.copy(alpha = 0.16f) else Color.Transparent)
             .then(if (selected) Modifier.border(1.dp, Ink.accent.copy(alpha = 0.45f), Row16) else Modifier)
             .clickable(onClick = onClick)
-            .padding(horizontal = 14.dp, vertical = 11.dp),
+            .padding(horizontal = 14.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Column(Modifier.weight(1f)) {
@@ -83,16 +83,16 @@ private fun Choice(selected: Boolean, onClick: () -> Unit, title: String, detail
 private fun Modifier.clip16() = clip(Row16)
 
 @Composable
-fun Chip(label: String, selected: Boolean, onClick: () -> Unit) {
+fun Chip(label: String, selected: Boolean, compact: Boolean = false, onClick: () -> Unit) {
     BasicText(
         label,
-        style = text(14, FontWeight.SemiBold, if (selected) Color(0xFF06131C) else Ink.primary),
+        style = text(if (compact) 12 else 14, FontWeight.SemiBold, if (selected) Color(0xFF06131C) else Ink.primary),
         modifier = Modifier
             .clip(Capsule)
             .background(if (selected) Ink.accent else Color.White.copy(alpha = 0.10f))
             .border(1.dp, Color.White.copy(alpha = if (selected) 0f else 0.16f), Capsule)
             .clickable(onClick = onClick)
-            .padding(horizontal = 16.dp, vertical = 9.dp),
+            .padding(horizontal = if (compact) 10.dp else 16.dp, vertical = if (compact) 6.dp else 9.dp),
     )
 }
 
@@ -102,7 +102,7 @@ fun Chip(label: String, selected: Boolean, onClick: () -> Unit) {
 fun TracksPanel(session: Session, onAddSubtitle: () -> Unit) {
     val mpv = session.mpv
     // Listes raccourcies sur un écran bas (téléphone en paysage) : décalages toujours visibles.
-    val listMax = ((LocalConfiguration.current.screenHeightDp * 0.8f - 230f).coerceIn(90f, 230f)).dp
+    val listMax = ((LocalConfiguration.current.screenHeightDp * 0.92f - 150f).coerceIn(110f, 420f)).dp
     val audio = mpv.tracks.filter { it.type == "audio" }
     val subs = mpv.tracks.filter { it.type == "sub" }
     Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
@@ -120,7 +120,7 @@ fun TracksPanel(session: Session, onAddSubtitle: () -> Unit) {
                 items(subs, key = { it.id }) { t -> TrackChoice(t, mpv.sid == t.id) { mpv.setSub(t.id); session.say("${t("Sous-titres", "Subtitles")} : ${t.label}") } }
                 item {
                     Row(
-                        Modifier.fillMaxWidth().padding(top = 4.dp).clip16().clickable(onClick = onAddSubtitle).padding(horizontal = 14.dp, vertical = 11.dp),
+                        Modifier.fillMaxWidth().padding(top = 4.dp).clip16().clickable(onClick = onAddSubtitle).padding(horizontal = 14.dp, vertical = 8.dp),
                         verticalAlignment = Alignment.CenterVertically,
                     ) {
                         Icon(Icons.add, size = 18.dp, tint = Ink.secondary)
@@ -130,13 +130,13 @@ fun TracksPanel(session: Session, onAddSubtitle: () -> Unit) {
             }
         }
     }
-    Box(Modifier.padding(vertical = 14.dp).fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = 0.12f)))
-    Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
+    Box(Modifier.padding(vertical = 10.dp).fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = 0.12f)))
+    // Décalages et langue sur une seule ligne : la place va aux listes de pistes.
+    Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
         Delay(t("Décalage audio", "Audio delay"), mpv.audioDelay, 0.05, Modifier.weight(1f)) { mpv.audioDelayTo(it) }
         Delay(t("Décalage sous-titres", "Subtitle delay"), mpv.subDelay, 0.1, Modifier.weight(1f)) { mpv.subDelayTo(it) }
+        LanguageSwitch(compact = true)
     }
-    Spacer(Modifier.height(12.dp))
-    LanguageSwitch()
 }
 
 @Composable
@@ -160,13 +160,61 @@ private fun Delay(label: String, value: Double, step: Double, modifier: Modifier
     }
 }
 
-/** Bascule de langue : « FR · EN », la langue active en couleur. */
+/** Bascule de langue : un bouton double, drapeau discret et code, la langue active teintée. */
 @Composable
-fun LanguageSwitch() {
+fun LanguageSwitch(compact: Boolean = false) {
     val context = androidx.compose.ui.platform.LocalContext.current
-    Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-        Chip("FR", !Lang.en) { if (Lang.en) Lang.toggle(context) }
-        Chip("EN", Lang.en) { if (!Lang.en) Lang.toggle(context) }
+    Row(
+        Modifier.clip(Capsule)
+            .background(Color.White.copy(alpha = 0.06f))
+            .border(1.dp, Color.White.copy(alpha = 0.18f), Capsule),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        LanguageHalf("FR", !Lang.en, compact, french = true) { if (Lang.en) Lang.toggle(context) }
+        Box(Modifier.width(1.dp).height(if (compact) 18.dp else 22.dp).background(Color.White.copy(alpha = 0.16f)))
+        LanguageHalf("EN", Lang.en, compact, french = false) { if (!Lang.en) Lang.toggle(context) }
+    }
+}
+
+@Composable
+private fun LanguageHalf(code: String, selected: Boolean, compact: Boolean, french: Boolean, onClick: () -> Unit) {
+    Row(
+        Modifier.background(if (selected) Ink.accent.copy(alpha = 0.20f) else Color.Transparent)
+            .clickable(onClick = onClick)
+            .padding(horizontal = if (compact) 10.dp else 14.dp, vertical = if (compact) 6.dp else 9.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        Flag(french, Modifier.width(if (compact) 18.dp else 21.dp).height(if (compact) 12.dp else 14.dp), if (selected) 0.75f else 0.4f)
+        BasicText(code, style = text(if (compact) 12 else 14, FontWeight.SemiBold, if (selected) Ink.accent else Ink.secondary), modifier = Modifier.padding(start = 7.dp))
+    }
+}
+
+/** Drapeau en verre : couleurs adoucies, semi-transparent. */
+@Composable
+private fun Flag(french: Boolean, modifier: Modifier, alpha: Float) {
+    Canvas(modifier.clip(RoundedCornerShape(3.dp))) {
+        val blue = Color(0xFF5B74B0).copy(alpha = alpha)
+        val red = Color(0xFFC46A66).copy(alpha = alpha)
+        val white = Color(0xFFEDEFF3).copy(alpha = alpha)
+        val w = size.width
+        val h = size.height
+        if (french) {
+            drawRect(blue, Offset.Zero, Size(w / 3, h))
+            drawRect(white, Offset(w / 3, 0f), Size(w / 3, h))
+            drawRect(red, Offset(2 * w / 3, 0f), Size(w / 3, h))
+        } else {
+            drawRect(blue)
+            val diag = h * 0.22f
+            drawLine(white, Offset.Zero, Offset(w, h), diag)
+            drawLine(white, Offset(0f, h), Offset(w, 0f), diag)
+            drawLine(red, Offset.Zero, Offset(w, h), diag * 0.4f)
+            drawLine(red, Offset(0f, h), Offset(w, 0f), diag * 0.4f)
+            drawRect(white, Offset(w * 0.4f, 0f), Size(w * 0.2f, h))
+            drawRect(white, Offset(0f, h * 0.35f), Size(w, h * 0.3f))
+            drawRect(red, Offset(w * 0.44f, 0f), Size(w * 0.12f, h))
+            drawRect(red, Offset(0f, h * 0.41f), Size(w, h * 0.18f))
+        }
+        drawRoundRect(Color.White.copy(alpha = 0.25f * alpha), style = androidx.compose.ui.graphics.drawscope.Stroke(1f), cornerRadius = CornerRadius(3.dp.toPx()))
     }
 }
 

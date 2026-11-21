@@ -32,6 +32,7 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.gestures.awaitEachGesture
 import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.gestures.calculatePan
+import androidx.compose.foundation.gestures.calculateCentroid
 import androidx.compose.foundation.gestures.calculateZoom
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -182,6 +183,7 @@ fun PlayerScreen(session: Session, onBack: () -> Unit, onAddSubtitle: () -> Unit
     }
     }
     BackHandler(panel != null) { panel = null }
+    LaunchedEffect(panel != null) { mpv.subsHidden(panel != null) }
     GlassSync(session, plates)
 }
 
@@ -225,7 +227,8 @@ private fun Gestures(
                     if (pinching) {
                         val z = ev.calculateZoom()
                         val pan = ev.calculatePan()
-                        session.zoomBy(z.toDouble(), pan.x / size.width.toDouble(), pan.y / size.height.toDouble())
+                        val focus = ev.calculateCentroid()
+                        session.zoomBy(z.toDouble(), pan.x.toDouble(), pan.y.toDouble(), focus.x.toDouble(), focus.y.toDouble())
                         ev.changes.forEach { it.consume() }
                         continue
                     }

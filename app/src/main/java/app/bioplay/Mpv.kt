@@ -120,6 +120,7 @@ class Mpv(context: Context) : MPVLib.EventObserver {
             "keep-open" to "yes",
             // Cache qui garde aussi l'arrière : retour en arrière instantané.
             "cache" to "yes",
+            "demuxer-readahead-secs" to "10",
             "demuxer-max-bytes" to "64MiB",
             "demuxer-max-back-bytes" to "48MiB",
             "demuxer-seekable-cache" to "yes",
@@ -130,7 +131,7 @@ class Mpv(context: Context) : MPVLib.EventObserver {
             // Liseré noir fin, sans ombre ; appliqué aussi aux ASS (tailles parfois démesurées).
             "sub-use-margins" to "no",
             "sub-ass-force-margins" to "no",
-            "sub-font-size" to "38",
+            "sub-font-size" to "52",
             "sub-color" to "#EBEBEB",
             "sub-outline-size" to "1.6",
             "sub-outline-color" to "#0A0A0A",
@@ -165,6 +166,7 @@ class Mpv(context: Context) : MPVLib.EventObserver {
             "aid" to MpvFormat.MPV_FORMAT_STRING,
             "sid" to MpvFormat.MPV_FORMAT_STRING,
             "container-fps" to MpvFormat.MPV_FORMAT_DOUBLE,
+            "video-params/aspect" to MpvFormat.MPV_FORMAT_DOUBLE,
             "eof-reached" to MpvFormat.MPV_FORMAT_FLAG,
             "hwdec-current" to MpvFormat.MPV_FORMAT_STRING,
             "osd-dimensions" to MpvFormat.MPV_FORMAT_STRING,
@@ -187,8 +189,14 @@ class Mpv(context: Context) : MPVLib.EventObserver {
         if (p != null) p() else lib.setPropertyString("vo", VO)
     }
 
+    /** Taille de la surface vidéo (pixels), pour le zoom. */
+    var surfaceW = 1; private set
+    var surfaceH = 1; private set
+    var aspect by mutableDoubleStateOf(16.0 / 9.0); private set
+
     fun resize(w: Int, h: Int) {
         if (!alive) return
+        surfaceW = w.coerceAtLeast(1); surfaceH = h.coerceAtLeast(1)
         lib.setPropertyString("android-surface-size", "${w}x$h")
     }
 
@@ -294,6 +302,19 @@ class Mpv(context: Context) : MPVLib.EventObserver {
         lib.setPropertyString("glsl-shader-opts", opts)
     }
 
+    /** Sous-titres masqués sous un tiroir : mpv les dessine après le flou, ils resteraient nets. */
+    fun subsHidden(hidden: Boolean) {
+        if (!alive) return
+        lib.setPropertyString("sub-visibility", if (hidden) "no" else "yes")
+    }
+
+    /** Sous-titres liés à l'écran (zoom, remplissage) ou à l'image (taille normale). */
+    fun subsOnScreen(on: Boolean) {
+        if (!alive) return
+        lib.setPropertyString("sub-use-margins", if (on) "yes" else "no")
+        lib.setPropertyString("sub-ass-force-margins", if (on) "yes" else "no")
+    }
+
     fun setPanscan(fill: Boolean) {
         if (!alive) return
         lib.setPropertyDouble("panscan", if (fill) 1.0 else 0.0)
@@ -331,6 +352,7 @@ class Mpv(context: Context) : MPVLib.EventObserver {
             "sub-delay" -> subDelay = value
             "audio-delay" -> audioDelay = value
             "container-fps" -> fps = value
+            "video-params/aspect" -> if (value > 0) aspect = value
         }
     }.let {}
 

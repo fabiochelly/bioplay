@@ -414,6 +414,8 @@ impl App {
         let panel = self.player.panel.is_some();
         if panel != self.panel_section {
             self.section("bioplay-panel", panel);
+            // Sous un tiroir, les sous-titres (dessinés après le flou) resteraient nets : masqués.
+            self.player.mpv.set("sub-visibility", if panel { "no" } else { "yes" });
             self.panel_section = panel;
         }
 
