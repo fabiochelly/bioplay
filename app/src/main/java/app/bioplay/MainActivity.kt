@@ -63,6 +63,7 @@ class MainActivity : ComponentActivity() {
         window.attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
         loadFonts(assets)
         Lang.init(this)
+        app.bioplay.ui.Flags.load(this)
         session = Session(this)
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {

@@ -1,52 +1,100 @@
-//! Drapeaux des langues courantes, peints en formes simples puis pris dans une dalle de verre.
-//! Même jeu de drapeaux et même détection que l'app Android (ui/Flags.kt).
+//! Drapeaux des langues, décrits une seule fois dans `shared/flags.txt` (formes simples) et
+//! dessinés ici dans une dalle de verre. Même fichier et même détection que l'app Android.
+
+use std::sync::OnceLock;
 
 use egui::{pos2, vec2, Color32, CornerRadius, Painter, Pos2, Rect, Shape, Stroke, StrokeKind};
 
-const CODES: &[(&str, &str)] = &[
-    ("fre", "fr"), ("fra", "fr"), ("eng", "en"), ("ger", "de"), ("deu", "de"), ("spa", "es"), ("ita", "it"),
-    ("por", "pt"), ("jpn", "ja"), ("chi", "zh"), ("zho", "zh"), ("kor", "ko"), ("rus", "ru"), ("dut", "nl"),
-    ("nld", "nl"), ("pol", "pl"), ("swe", "sv"), ("tur", "tr"),
-];
-pub const FLAGS: &[&str] = &["fr", "en", "de", "es", "it", "pt", "ja", "zh", "ko", "ru", "nl", "pl", "sv", "tr"];
-const NAMES: &[(&str, &[&str])] = &[
-    ("fr", &["français", "francais", "french", "vff", "vfq", "vf"]),
-    ("en", &["english", "anglais"]),
-    ("de", &["deutsch", "german", "allemand"]),
-    ("es", &["español", "espanol", "spanish", "espagnol", "castellano"]),
-    ("it", &["italiano", "italian", "italien"]),
-    ("pt", &["português", "portugues", "portuguese", "portugais"]),
-    ("ja", &["日本語", "japanese", "japonais"]),
-    ("zh", &["中文", "chinese", "chinois", "mandarin"]),
-    ("ko", &["한국어", "korean", "coréen"]),
-    ("ru", &["русский", "russian", "russe"]),
-    ("nl", &["nederlands", "dutch", "néerlandais"]),
-    ("pl", &["polski", "polish", "polonais"]),
-    ("sv", &["svenska", "swedish", "suédois"]),
-    ("tr", &["türkçe", "turkish", "turc"]),
-];
+const SOURCE: &str = include_str!("../../shared/flags.txt");
 
-/// Drapeau d'une piste : d'après son code de langue, sinon d'après un mot de son titre.
+enum Op {
+    Bands(bool, Vec<(f32, Color32)>),
+    Rect([f32; 4], Color32),
+    Circle([f32; 3], Color32),
+    Ring([f32; 4], Color32),
+    Star([f32; 3], f32, Color32),
+    Line([f32; 5], Color32),
+    Poly(Vec<[f32; 2]>, Color32),
+}
+
+pub struct Flag {
+    pub key: String,
+    codes: Vec<String>,
+    names: Vec<String>,
+    ops: Vec<Op>,
+}
+
+fn color(s: &str) -> Color32 {
+    let h = u32::from_str_radix(s.trim_start_matches('#'), 16).unwrap_or(0);
+    Color32::from_rgb((h >> 16) as u8, (h >> 8) as u8, h as u8)
+}
+
+fn parse() -> Vec<Flag> {
+    let mut out: Vec<Flag> = Vec::new();
+    for line in SOURCE.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')) {
+        if let Some(head) = line.strip_prefix('@') {
+            let (left, names) = head.split_once('|').unwrap_or((head, ""));
+            let mut it = left.split_whitespace();
+            let key = it.next().unwrap_or("").to_owned();
+            let codes = it.next().unwrap_or("").split(',').map(|c| c.trim().to_lowercase()).filter(|c| !c.is_empty()).collect();
+            let names = names.split(',').map(|n| n.trim().to_lowercase()).filter(|n| !n.is_empty()).collect();
+            out.push(Flag { key, codes, names, ops: Vec::new() });
+            continue;
+        }
+        let Some(flag) = out.last_mut() else { continue };
+        let mut parts = line.split_whitespace();
+        let kind = parts.next().unwrap_or("");
+        let args: Vec<&str> = parts.collect();
+        let nums: Vec<f32> = args.iter().filter(|a| !a.starts_with('#')).filter_map(|a| a.parse().ok()).collect();
+        let col = args.iter().find(|a| a.starts_with('#')).map(|c| color(c)).unwrap_or(Color32::WHITE);
+        let op = match kind {
+            "h" | "v" => {
+                let bands: Vec<(f32, Color32)> = args.iter().filter_map(|a| a.split_once(':')).map(|(w, c)| (w.parse().unwrap_or(1.0), color(c))).collect();
+                let total: f32 = bands.iter().map(|b| b.0).sum();
+                Op::Bands(kind == "v", bands.into_iter().map(|(w, c)| (w / total, c)).collect())
+            }
+            "r" if nums.len() >= 4 => Op::Rect([nums[0], nums[1], nums[2], nums[3]], col),
+            "c" if nums.len() >= 3 => Op::Circle([nums[0], nums[1], nums[2]], col),
+            "o" if nums.len() >= 4 => Op::Ring([nums[0], nums[1], nums[2], nums[3]], col),
+            // Étoile : la rotation éventuelle suit la couleur.
+            "s" if nums.len() >= 3 => Op::Star([nums[0], nums[1], nums[2]], args.last().and_then(|a| a.parse().ok()).filter(|_| !args.last().unwrap().starts_with('#')).unwrap_or(0.0), col),
+            "l" if nums.len() >= 5 => Op::Line([nums[0], nums[1], nums[2], nums[3], nums[4]], col),
+            "p" if nums.len() >= 6 => Op::Poly(nums.chunks_exact(2).map(|c| [c[0], c[1]]).collect(), col),
+            _ => continue,
+        };
+        flag.ops.push(op);
+    }
+    out
+}
+
+pub fn all() -> &'static [Flag] {
+    static FLAGS: OnceLock<Vec<Flag>> = OnceLock::new();
+    FLAGS.get_or_init(parse)
+}
+
+/// Drapeau d'une piste : d'après son code de langue (régional d'abord, « pt-br »), sinon
+/// d'après un mot de son titre (« Français », « Brasileiro »…).
 pub fn flag_for(lang: &str, title: &str) -> Option<&'static str> {
-    let l = lang.to_lowercase();
-    let l = l.split('-').next().unwrap_or("");
-    let code = CODES.iter().find(|(k, _)| *k == l).map(|(_, v)| *v).unwrap_or(l);
-    if let Some(f) = FLAGS.iter().find(|f| **f == code) {
-        return Some(f);
+    let l = lang.trim().to_lowercase().replace('_', "-");
+    if !l.is_empty() && l != "und" {
+        if let Some(f) = all().iter().find(|f| f.codes.contains(&l)) {
+            return Some(&f.key);
+        }
+        let primary = l.split('-').next().unwrap_or("").to_owned();
+        if let Some(f) = all().iter().find(|f| f.codes.contains(&primary)) {
+            return Some(&f.key);
+        }
     }
     let t = title.to_lowercase();
     let words: Vec<&str> = t.split(|c: char| !c.is_alphanumeric()).filter(|w| !w.is_empty()).collect();
-    NAMES.iter().find(|(_, names)| names.iter().any(|n| words.contains(n) || (!n.is_ascii() && t.contains(n)))).map(|(c, _)| *c)
+    all()
+        .iter()
+        .find(|f| f.names.iter().any(|n| if n.contains(' ') || !n.is_ascii() { t.contains(n.as_str()) } else { words.contains(&n.as_str()) }))
+        .map(|f| f.key.as_str())
 }
-
-fn rgb(r: u8, g: u8, b: u8) -> Color32 {
-    Color32::from_rgb(r, g, b)
-}
-
-const WHITE: (u8, u8, u8) = (244, 245, 247);
 
 /// Étoile à cinq branches, en triangles autour du centre (forme non convexe).
-fn star(p: &Painter, c: Pos2, r: f32, col: Color32, rot: f32) {
+fn star(p: &Painter, c: Pos2, r: f32, rot: f32, col: Color32) {
     let mut mesh = egui::Mesh::default();
     mesh.colored_vertex(c, col);
     for i in 0..=10 {
@@ -60,110 +108,73 @@ fn star(p: &Painter, c: Pos2, r: f32, col: Color32, rot: f32) {
     p.add(Shape::mesh(mesh));
 }
 
-fn bands(p: &Painter, r: Rect, vertical: bool, list: &[(f32, Color32)]) {
-    let mut t = 0.0;
-    for (f, c) in list {
-        let band = if vertical {
-            Rect::from_min_size(pos2(r.min.x + t * r.width(), r.min.y), vec2(f * r.width() + 0.5, r.height()))
-        } else {
-            Rect::from_min_size(pos2(r.min.x, r.min.y + t * r.height()), vec2(r.width(), f * r.height() + 0.5))
-        };
-        p.rect_filled(band, CornerRadius::ZERO, *c);
-        t += f;
-    }
-}
-
-fn paint(p: &Painter, r: Rect, code: &str) {
+fn paint(p: &Painter, r: Rect, flag: &Flag) {
     let (w, h) = (r.width(), r.height());
     let at = |x: f32, y: f32| pos2(r.min.x + x * w, r.min.y + y * h);
-    let white = rgb(WHITE.0, WHITE.1, WHITE.2);
-    let yellow = rgb(245, 194, 60);
-    match code {
-        "fr" => bands(p, r, true, &[(1.0 / 3.0, rgb(47, 93, 181)), (1.0 / 3.0, white), (1.0 / 3.0, rgb(224, 71, 63))]),
-        "it" => bands(p, r, true, &[(1.0 / 3.0, rgb(46, 154, 90)), (1.0 / 3.0, white), (1.0 / 3.0, rgb(224, 71, 63))]),
-        "de" => bands(p, r, false, &[(1.0 / 3.0, rgb(30, 30, 34)), (1.0 / 3.0, rgb(217, 58, 51)), (1.0 / 3.0, yellow)]),
-        "es" => bands(p, r, false, &[(0.25, rgb(200, 53, 46)), (0.5, yellow), (0.25, rgb(200, 53, 46))]),
-        "ru" => bands(p, r, false, &[(1.0 / 3.0, white), (1.0 / 3.0, rgb(43, 87, 176)), (1.0 / 3.0, rgb(224, 71, 63))]),
-        "nl" => bands(p, r, false, &[(1.0 / 3.0, rgb(200, 53, 46)), (1.0 / 3.0, white), (1.0 / 3.0, rgb(42, 76, 154))]),
-        "pl" => bands(p, r, false, &[(0.5, white), (0.5, rgb(220, 53, 72))]),
-        "pt" => {
-            bands(p, r, true, &[(0.4, rgb(46, 139, 78)), (0.6, rgb(224, 71, 63))]);
-            p.circle_filled(at(0.4, 0.5), h * 0.22, yellow);
-            p.circle_filled(at(0.4, 0.5), h * 0.13, rgb(224, 71, 63));
-        }
-        "ja" => {
-            p.rect_filled(r, CornerRadius::ZERO, white);
-            p.circle_filled(r.center(), h * 0.3, rgb(200, 53, 46));
-        }
-        "zh" => {
-            p.rect_filled(r, CornerRadius::ZERO, rgb(215, 56, 46));
-            star(p, at(0.17, 0.28), h * 0.17, yellow, 0.0);
-            for (x, y) in [(0.33, 0.1), (0.4, 0.22), (0.4, 0.38), (0.33, 0.5)] {
-                star(p, at(x, y), h * 0.06, yellow, 0.0);
-            }
-        }
-        "ko" => {
-            p.rect_filled(r, CornerRadius::ZERO, white);
-            let c = r.center();
-            let rr = h * 0.25;
-            // Disque coupé en deux : rouge en haut, bleu en bas.
-            for (top, col) in [(true, rgb(205, 58, 63)), (false, rgb(43, 91, 168))] {
-                let mut pts = vec![c];
-                for i in 0..=16 {
-                    let a = std::f32::consts::PI * (if top { 1.0 } else { 0.0 } + i as f32 / 16.0);
-                    pts.push(pos2(c.x + rr * a.cos(), c.y + rr * a.sin()));
-                }
-                p.add(Shape::convex_polygon(pts, col, Stroke::NONE));
-            }
-            let dark = rgb(38, 38, 43);
-            for (x, y) in [(0.16, 0.22), (0.84, 0.22), (0.16, 0.78), (0.84, 0.78)] {
-                for k in -1..=1 {
-                    p.rect_filled(Rect::from_center_size(at(x, y + k as f32 * 0.07), vec2(w * 0.12, h * 0.05)), CornerRadius::ZERO, dark);
+    for op in &flag.ops {
+        match op {
+            Op::Bands(vertical, bands) => {
+                let mut t = 0.0;
+                for (f, c) in bands {
+                    let band = if *vertical {
+                        Rect::from_min_size(at(t, 0.0), vec2(f * w + 0.5, h))
+                    } else {
+                        Rect::from_min_size(at(0.0, t), vec2(w, f * h + 0.5))
+                    };
+                    p.rect_filled(band, CornerRadius::ZERO, *c);
+                    t += f;
                 }
             }
-        }
-        "sv" => {
-            p.rect_filled(r, CornerRadius::ZERO, rgb(45, 108, 181));
-            p.rect_filled(Rect::from_min_size(at(0.3, 0.0), vec2(w * 0.13, h)), CornerRadius::ZERO, yellow);
-            p.rect_filled(Rect::from_min_size(at(0.0, 0.4), vec2(w, h * 0.2)), CornerRadius::ZERO, yellow);
-        }
-        "tr" => {
-            let red = rgb(215, 56, 46);
-            p.rect_filled(r, CornerRadius::ZERO, red);
-            p.circle_filled(at(0.38, 0.5), h * 0.27, white);
-            p.circle_filled(at(0.43, 0.5), h * 0.22, red);
-            star(p, at(0.62, 0.5), h * 0.13, white, -0.3);
-        }
-        _ => {
-            // Royaume-Uni : sautoirs puis croix, proportions officielles ramenées à la hauteur.
-            let (navy, red) = (rgb(35, 63, 140), rgb(210, 58, 72));
-            p.rect_filled(r, CornerRadius::ZERO, navy);
-            let (tl, br, bl, tr) = (r.left_top() - vec2(1.0, 1.0), r.right_bottom() + vec2(1.0, 1.0), r.left_bottom() + vec2(-1.0, 1.0), r.right_top() + vec2(1.0, -1.0));
-            p.line_segment([tl, br], Stroke::new(h * 0.2, white));
-            p.line_segment([bl, tr], Stroke::new(h * 0.2, white));
-            p.line_segment([tl, br], Stroke::new(h * 0.067, red));
-            p.line_segment([bl, tr], Stroke::new(h * 0.067, red));
-            p.rect_filled(Rect::from_center_size(r.center(), vec2(h * 0.333, h)), CornerRadius::ZERO, white);
-            p.rect_filled(Rect::from_center_size(r.center(), vec2(w, h * 0.333)), CornerRadius::ZERO, white);
-            p.rect_filled(Rect::from_center_size(r.center(), vec2(h * 0.2, h)), CornerRadius::ZERO, red);
-            p.rect_filled(Rect::from_center_size(r.center(), vec2(w, h * 0.2)), CornerRadius::ZERO, red);
+            Op::Rect([x, y, rw, rh], c) => {
+                p.rect_filled(Rect::from_min_size(at(*x, *y), vec2(rw * w, rh * h)), CornerRadius::ZERO, *c);
+            }
+            Op::Circle([x, y, rad], c) => {
+                p.circle_filled(at(*x, *y), rad * h, *c);
+            }
+            Op::Ring([x, y, rad, e], c) => {
+                p.circle_stroke(at(*x, *y), rad * h, Stroke::new(e * h, *c));
+            }
+            Op::Star([x, y, rad], rot, c) => star(p, at(*x, *y), rad * h, *rot, *c),
+            Op::Line([x1, y1, x2, y2, e], c) => {
+                p.line_segment([at(*x1, *y1), at(*x2, *y2)], Stroke::new(e * h, *c));
+            }
+            Op::Poly(pts, c) => {
+                // Éventail depuis le centre : convient aux formes « étoilées » (feuille, chevron).
+                let n = pts.len() as f32;
+                let cx = pts.iter().map(|q| q[0]).sum::<f32>() / n;
+                let cy = pts.iter().map(|q| q[1]).sum::<f32>() / n;
+                let mut mesh = egui::Mesh::default();
+                mesh.colored_vertex(at(cx, cy), *c);
+                for q in pts {
+                    mesh.colored_vertex(at(q[0], q[1]), *c);
+                }
+                let k = pts.len() as u32;
+                for i in 0..k {
+                    mesh.add_triangle(0, 1 + i, 1 + (i + 1) % k);
+                }
+                p.add(Shape::mesh(mesh));
+            }
         }
     }
 }
 
 /// Drapeau dans une dalle de verre. Peint opaque (les bandes superposées ne se voient pas à
-/// travers) ; une langue inactive est estompée par un voile uniforme posé par-dessus.
-pub fn draw(painter: &Painter, r: Rect, code: &str, alpha: f32) {
+/// travers) ; une langue inactive est estompée par un voile uniforme posé par-dessus. Coins
+/// droits : le drapeau ne déborde jamais de son liseré, même tout petit.
+pub fn draw(painter: &Painter, r: Rect, key: &str, alpha: f32) {
+    let Some(flag) = all().iter().find(|f| f.key == key) else { return };
+    let r = Rect::from_min_max(r.min.round(), r.max.round());
     let p = painter.with_clip_rect(r);
-    paint(&p, r, code);
+    paint(&p, r, flag);
     if alpha < 1.0 {
         p.rect_filled(r, CornerRadius::ZERO, Color32::from_rgba_premultiplied(14, 16, 22, ((1.0 - alpha) * 230.0) as u8));
     }
+    // Reflet en haut, ombre en bas.
     let h = r.height();
     let mut mesh = egui::Mesh::default();
-    let top = Color32::from_white_alpha(107);
-    let mid = Color32::from_white_alpha(15);
-    let shade = Color32::from_black_alpha(56);
+    let top = Color32::from_white_alpha(100);
+    let mid = Color32::from_white_alpha(12);
+    let shade = Color32::from_black_alpha(52);
     let ym = r.min.y + h * 0.5;
     for (pt, col) in [(r.left_top(), top), (r.right_top(), top), (pos2(r.max.x, ym), mid), (pos2(r.min.x, ym), mid), (r.right_bottom(), shade), (r.left_bottom(), shade)] {
         mesh.colored_vertex(pt, col);
@@ -172,5 +183,6 @@ pub fn draw(painter: &Painter, r: Rect, code: &str, alpha: f32) {
         mesh.add_triangle(t[0], t[1], t[2]);
     }
     p.add(Shape::mesh(mesh));
-    painter.rect_stroke(r, CornerRadius::same(3), Stroke::new(1.0, Color32::from_white_alpha((128.0 * alpha) as u8)), StrokeKind::Inside);
+    // Liseré fin (un demi-point), lumineux sans être épais.
+    painter.rect_stroke(r, CornerRadius::ZERO, Stroke::new(0.5, Color32::from_white_alpha((110.0 * alpha) as u8)), StrokeKind::Inside);
 }

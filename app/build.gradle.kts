@@ -41,6 +41,8 @@ android {
 
     // Le shader du verre est commun avec le bureau.
     sourceSets["main"].assets.directories.add("$rootDir/desktop/shaders")
+    // Drapeaux des langues, communs avec le bureau.
+    sourceSets["main"].assets.directories.add("$rootDir/shared")
     sourceSets["main"].jniLibs.directories.add(layout.buildDirectory.dir("generated/jniLibs").get().asFile.path)
 
     packaging {

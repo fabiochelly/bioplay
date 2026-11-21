@@ -65,6 +65,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
@@ -141,8 +142,14 @@ fun PlayerScreen(session: Session, onBack: () -> Unit, onAddSubtitle: () -> Unit
             modifier = Modifier.fillMaxSize(),
         )
 
+        val context = LocalContext.current
         Gestures(
             session,
+            onBrightnessStart = { Brightness.start(context) { session.say(it) } },
+            onBrightness = { level ->
+                Brightness.set(context, level)
+                session.say("${t("Luminosité", "Brightness")} ${(level * 100).roundToInt()} %")
+            },
             onTap = { controls = !controls; poke++ },
             onDoubleTap = { mpv.togglePause(); controls = !controls },
             onScrub = { scrub = it; poke++ },
@@ -193,6 +200,8 @@ fun PlayerScreen(session: Session, onBack: () -> Unit, onAddSubtitle: () -> Unit
 @Composable
 private fun Gestures(
     session: Session,
+    onBrightnessStart: () -> Float,
+    onBrightness: (Float) -> Unit,
     onTap: () -> Unit,
     onDoubleTap: () -> Unit,
     onScrub: (Scrub?) -> Unit,
@@ -216,6 +225,8 @@ private fun Gestures(
                 val from = mpv.position
                 var dragging = false
                 var pinching = false
+                var bright = false
+                var brightFrom = -1f
                 var steps = 0
                 var current: Scrub? = null
                 while (true) {
@@ -226,16 +237,25 @@ private fun Gestures(
                     if (pinching) {
                         // Pincement : zoom depuis le centre de l'écran, jamais décalé. Glissé à deux
                         // doigts sans pincer : déplacement de l'image zoomée.
+                        // Pincement : zoom depuis le centre ; l'image reste toujours centrée.
                         val z = ev.calculateZoom()
-                        val pan = ev.calculatePan()
-                        if (abs(z - 1f) > 0.004f) session.zoomBy(z.toDouble())
-                        else session.zoomBy(1.0, pan.x.toDouble(), pan.y.toDouble())
+                        if (abs(z - 1f) > 0.002f) session.zoomBy(z.toDouble())
                         ev.changes.forEach { it.consume() }
                         continue
                     }
                     val c = ev.changes.firstOrNull { it.id == down.id } ?: continue
                     val dx = c.position.x - down.position.x
                     val dy = c.position.y - down.position.y
+                    // Glissé vertical sur le tiers gauche : luminosité du système.
+                    if (!dragging && !bright && down.position.x < size.width / 3f && abs(dy) > viewConfiguration.touchSlop && abs(dy) > abs(dx) * 1.2f) {
+                        bright = true
+                        brightFrom = onBrightnessStart()
+                    }
+                    if (bright) {
+                        c.consume()
+                        if (brightFrom >= 0f) onBrightness((brightFrom - dy / (size.height * 0.8f)).coerceIn(0f, 1f))
+                        continue
+                    }
                     if (!dragging && abs(dx) > viewConfiguration.touchSlop && abs(dx) > abs(dy) * 1.2f) dragging = true
                     if (!dragging) continue
                     c.consume()
@@ -249,6 +269,7 @@ private fun Gestures(
                     if (steps != 0 && (zone != Zone.LINE || current.cue != null)) mpv.seek(current.target, exact = false)
                 }
                 when {
+                    bright -> {}
                     dragging -> {
                         val s = current
                         if (s != null && s.steps != 0) {

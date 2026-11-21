@@ -1022,9 +1022,17 @@ fn home(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actions: &mut 
             language_switch(ui);
             if std::env::var_os("BIOPLAY_FLAGS").is_some() {
                 ui.add_space(10.0);
-                let (r, _) = ui.allocate_exact_size(vec2(14.0 * 38.0, 26.0), Sense::hover());
-                for (i, f) in crate::flags::FLAGS.iter().enumerate() {
-                    crate::flags::draw(ui.painter(), Rect::from_min_size(pos2(r.min.x + i as f32 * 38.0, r.min.y), vec2(33.0, 22.0)), f, 1.0);
+                // Galerie de contrôle : tous les drapeaux, en grand et à la taille de la barre.
+                let flags = crate::flags::all();
+                let per_row = 12;
+                let rows = flags.len().div_ceil(per_row);
+                let (r, _) = ui.allocate_exact_size(vec2(per_row as f32 * 40.0, rows as f32 * 30.0 + 22.0), Sense::hover());
+                for (i, f) in flags.iter().enumerate() {
+                    let o = pos2(r.min.x + (i % per_row) as f32 * 40.0, r.min.y + (i / per_row) as f32 * 30.0);
+                    crate::flags::draw(ui.painter(), Rect::from_min_size(o, vec2(33.0, 22.0)), &f.key, 1.0);
+                }
+                for (i, f) in flags.iter().take(per_row).enumerate() {
+                    crate::flags::draw(ui.painter(), Rect::from_min_size(pos2(r.min.x + i as f32 * 40.0, r.max.y - 14.0), vec2(21.0, 14.0)), &f.key, 1.0);
                 }
             }
             if !p.recents.is_empty() {

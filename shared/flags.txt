@@ -1,0 +1,408 @@
+# Drapeaux des langues, communs au bureau et à Android.
+#
+# @clé codes,séparés,par,virgules | mots,du,titre
+#   Les codes sont ceux des pistes (ISO 639-1/639-2, étiquettes régionales « pt-br »).
+#   Les mots servent quand la piste n'a pas de code : « Français », « English »…
+#   Les variantes régionales sont avant leur langue : elles sont essayées en premier.
+#
+# Formes, coordonnées en fraction du drapeau (largeur 3, hauteur 2), rayons et épaisseurs
+# en fraction de la hauteur :
+#   h poids:#couleur …      bandes horizontales      v poids:#couleur …   bandes verticales
+#   r x y l h #couleur       rectangle                c cx cy r #couleur   disque
+#   o cx cy r e #couleur     anneau                   s cx cy r #couleur [rotation] étoile
+#   l x1 y1 x2 y2 e #couleur ligne                    p x1 y1 x2 y2 … #couleur  polygone
+
+@fr-ca fr-ca | québécois,quebecois,vfq,canadien,canada
+v 1:#E0473F 2:#F4F5F7 1:#E0473F
+p 0.5 0.2 0.55 0.34 0.63 0.3 0.6 0.48 0.67 0.5 0.56 0.6 0.53 0.78 0.47 0.78 0.44 0.6 0.33 0.5 0.4 0.48 0.37 0.3 0.45 0.34 #E0473F
+
+@fr fr,fre,fra | français,francais,french,vff,vf,truefrench
+v 1:#2F5DB5 1:#F4F5F7 1:#E0473F
+
+@en-us en-us | american,américain,us
+h 1:#C8352E 1:#F4F5F7 1:#C8352E 1:#F4F5F7 1:#C8352E 1:#F4F5F7 1:#C8352E 1:#F4F5F7 1:#C8352E 1:#F4F5F7 1:#C8352E 1:#F4F5F7 1:#C8352E
+r 0 0 0.4 0.54 #2A3E86
+c 0.07 0.1 0.035 #F4F5F7
+c 0.2 0.1 0.035 #F4F5F7
+c 0.33 0.1 0.035 #F4F5F7
+c 0.135 0.27 0.035 #F4F5F7
+c 0.265 0.27 0.035 #F4F5F7
+c 0.07 0.44 0.035 #F4F5F7
+c 0.2 0.44 0.035 #F4F5F7
+c 0.33 0.44 0.035 #F4F5F7
+
+@en en,eng | english,anglais
+r 0 0 1 1 #233F8C
+l -0.02 -0.02 1.02 1.02 0.2 #F4F5F7
+l -0.02 1.02 1.02 -0.02 0.2 #F4F5F7
+l -0.02 -0.02 1.02 1.02 0.067 #D23A48
+l -0.02 1.02 1.02 -0.02 0.067 #D23A48
+r 0.389 0 0.222 1 #F4F5F7
+r 0 0.333 1 0.334 #F4F5F7
+r 0.433 0 0.134 1 #D23A48
+r 0 0.4 1 0.2 #D23A48
+
+@de de,ger,deu | deutsch,german,allemand
+h 1:#1E1E22 1:#D93A33 1:#F5C23C
+
+@es-mx es-mx,es-419 | latino,latinoamericano,latinoamérica,latam,mexicano,mexicain,mexican
+v 1:#2E8B4E 1:#F4F5F7 1:#D7382E
+c 0.5 0.5 0.13 #9B6B3A
+
+@es es,spa | español,espanol,spanish,espagnol,castellano,castillan
+h 1:#C8352E 2:#F5C23C 1:#C8352E
+
+@it it,ita | italiano,italian,italien
+v 1:#2E9A5A 1:#F4F5F7 1:#E0473F
+
+@pt-br pt-br | brésilien,bresilien,brazilian,brasileiro,brasil,brésil
+r 0 0 1 1 #2E9A5A
+p 0.5 0.1 0.92 0.5 0.5 0.9 0.08 0.5 #F5C23C
+c 0.5 0.5 0.24 #2A3E86
+
+@pt pt,por | português,portugues,portuguese,portugais
+v 2:#2E8B4E 3:#E0473F
+c 0.4 0.5 0.22 #F5C23C
+c 0.4 0.5 0.13 #E0473F
+
+@ja ja,jpn | 日本語,japanese,japonais
+r 0 0 1 1 #F4F5F7
+c 0.5 0.5 0.3 #C8352E
+
+@zh zh,chi,zho | 中文,chinese,chinois,mandarin,cantonese,cantonais
+r 0 0 1 1 #D7382E
+s 0.17 0.28 0.17 #F5C23C
+s 0.33 0.1 0.06 #F5C23C
+s 0.4 0.22 0.06 #F5C23C
+s 0.4 0.38 0.06 #F5C23C
+s 0.33 0.5 0.06 #F5C23C
+
+@ko ko,kor | 한국어,korean,coréen,coreen
+r 0 0 1 1 #F4F5F7
+c 0.5 0.5 0.25 #2B5BA8
+p 0.333 0.5 0.344 0.37 0.39 0.29 0.45 0.25 0.5 0.25 0.55 0.25 0.61 0.29 0.656 0.37 0.667 0.5 #CD3A3F
+r 0.1 0.16 0.12 0.05 #26262B
+r 0.1 0.24 0.12 0.05 #26262B
+r 0.1 0.32 0.12 0.05 #26262B
+r 0.78 0.16 0.12 0.05 #26262B
+r 0.78 0.24 0.12 0.05 #26262B
+r 0.78 0.32 0.12 0.05 #26262B
+r 0.1 0.63 0.12 0.05 #26262B
+r 0.1 0.71 0.12 0.05 #26262B
+r 0.1 0.79 0.12 0.05 #26262B
+r 0.78 0.63 0.12 0.05 #26262B
+r 0.78 0.71 0.12 0.05 #26262B
+r 0.78 0.79 0.12 0.05 #26262B
+
+@ru ru,rus | русский,russian,russe
+h 1:#F4F5F7 1:#2B57B0 1:#E0473F
+
+@nl nl,dut,nld | nederlands,dutch,néerlandais,neerlandais,flamand
+h 1:#C8352E 1:#F4F5F7 1:#2A4C9A
+
+@pl pl,pol | polski,polish,polonais
+h 1:#F4F5F7 1:#DC3548
+
+@sv sv,swe | svenska,swedish,suédois,suedois
+r 0 0 1 1 #2D6CB5
+r 0.3 0 0.13 1 #F5C23C
+r 0 0.4 1 0.2 #F5C23C
+
+@tr tr,tur | türkçe,turkish,turc
+r 0 0 1 1 #D7382E
+c 0.38 0.5 0.27 #F4F5F7
+c 0.43 0.5 0.22 #D7382E
+s 0.62 0.5 0.13 #F4F5F7 -0.3
+
+@he he,heb,iw | עברית,hebrew,hébreu,hebreu
+r 0 0 1 1 #F4F5F7
+r 0 0.1 1 0.15 #2B57B0
+r 0 0.75 1 0.15 #2B57B0
+l 0.5 0.3 0.623 0.62 0.04 #2B57B0
+l 0.623 0.62 0.377 0.62 0.04 #2B57B0
+l 0.377 0.62 0.5 0.3 0.04 #2B57B0
+l 0.5 0.7 0.623 0.38 0.04 #2B57B0
+l 0.623 0.38 0.377 0.38 0.04 #2B57B0
+l 0.377 0.38 0.5 0.7 0.04 #2B57B0
+
+@hi hi,hin,ta,tam,te,tel,ml,mal,kn,kan,mr,mar,gu,guj,pa,pan | हिन्दी,hindi,tamil,telugu,malayalam,kannada,marathi,gujarati,punjabi
+h 1:#F08A2C 1:#F4F5F7 1:#2E8B4E
+o 0.5 0.5 0.12 0.025 #2A3E86
+c 0.5 0.5 0.03 #2A3E86
+
+@el el,gre,ell | ελληνικά,greek,grec
+h 1:#2E6BB8 1:#F4F5F7 1:#2E6BB8 1:#F4F5F7 1:#2E6BB8 1:#F4F5F7 1:#2E6BB8 1:#F4F5F7 1:#2E6BB8
+r 0 0 0.37 0.556 #2E6BB8
+r 0.148 0 0.074 0.556 #F4F5F7
+r 0 0.222 0.37 0.111 #F4F5F7
+
+@cs cs,cze,ces | čeština,czech,tchèque,tcheque
+h 1:#F4F5F7 1:#D7382E
+p 0 0 0.5 0.5 0 1 #2A57A8
+
+@sk sk,slo,slk | slovenčina,slovak,slovaque
+h 1:#F4F5F7 1:#2A57A8 1:#D7382E
+r 0.22 0.22 0.17 0.52 #F4F5F7
+r 0.235 0.24 0.14 0.47 #D7382E
+r 0.29 0.28 0.03 0.32 #F4F5F7
+r 0.255 0.36 0.1 0.05 #F4F5F7
+r 0.255 0.6 0.14 0.11 #2A57A8
+
+@sl sl,slv | slovenščina,slovenian,slovène,slovene
+h 1:#F4F5F7 1:#2A57A8 1:#D7382E
+r 0.2 0.18 0.14 0.32 #F4F5F7
+r 0.21 0.2 0.12 0.28 #2A57A8
+p 0.21 0.42 0.27 0.3 0.33 0.42 #F4F5F7
+
+@da da,dan | dansk,danish,danois
+r 0 0 1 1 #D23A40
+r 0.29 0 0.11 1 #F4F5F7
+r 0 0.42 1 0.16 #F4F5F7
+
+@fi fi,fin | suomi,finnish,finnois
+r 0 0 1 1 #F4F5F7
+r 0.27 0 0.16 1 #2A57A8
+r 0 0.38 1 0.24 #2A57A8
+
+@no no,nor,nb,nob,nn,nno | norsk,norwegian,norvégien,norvegien
+r 0 0 1 1 #C8352E
+r 0.27 0 0.16 1 #F4F5F7
+r 0 0.38 1 0.24 #F4F5F7
+r 0.3 0 0.09 1 #2A3E86
+r 0 0.44 1 0.12 #2A3E86
+
+@is is,ice,isl | íslenska,icelandic,islandais
+r 0 0 1 1 #2D5FAE
+r 0.27 0 0.16 1 #F4F5F7
+r 0 0.38 1 0.24 #F4F5F7
+r 0.3 0 0.09 1 #D23A40
+r 0 0.44 1 0.12 #D23A40
+
+@hu hu,hun | magyar,hungarian,hongrois
+h 1:#D23A40 1:#F4F5F7 1:#3E8A4C
+
+@ro ro,rum,ron | română,romana,romanian,roumain
+v 1:#2A4FA8 1:#F5C23C 1:#D23A40
+
+@uk uk,ukr | українська,ukrainian,ukrainien
+h 1:#2D6CC4 1:#F5C23C
+
+@bg bg,bul | български,bulgarian,bulgare
+h 1:#F4F5F7 1:#2E9A5A 1:#D23A40
+
+@be be,bel | беларуская,belarusian,biélorusse,bielorusse
+h 2:#C8352E 1:#3E9A4A
+r 0 0 0.11 1 #F4F5F7
+r 0.035 0.08 0.04 0.06 #C8352E
+r 0.035 0.3 0.04 0.06 #C8352E
+r 0.035 0.52 0.04 0.06 #C8352E
+r 0.035 0.74 0.04 0.06 #C8352E
+
+@hr hr,hrv,scr | hrvatski,croatian,croate
+h 1:#D7382E 1:#F4F5F7 1:#2A3E86
+r 0.43 0.27 0.14 0.38 #D7382E
+r 0.43 0.27 0.035 0.076 #F4F5F7
+r 0.5 0.27 0.035 0.076 #F4F5F7
+r 0.465 0.346 0.035 0.076 #F4F5F7
+r 0.535 0.346 0.035 0.076 #F4F5F7
+r 0.43 0.422 0.035 0.076 #F4F5F7
+r 0.5 0.422 0.035 0.076 #F4F5F7
+r 0.465 0.498 0.035 0.076 #F4F5F7
+r 0.535 0.498 0.035 0.076 #F4F5F7
+r 0.43 0.574 0.035 0.076 #F4F5F7
+r 0.5 0.574 0.035 0.076 #F4F5F7
+
+@sr sr,srp,scc | српски,srpski,serbian,serbe
+h 1:#C8352E 1:#2A3E86 1:#F4F5F7
+
+@bs bs,bos | bosanski,bosnian,bosniaque
+r 0 0 1 1 #2A3E86
+p 0.3 0 0.78 0 0.78 1 #F5C23C
+s 0.26 0.07 0.06 #F4F5F7
+s 0.32 0.2 0.06 #F4F5F7
+s 0.38 0.33 0.06 #F4F5F7
+s 0.44 0.46 0.06 #F4F5F7
+s 0.5 0.59 0.06 #F4F5F7
+s 0.56 0.72 0.06 #F4F5F7
+s 0.62 0.85 0.06 #F4F5F7
+
+@mk mk,mac,mkd | македонски,macedonian,macédonien,macedonien
+r 0 0 1 1 #D7382E
+l 0.5 0.5 0 0 0.12 #F5C23C
+l 0.5 0.5 1 0 0.12 #F5C23C
+l 0.5 0.5 0 1 0.12 #F5C23C
+l 0.5 0.5 1 1 0.12 #F5C23C
+l 0.5 0.5 0.5 0 0.12 #F5C23C
+l 0.5 0.5 0.5 1 0.12 #F5C23C
+l 0.5 0.5 0 0.5 0.12 #F5C23C
+l 0.5 0.5 1 0.5 0.12 #F5C23C
+c 0.5 0.5 0.17 #D7382E
+c 0.5 0.5 0.13 #F5C23C
+
+@et et,est | eesti,estonian,estonien
+h 1:#3A7CC9 1:#1E1E22 1:#F4F5F7
+
+@lv lv,lav | latviešu,latvian,letton
+h 2:#9E2B37 1:#F4F5F7 2:#9E2B37
+
+@lt lt,lit | lietuvių,lithuanian,lituanien
+h 1:#F5C23C 1:#2E8B4E 1:#C8352E
+
+@ca ca,cat | català,catalan
+h 1:#F5C23C 1:#D7382E 1:#F5C23C 1:#D7382E 1:#F5C23C 1:#D7382E 1:#F5C23C 1:#D7382E 1:#F5C23C
+
+@eu eu,baq,eus | euskara,basque
+r 0 0 1 1 #D7382E
+l -0.02 -0.02 1.02 1.02 0.16 #2E8B4E
+l -0.02 1.02 1.02 -0.02 0.16 #2E8B4E
+r 0.46 0 0.08 1 #F4F5F7
+r 0 0.44 1 0.12 #F4F5F7
+
+@gl gl,glg | galego,galician,galicien
+r 0 0 1 1 #F4F5F7
+l -0.02 -0.02 1.02 1.02 0.22 #4A8FD6
+
+@ga ga,gle | gaeilge,irish,irlandais
+v 1:#2E9A5A 1:#F4F5F7 1:#F2953A
+
+@lb lb,ltz | lëtzebuergesch,luxembourgish,luxembourgeois
+h 1:#E0473F 1:#F4F5F7 1:#3BA6D8
+
+@mt mt,mlt | malti,maltese,maltais
+v 1:#F4F5F7 1:#CF3338
+r 0.08 0.1 0.06 0.12 #A0A4AA
+
+@ka ka,geo,kat | ქართული,georgian,géorgien,georgien
+r 0 0 1 1 #F4F5F7
+r 0.433 0 0.134 1 #E0473F
+r 0 0.4 1 0.2 #E0473F
+r 0.18 0.15 0.06 0.13 #E0473F
+r 0.165 0.18 0.09 0.07 #E0473F
+r 0.76 0.15 0.06 0.13 #E0473F
+r 0.745 0.18 0.09 0.07 #E0473F
+r 0.18 0.72 0.06 0.13 #E0473F
+r 0.165 0.75 0.09 0.07 #E0473F
+r 0.76 0.72 0.06 0.13 #E0473F
+r 0.745 0.75 0.09 0.07 #E0473F
+
+@hy hy,arm,hye | հայերեն,armenian,arménien,armenien
+h 1:#D7382E 1:#2A57A8 1:#F2A33A
+
+@az az,aze | azərbaycan,azerbaijani,azéri,azeri
+h 1:#3BA0D8 1:#D7382E 1:#3E9A4A
+c 0.48 0.5 0.11 #F4F5F7
+c 0.51 0.5 0.09 #D7382E
+s 0.59 0.5 0.05 #F4F5F7
+
+@kk kk,kaz | қазақ,kazakh
+r 0 0 1 1 #36A7C9
+c 0.5 0.45 0.15 #F5C23C
+r 0.06 0.1 0.04 0.8 #F5C23C
+
+@uz uz,uzb | oʻzbek,uzbek,ouzbek
+h 10:#2E8FC9 1:#D7382E 8:#F4F5F7 1:#D7382E 10:#3E9A4A
+c 0.13 0.17 0.1 #F4F5F7
+c 0.16 0.17 0.09 #2E8FC9
+
+@ky ky,kir | кыргыз,kyrgyz,kirghiz
+r 0 0 1 1 #D7382E
+c 0.5 0.5 0.22 #F5C23C
+c 0.5 0.5 0.13 #D7382E
+
+@tg tg,tgk | тоҷикӣ,tajik,tadjik
+h 2:#D7382E 3:#F4F5F7 2:#3E9A4A
+c 0.5 0.5 0.07 #F5C23C
+
+@mn mn,mon | монгол,mongolian,mongol
+v 1:#C8352E 1:#2A57A8 1:#C8352E
+r 0.13 0.25 0.08 0.5 #F5C23C
+
+@th th,tha | ไทย,thai,thaï
+h 1:#C8352E 1:#F4F5F7 2:#2A3E86 1:#F4F5F7 1:#C8352E
+
+@vi vi,vie | tiếng việt,vietnamese,vietnamien
+r 0 0 1 1 #D7382E
+s 0.5 0.5 0.3 #F5C23C
+
+@lo lo,lao | ລາວ,lao,laotien
+h 1:#C8352E 2:#2A3E86 1:#C8352E
+c 0.5 0.5 0.2 #F4F5F7
+
+@km km,khm | ខ្មែរ,khmer,cambodian,cambodgien
+h 1:#2A3E86 2:#D7382E 1:#2A3E86
+r 0.38 0.44 0.24 0.18 #F4F5F7
+p 0.42 0.44 0.5 0.3 0.58 0.44 #F4F5F7
+
+@my my,bur,mya | မြန်မာ,burmese,birman,myanmar
+h 1:#F5C23C 1:#3E9A4A 1:#D7382E
+s 0.5 0.54 0.32 #F4F5F7
+
+@id id,ind,jv,jav,su,sun | bahasa indonesia,indonesian,indonésien,indonesien,javanais
+h 1:#D7382E 1:#F4F5F7
+
+@ms ms,may,msa | bahasa melayu,malay,malais
+h 1:#C8352E 1:#F4F5F7 1:#C8352E 1:#F4F5F7 1:#C8352E 1:#F4F5F7 1:#C8352E 1:#F4F5F7 1:#C8352E 1:#F4F5F7 1:#C8352E 1:#F4F5F7 1:#C8352E 1:#F4F5F7
+r 0 0 0.5 0.571 #233F8C
+c 0.19 0.29 0.17 #F5C23C
+c 0.23 0.29 0.14 #233F8C
+s 0.37 0.29 0.11 #F5C23C
+
+@tl tl,tgl,fil | filipino,tagalog,philippin
+h 1:#2A57A8 1:#D7382E
+p 0 0 0.45 0.5 0 1 #F4F5F7
+c 0.13 0.5 0.09 #F5C23C
+
+@fa fa,per,fas | فارسی,persian,persan,farsi
+h 1:#3E9A4A 1:#F4F5F7 1:#D7382E
+c 0.5 0.5 0.08 #D7382E
+
+@ur ur,urd | اردو,urdu,ourdou
+r 0 0 1 1 #1E6B3A
+r 0 0 0.25 1 #F4F5F7
+c 0.62 0.5 0.26 #F4F5F7
+c 0.66 0.44 0.23 #1E6B3A
+s 0.73 0.35 0.08 #F4F5F7
+
+@bn bn,ben | বাংলা,bengali,bangla
+r 0 0 1 1 #1E6B3A
+c 0.45 0.5 0.3 #D7382E
+
+@sw sw,swa | kiswahili,swahili
+h 6:#1E1E22 1:#F4F5F7 6:#C8352E 1:#F4F5F7 6:#2E8B4E
+c 0.5 0.5 0.2 #C8352E
+
+@am am,amh | አማርኛ,amharic,amharique
+h 1:#3E9A4A 1:#F5C23C 1:#D7382E
+c 0.5 0.5 0.22 #2A57A8
+s 0.5 0.5 0.15 #F5C23C
+
+@ha ha,hau,yo,yor,ig,ibo | hausa,yoruba,igbo,nigerian,nigérian
+v 1:#2E8B4E 1:#F4F5F7 1:#2E8B4E
+
+@so so,som | soomaali,somali,somalien
+r 0 0 1 1 #4189DD
+s 0.5 0.5 0.26 #F4F5F7
+
+@af af,afr,zu,zul,xh,xho | afrikaans,zulu,xhosa
+r 0 0 1 0.5 #D7382E
+r 0 0.5 1 0.5 #2A3E86
+r 0 0.36 1 0.28 #F4F5F7
+r 0 0.4 1 0.2 #2E8B4E
+p 0 -0.05 0.55 0.5 0 1.05 #F4F5F7
+p 0 0.05 0.47 0.5 0 0.95 #2E8B4E
+p 0 0.2 0.32 0.5 0 0.8 #F5C23C
+p 0 0.26 0.26 0.5 0 0.74 #1E1E22
+
+@mg mg,mlg | malagasy,malgache
+r 0 0 1 1 #F4F5F7
+r 0.333 0 0.667 0.5 #D7382E
+r 0.333 0.5 0.667 0.5 #2E8B4E
+
+@ht ht,hat | kreyòl,haitian,créole haïtien,creole haitien
+h 1:#2A3E86 1:#D7382E
+r 0.4 0.37 0.2 0.26 #F4F5F7
+
+@eo eo,epo | esperanto,espéranto
+r 0 0 1 1 #2E9A5A
+r 0 0 0.33 0.5 #F4F5F7
+s 0.165 0.25 0.17 #2E9A5A

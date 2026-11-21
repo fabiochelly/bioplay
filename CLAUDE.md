@@ -13,5 +13,9 @@ Lecteur vidéo minimal (Android + bureau) construit sur libmpv, interface « ver
   + `script-binding main/…`. `./desktop/install.sh` installe dans `~/.local`. `--panel=list|tracks|…`
   ouvre un tiroir au démarrage ; toute autre option `--k=v` est passée à mpv.
 
+- `shared/flags.txt` : drapeaux des langues (formes simples + codes + mots de titre), lus par
+  `desktop/src/flags.rs` et `app/.../ui/Flags.kt`. Ajouter un drapeau = l'ajouter ici seulement.
+  `BIOPLAY_FLAGS=1 bioplay` affiche la galerie sur l'accueil.
+
 Règles : la position de lecture est toujours mémorisée (clé nom+taille du fichier) et reprise.
 Textes de l'interface en français.
