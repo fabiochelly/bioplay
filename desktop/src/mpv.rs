@@ -180,6 +180,20 @@ impl Mpv {
         m.set("save-position-on-quit", "yes"); // reprise toujours, quoi qu'il arrive
         m.set("resume-playback", "yes");
         m.set("input-cursor", "no");
+        // Sous-titres sobres : taille raisonnable, liseré noir fin, aucune ombre, y compris pour
+        // les ASS dont le style imposait des tailles démesurées. L'épaisseur du liseré reste celle
+        // de mpv.conf.
+        for (k, v) in [
+            ("sub-font-size", "34"),
+            ("sub-color", "#FFFFFF"),
+            ("sub-outline-color", "#000000"),
+            ("sub-shadow-offset", "0"),
+            ("sub-blur", "0"),
+            ("sub-back-color", "#00000000"),
+            ("sub-ass-override", "force"),
+        ] {
+            m.set(k, v);
+        }
         for (i, (name, f)) in OBSERVED.iter().enumerate() {
             unsafe { mpv_observe_property(h, i as u64, cs(name).as_ptr(), *f) };
         }

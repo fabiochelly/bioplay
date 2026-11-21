@@ -76,6 +76,8 @@ struct App {
     last_save: Instant,
     resized: bool,
     frame_pending: bool,
+    /// La texture vidéo n'a plus la dernière image (rendu direct entre-temps).
+    texture_stale: bool,
 }
 
 impl App {
@@ -156,16 +158,9 @@ impl App {
         let size = g.window.inner_size();
         let (w, h) = (size.width.max(1) as i32, size.height.max(1) as i32);
         let has_video = p.has_file();
-        if has_video {
-            let fbo = g.gfx.video_fbo(&g.gl, w, h);
-            if p.mpv.frame_ready() || self.resized || self.frame_pending {
-                p.mpv.render(fbo, w, h, true);
-                g.gfx.mark_frame();
-            }
-        }
-        self.resized = false;
-        self.frame_pending = false;
+        let new_frame = has_video && p.mpv.frame_ready();
 
+        // L'interface d'abord : elle dit s'il y a du verre à l'écran.
         let raw = g.egui.take_egui_input(&g.window);
         let ppp = g.window.scale_factor() as f32;
         let mut glass = Vec::new();
@@ -177,8 +172,28 @@ impl App {
         });
         g.egui.handle_platform_output(&g.window, out.platform_output);
         let prims = self.ctx.tessellate(out.shapes, out.pixels_per_point);
-        g.gfx.compose(&g.gl, w, h, has_video, &glass);
+
+        if has_video && glass.is_empty() {
+            // Interface masquée : mpv dessine directement à l'écran, comme mpv seul. Aucune
+            // copie ni flou : en 4K, le coût est exactement celui de mpv.
+            p.mpv.render(0, w, h, true);
+            self.texture_stale = true;
+        } else {
+            if has_video {
+                // Verre visible : mpv dessine dans une texture que le verre floute et réfracte.
+                let fbo = g.gfx.video_fbo(&g.gl, w, h);
+                if new_frame || self.resized || self.frame_pending || self.texture_stale {
+                    p.mpv.render(fbo, w, h, true);
+                    g.gfx.mark_frame();
+                    self.texture_stale = false;
+                }
+            }
+            g.gfx.compose(&g.gl, w, h, has_video, &glass);
+        }
+        self.resized = false;
+        self.frame_pending = false;
         g.painter.paint_and_update_textures([w as u32, h as u32], out.pixels_per_point, &prims, &mut out.textures_delta);
+        g.window.pre_present_notify();
         let _ = g.surface.swap_buffers(&g.context);
         p.mpv.report_swap();
 
@@ -245,11 +260,22 @@ impl App {
                     _ => f64::NAN,
                 };
                 let settled = p.loaded_at.is_some_and(|t| t.elapsed() > Duration::from_millis(800));
-                let changed = !value.is_nan() && p.shown.insert(name, value).is_some_and(|old| (old - value).abs() > 1e-9);
+                let previous = if value.is_nan() { None } else { p.shown.insert(name, value) };
+                // Décalage des sous-titres : passer du négatif au positif (ou l'inverse) s'arrête
+                // d'abord sur 0, sans décalage.
+                if name == "sub-delay" && settled {
+                    if let Some(old) = previous {
+                        if (old < -1e-6 && value > 1e-6) || (old > 1e-6 && value < -1e-6) {
+                            p.mpv.set_f64("sub-delay", 0.0);
+                            return;
+                        }
+                    }
+                }
+                let changed = previous.is_some_and(|old| (old - value).abs() > 1e-9);
                 let msg = if !(settled && changed) { None } else { match name {
                     "speed" if p.has_file() => Some(format!("Vitesse {}", player::speed_label(s.speed))),
                     "volume" if p.has_file() => Some(format!("Volume {:.0} %", s.volume)),
-                    "sub-delay" if p.has_file() => Some(format!("Sous-titres {:+.0} ms", s.sub_delay * 1000.0)),
+                    "sub-delay" if p.has_file() => Some(if s.sub_delay.abs() < 1e-6 { "Sous-titres : aucun décalage".into() } else { format!("Sous-titres {:+.0} ms", s.sub_delay * 1000.0) }),
                     "audio-delay" if p.has_file() => Some(format!("Audio {:+.0} ms", s.audio_delay * 1000.0)),
                     _ => None,
                 } };
@@ -291,7 +317,10 @@ impl ApplicationHandler<UserEvent> for App {
         let sattrs = window.build_surface_attributes(Default::default()).unwrap();
         let surface = unsafe { display.create_window_surface(&config, &sattrs) }.unwrap();
         let context = context.make_current(&surface).unwrap();
-        let _ = surface.set_swap_interval(&context, SwapInterval::Wait(NonZeroU32::new(1).unwrap()));
+        // Pas d'attente de la synchro dans swap_buffers : sur un bureau virtuel caché, le compositeur ne
+        // demande plus d'images et l'appel bloquerait l'app (Hyprland la croirait plantée). Le rythme
+        // vient de winit (pre_present_notify + rappels d'image du compositeur).
+        let _ = surface.set_swap_interval(&context, SwapInterval::DontWait);
         let gl = Arc::new(unsafe { glow::Context::from_loader_function_cstr(|s| display.get_proc_address(s)) });
         let painter = egui_glow::Painter::new(gl.clone(), "", None, true).expect("egui_glow");
         let egui = egui_winit::State::new(self.ctx.clone(), egui::ViewportId::ROOT, &window, Some(window.scale_factor() as f32), None, Some(painter.max_texture_side()));
@@ -379,13 +408,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         match event {
-            WindowEvent::CloseRequested => {
-                if let Some(p) = self.player.as_mut() {
-                    p.save();
-                    p.mpv.command_sync(&["quit"]);
-                }
-                el.exit();
-            }
+            WindowEvent::CloseRequested => el.exit(),
             WindowEvent::Resized(s) => {
                 g.surface.resize(&g.context, NonZeroU32::new(s.width.max(1)).unwrap(), NonZeroU32::new(s.height.max(1)).unwrap());
                 self.resized = true;
@@ -430,6 +453,16 @@ impl ApplicationHandler<UserEvent> for App {
         }
     }
 
+    /// Tout est libéré tant que la connexion Wayland existe encore : la libérer après faisait
+    /// planter l'app à chaque fermeture.
+    fn exiting(&mut self, _: &ActiveEventLoop) {
+        if let Some(p) = self.player.as_mut() {
+            p.save();
+        }
+        self.player = None;
+        self.gl = None;
+    }
+
     fn about_to_wait(&mut self, el: &ActiveEventLoop) {
         // Position notée toutes les 15 s pendant la lecture : reprise même après un arrêt brutal.
         if let Some(p) = self.player.as_mut() {
@@ -465,6 +498,7 @@ fn main() {
         last_save: Instant::now(),
         resized: true,
         frame_pending: false,
+        texture_stale: true,
     };
     ui::fonts(&app.ctx);
     el.run_app(&mut app).expect("exécution");

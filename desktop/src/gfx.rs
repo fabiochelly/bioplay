@@ -43,6 +43,25 @@ void main() {
     frag = s / 12.0;
 }"#;
 
+/// Fond de l'accueil : trois lumières en dégradés radiaux continus, calculés par pixel, avec un
+/// tramage léger qui supprime les paliers (pas d'anneaux).
+const FS_BACKDROP: &str = r#"#version 330 core
+in vec2 uv; out vec4 frag; uniform vec2 screen;
+vec3 glow(vec2 p, vec2 c, float r, vec3 col) {
+    float d = length((p - c) * vec2(screen.x / screen.y, 1.0)) / r;
+    return col * exp(-d * d * 2.2);
+}
+void main() {
+    vec2 p = uv;
+    vec3 c = vec3(0.020, 0.027, 0.047);
+    c += glow(p, vec2(0.18, 0.75), 0.75, vec3(0.16, 0.30, 0.75)) * 0.55;
+    c += glow(p, vec2(0.85, 0.20), 0.85, vec3(0.50, 0.22, 0.85)) * 0.45;
+    c += glow(p, vec2(0.60, 0.92), 0.50, vec3(0.10, 0.70, 0.65)) * 0.25;
+    float n = fract(sin(dot(gl_FragCoord.xy, vec2(12.9898, 78.233))) * 43758.5453);
+    c += (n - 0.5) / 255.0;
+    frag = vec4(c, 1.0);
+}"#;
+
 /// Rectangle de verre : sommets calculés depuis le rectangle (marge pour l'ombre portée).
 const VS_GLASS: &str = r#"#version 330 core
 uniform vec4 rect; uniform vec2 screen; uniform float margin;
@@ -73,12 +92,7 @@ void main() {
     vec2 half_size = rect.zw * 0.5;
     vec2 p = pos - (rect.xy + half_size);
     float d = sd(p, half_size, radius);
-    if (d > 0.0) {
-        // Ombre douce sous la plaque.
-        float sh = (1.0 - smoothstep(0.0, 22.0, d)) * 0.28 * alpha;
-        frag = vec4(0.0, 0.0, 0.0, sh * sh * 2.0);
-        return;
-    }
+    if (d > 0.5) discard; // pas d'ombre : le verre se suffit à lui-même
     float e = -d;
     vec2 n = grad(p, half_size, radius);
     // Lentille : près du bord, l'image est tirée vers l'extérieur, comme à travers un verre épais.
@@ -126,9 +140,11 @@ pub struct Gfx {
     down: glow::Program,
     up: glow::Program,
     glass: glow::Program,
+    backdrop: glow::Program,
     video: Option<Target>,
     chain: Vec<Target>,
     blur_dirty: bool,
+    backdrop_drawn: bool,
 }
 
 unsafe fn program(gl: &glow::Context, vs: &str, fs: &str) -> glow::Program {
@@ -182,9 +198,11 @@ impl Gfx {
                 down: program(gl, VS_FULL, FS_DOWN),
                 up: program(gl, VS_FULL, FS_UP),
                 glass: program(gl, VS_GLASS, FS_GLASS),
+                backdrop: program(gl, VS_FULL, FS_BACKDROP),
                 video: None,
                 chain: Vec::new(),
                 blur_dirty: true,
+                backdrop_drawn: false,
             }
         }
     }
@@ -204,8 +222,8 @@ impl Gfx {
                 for i in 1..=4 {
                     self.chain.push(target(gl, (w >> i).max(1), (h >> i).max(1), glow::RGBA8));
                 }
+                self.blur_dirty = true;
             }
-            self.blur_dirty = true;
             self.video.as_ref().unwrap().fbo.0.get()
         }
     }
@@ -227,6 +245,29 @@ impl Gfx {
 
     /// Dessine la vidéo à l'écran, puis le verre par-dessus.
     pub fn compose(&mut self, gl: &glow::Context, w: i32, h: i32, has_video: bool, glass: &[Glass]) {
+        // Sans vidéo, le fond lumineux prend sa place dans la même texture : le verre le réfracte.
+        if !has_video {
+            let fresh = self.video.as_ref().map(|t| (t.w, t.h)) != Some((w, h));
+            let fbo = self.video_fbo(gl, w, h);
+            if fresh || !self.backdrop_drawn {
+                unsafe {
+                    let _ = fbo;
+                    gl.bind_framebuffer(glow::FRAMEBUFFER, Some(self.video.as_ref().unwrap().fbo));
+                    gl.viewport(0, 0, w, h);
+                    gl.disable(glow::BLEND);
+                    gl.disable(glow::SCISSOR_TEST);
+                    gl.bind_vertex_array(Some(self.vao));
+                    gl.use_program(Some(self.backdrop));
+                    gl.uniform_2_f32(gl.get_uniform_location(self.backdrop, "screen").as_ref(), w as f32, h as f32);
+                    gl.draw_arrays(glow::TRIANGLES, 0, 3);
+                }
+                self.backdrop_drawn = true;
+                self.blur_dirty = true;
+            }
+        } else {
+            self.backdrop_drawn = false;
+        }
+        let has_video = true;
         unsafe {
             gl.disable(glow::SCISSOR_TEST);
             gl.disable(glow::BLEND);
@@ -250,8 +291,9 @@ impl Gfx {
                 gl.uniform_1_i32(gl.get_uniform_location(self.blit, "tex").as_ref(), 0);
                 gl.draw_arrays(glow::TRIANGLES, 0, 3);
             } else {
-                gl.clear_color(0.02, 0.027, 0.047, 1.0);
-                gl.clear(glow::COLOR_BUFFER_BIT);
+                gl.use_program(Some(self.backdrop));
+                gl.uniform_2_f32(gl.get_uniform_location(self.backdrop, "screen").as_ref(), w as f32, h as f32);
+                gl.draw_arrays(glow::TRIANGLES, 0, 3);
             }
             if glass.is_empty() {
                 return;
@@ -267,7 +309,7 @@ impl Gfx {
             let u = |n: &str| gl.get_uniform_location(p, n);
             gl.uniform_1_i32(u("blur").as_ref(), 0);
             gl.uniform_2_f32(u("screen").as_ref(), w as f32, h as f32);
-            gl.uniform_1_f32(u("margin").as_ref(), 24.0);
+            gl.uniform_1_f32(u("margin").as_ref(), 1.0);
             gl.uniform_1_f32(u("has_video").as_ref(), if has_video { 1.0 } else { 0.0 });
             for g in glass {
                 gl.uniform_4_f32(u("rect").as_ref(), g.x, g.y, g.w, g.h);

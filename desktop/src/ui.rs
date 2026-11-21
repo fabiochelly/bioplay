@@ -82,7 +82,8 @@ pub fn draw(ctx: &egui::Context, p: &mut Player, ppp: f32) -> (Vec<Glass>, Vec<A
     }
 
     let idle = p.activity.elapsed() > Duration::from_millis(2200);
-    let show = !idle || p.mpv.state.paused || p.panel.is_some() || p.over_ui || p.scrub.is_some();
+    // Survoler la barre ne la garde pas affichée : seule une activité récente compte.
+    let show = !idle || p.mpv.state.paused || p.panel.is_some() || p.scrub.is_some();
     let alpha = ctx.animate_bool_with_time(Id::new("overlay"), show, if show { 0.14 } else { 0.35 });
 
     surface(ctx, p, screen);
@@ -211,14 +212,14 @@ fn bar(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, screen: Rect, a
             toggle(p, Panel::Zoom);
         }
         let sp = speed_label(p.mpv.state.speed);
-        let sw = 36.0 + 8.0 * sp.chars().count() as f32;
+        let sw = pill_width(ui, &sp, true);
         rx -= sw + 4.0;
         let tint = if (p.mpv.state.speed - 1.0).abs() > 0.001 { ACCENT } else { INK };
         if pill(ui, Rect::from_min_size(pos2(rx, cy - 20.0), vec2(sw, 40.0)), Some(Icon::Speed), &sp, tint).clicked() {
             toggle(p, Panel::Speed);
         }
         let ts = track_summary(p);
-        let tw = 46.0 + 8.2 * ts.chars().count() as f32;
+        let tw = pill_width(ui, &ts, true);
         rx -= tw + 4.0;
         if pill(ui, Rect::from_min_size(pos2(rx, cy - 20.0), vec2(tw, 40.0)), Some(Icon::Tracks), &ts, INK).clicked() {
             toggle(p, Panel::Tracks);
@@ -430,18 +431,30 @@ fn icon_button_tint(ui: &mut Ui, r: Rect, i: Icon, color: Color32) -> Response {
     resp
 }
 
+const PILL_PAD: f32 = 16.0;
+const PILL_ICON: f32 = 28.0;
+
+/// Largeur d'une capsule d'après son texte réel : le libellé ne déborde jamais.
+fn pill_width(ui: &Ui, label: &str, with_icon: bool) -> f32 {
+    let w = ui.painter().layout_no_wrap(label.to_owned(), semi(14.0), INK).size().x;
+    PILL_PAD * 2.0 + w + if with_icon { PILL_ICON } else { 0.0 }
+}
+
+/// Capsule icône + texte, contenu centré dans la capsule.
 fn pill(ui: &mut Ui, r: Rect, i: Option<Icon>, label: &str, color: Color32) -> Response {
     let resp = ui.interact(r, ui.id().with(label).with((r.min.x as i32, 7)), Sense::click());
     let k = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.1);
     if k > 0.0 {
         ui.painter().rect_filled(r, CornerRadius::same((r.height() / 2.0) as u8), Color32::from_white_alpha((28.0 * k) as u8));
     }
-    let mut x = r.min.x + 14.0;
+    let g = ui.painter().layout_no_wrap(label.to_owned(), semi(14.0), color);
+    let content = g.size().x + if i.is_some() { PILL_ICON } else { 0.0 };
+    let mut x = r.center().x - content / 2.0;
     if let Some(i) = i {
         icon(ui.painter(), pos2(x + 10.0, r.center().y), 21.0, i, color);
-        x += 26.0;
+        x += PILL_ICON;
     }
-    ui.painter().text(pos2(x, r.center().y), Align2::LEFT_CENTER, label, semi(14.0), color);
+    ui.painter().galley(pos2(x, r.center().y - g.size().y / 2.0), g, color);
     resp
 }
 
@@ -589,6 +602,7 @@ fn delay(ui: &mut Ui, p: &mut Player, label: &str, prop: &str, step: f64) {
             }
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            ui.add_space(6.0);
             let (r, _) = ui.allocate_exact_size(vec2(40.0, 40.0), Sense::hover());
             if round_button(ui, r, Icon::Plus).clicked() {
                 p.mpv.set_f64(prop, v + step);
@@ -602,9 +616,11 @@ fn delay(ui: &mut Ui, p: &mut Player, label: &str, prop: &str, step: f64) {
 }
 
 fn round_button(ui: &mut Ui, r: Rect, i: Icon) -> Response {
-    ui.painter().circle_filled(r.center(), r.width() / 2.0, Color32::from_white_alpha(20));
-    ui.painter().circle_stroke(r.center(), r.width() / 2.0, Stroke::new(1.0, Color32::from_white_alpha(40)));
-    icon_button(ui, r, i)
+    // Rayon un peu en retrait : le liseré reste entier, même contre le bord de la colonne.
+    let radius = r.width() / 2.0 - 2.0;
+    ui.painter().circle_filled(r.center(), radius, Color32::from_white_alpha(20));
+    ui.painter().circle_stroke(r.center(), radius, Stroke::new(1.0, Color32::from_white_alpha(40)));
+    icon_button(ui, r.shrink(2.0), i)
 }
 
 fn big_value(ui: &mut Ui, title: &str, hint: &str, value: &str, active: bool) {
@@ -815,17 +831,7 @@ fn scrub_osd(ctx: &egui::Context, p: &Player, s: &crate::player::Scrub, plates: 
 fn home(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actions: &mut Vec<Action>, screen: Rect) {
     egui::Area::new(Id::new("home-bg")).order(Order::Background).fixed_pos(screen.min).show(ctx, |ui| {
         ui.allocate_rect(screen, Sense::hover());
-        // Lumières de fond : c'est sur elles que le verre prend son relief.
-        let painter = ui.painter();
-        for (x, y, r, c) in [(0.18, 0.25, 0.45, (58, 123, 255, 60)), (0.85, 0.8, 0.5, (160, 75, 255, 50)), (0.6, 0.1, 0.3, (40, 224, 208, 34))] {
-            let center = pos2(screen.min.x + screen.width() * x, screen.min.y + screen.height() * y);
-            let radius = screen.width().max(screen.height()) * r;
-            for k in 0..24 {
-                let f = k as f32 / 24.0;
-                let a = (c.3 as f32 * (1.0 - f) / 24.0 * 2.2) as u8;
-                painter.circle_filled(center, radius * (1.0 - f), Color32::from_rgba_unmultiplied(c.0, c.1, c.2, a));
-            }
-        }
+        // Les lumières de fond sont dessinées par le GPU (gfx.rs), sans paliers.
     });
     let w = 560.0f32.min(screen.width() - 48.0);
     let id = Id::new("home");
@@ -839,7 +845,7 @@ fn home(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actions: &mut 
             ui.label(egui::RichText::new("bioplay").font(semi(40.0)).color(INK));
             ui.label(egui::RichText::new("Glissez une vidéo ici, ou ouvrez-la.").font(med(15.0)).color(INK2));
             ui.add_space(18.0);
-            let (r, _) = ui.allocate_exact_size(vec2(210.0, 46.0), Sense::hover());
+            let (r, _) = ui.allocate_exact_size(vec2(pill_width(ui, "Ouvrir une vidéo", true) + 8.0, 46.0), Sense::hover());
             ui.painter().rect_filled(r, CornerRadius::same(23), Color32::from_white_alpha(26));
             ui.painter().rect_stroke(r, CornerRadius::same(23), Stroke::new(1.0, Color32::from_white_alpha(60)), StrokeKind::Inside);
             if pill(ui, r, Some(Icon::Folder), "Ouvrir une vidéo", INK).clicked() {
