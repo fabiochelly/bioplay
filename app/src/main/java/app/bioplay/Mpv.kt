@@ -14,7 +14,6 @@ import dev.jdtech.mpv.MPVLib.MpvFormat
 import org.json.JSONArray
 import java.io.File
 import java.util.Locale
-import kotlin.math.abs
 
 class Track(
     val id: Int,
@@ -76,12 +75,20 @@ class Mpv(context: Context) : MPVLib.EventObserver {
     private val lib = MPVLib.create(context) ?: error("libmpv indisponible")
     private val main = Handler(Looper.getMainLooper())
 
-    /** Position pour l'interface, rafraîchie 4 fois par seconde (pas à chaque image). */
+    /**
+     * Position pour l'interface. Non observée (mpv la publierait à chaque image) : [refresh] la
+     * lit, seulement quand les commandes sont affichées.
+     */
     var position by mutableDoubleStateOf(0.0); private set
     /** Position exacte, lue à la demande (sauts de sous-titre). */
     fun now(): Double = if (alive && loaded) lib.getPropertyDouble("time-pos") ?: position else position
-    @Volatile private var lastPos = -1.0
-    @Volatile private var lastCache = -10.0
+
+    /** Relit position et cache (appelé 4 fois par seconde, commandes affichées seulement). */
+    fun refresh() {
+        if (!alive || !loaded) return
+        lib.getPropertyDouble("time-pos")?.let { position = it }
+        lib.getPropertyDouble("demuxer-cache-time")?.let { cached = it }
+    }
     var duration by mutableDoubleStateOf(0.0); private set
     var cached by mutableDoubleStateOf(0.0); private set
     var paused by mutableStateOf(false); private set
@@ -121,7 +128,8 @@ class Mpv(context: Context) : MPVLib.EventObserver {
             "gpu-context" to "android",
             "opengl-es" to "yes",
             "profile" to "fast",
-            "ao" to "audiotrack,opensles",
+            "ao" to "aaudio,audiotrack,opensles",
+            "audio-buffer" to "0.4",
             "audio-pitch-correction" to "yes",
             "input-default-bindings" to "no",
             "force-window" to "no",
@@ -129,9 +137,12 @@ class Mpv(context: Context) : MPVLib.EventObserver {
             "keep-open" to "yes",
             // Cache qui garde aussi l'arrière : retour en arrière instantané, mémoire contenue.
             "cache" to "yes",
+            // Avec le cache, cache-secs (énorme par défaut) l'emporte sur readahead : on le borne
+            // aussi à 10 s, sinon mpv remplit toujours tout le plafond.
+            "cache-secs" to "10",
             "demuxer-readahead-secs" to "10",
             "demuxer-max-bytes" to "24MiB",
-            "demuxer-max-back-bytes" to "8MiB",
+            "demuxer-max-back-bytes" to "6MiB",
             "demuxer-seekable-cache" to "yes",
             "hr-seek" to "yes",
             "hr-seek-framedrop" to "yes",
@@ -146,7 +157,25 @@ class Mpv(context: Context) : MPVLib.EventObserver {
             "sub-ass-override" to "force",
             "sub-margin-y" to "46",
             "sub-auto" to "no",
+            // Mode direct : l'app dessine les sous-titres ; mpv ne charge ni libass ni les
+            // polices jointes au MKV (souvent 10 à 30 Mo). Rétablis en repli.
+            "sub-ass" to "no",
+            "embeddedfonts" to "no",
+            // Le matériel décode l'image : un seul fil logiciel suffit (moins de mémoire).
+            "vd-lavc-threads" to "1",
+            "ad-lavc-threads" to "1",
             "osd-level" to "0",
+            // Aucun script Lua intégré (stats, console, menus…) : ni fils ni machines Lua.
+            "load-scripts" to "no",
+            "osc" to "no",
+            "ytdl" to "no",
+            "load-stats-overlay" to "no",
+            "load-console" to "no",
+            "load-auto-profiles" to "no",
+            "load-select" to "no",
+            "load-positioning" to "no",
+            "load-commands" to "no",
+            "load-context-menu" to "no",
             "screenshot-directory" to context.cacheDir.path,
         ).forEach { (k, v) -> lib.setOptionString(k, v) }
         lib.init()
@@ -160,9 +189,7 @@ class Mpv(context: Context) : MPVLib.EventObserver {
             lib.requestLogMessages("info")
         }
         mapOf(
-            "time-pos" to MpvFormat.MPV_FORMAT_DOUBLE,
             "duration" to MpvFormat.MPV_FORMAT_DOUBLE,
-            "demuxer-cache-time" to MpvFormat.MPV_FORMAT_DOUBLE,
             "pause" to MpvFormat.MPV_FORMAT_FLAG,
             "speed" to MpvFormat.MPV_FORMAT_DOUBLE,
             "sub-delay" to MpvFormat.MPV_FORMAT_DOUBLE,
@@ -234,6 +261,9 @@ class Mpv(context: Context) : MPVLib.EventObserver {
         // Chaque fichier repart en mode direct.
         if (!direct) {
             direct = true
+            lib.setPropertyString("sub-ass", "no")
+            lib.setPropertyString("embeddedfonts", "no")
+            lib.setPropertyString("vd-lavc-threads", "1")
             lib.setPropertyString("hwdec", "mediacodec")
         }
         lib.setPropertyString("vo", currentVo)
@@ -329,28 +359,16 @@ class Mpv(context: Context) : MPVLib.EventObserver {
         }
     }.let {}
 
-    override fun eventProperty(property: String, value: Double) {
-        // Mises à jour fréquentes filtrées sur le fil de mpv : le fil principal ne se réveille
-        // que 4 fois par seconde pour la position, une fois pour le cache.
+    override fun eventProperty(property: String, value: Double) = post {
         when (property) {
-            "time-pos" -> if (abs(value - lastPos) < 0.25) return else lastPos = value
-            "demuxer-cache-time" -> if (abs(value - lastCache) < 1.0) return else lastCache = value
-        }
-        dispatch(property, value)
-    }
-
-    private fun dispatch(property: String, value: Double) = post {
-        when (property) {
-            "time-pos" -> position = value
             "duration" -> duration = value
-            "demuxer-cache-time" -> cached = value
             "speed" -> speed = value
             "sub-delay" -> subDelay = value
             "audio-delay" -> audioDelay = value
             "container-fps" -> fps = value
             "video-params/aspect" -> if (value > 0) aspect = value
         }
-    }
+    }.let {}
 
     override fun eventProperty(property: String, value: String) {
         when (property) {
@@ -388,6 +406,9 @@ class Mpv(context: Context) : MPVLib.EventObserver {
         val hasVideo = tracks.any { it.type == "video" }
         if (hasVideo && !hwdec.startsWith("mediacodec")) {
             direct = false
+            lib.setPropertyString("sub-ass", "yes")
+            lib.setPropertyString("embeddedfonts", "yes")
+            lib.setPropertyString("vd-lavc-threads", "0")
             lib.setPropertyString("hwdec", "mediacodec-copy")
             lib.setPropertyString("vo", VO)
             lib.command(arrayOf("video-reload"))

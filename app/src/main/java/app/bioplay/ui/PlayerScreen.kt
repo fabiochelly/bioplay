@@ -143,8 +143,17 @@ fun PlayerScreen(session: Session, onBack: () -> Unit, onAddSubtitle: () -> Unit
     // un arrêt brutal de l'app.
     LaunchedEffect(mpv.paused) {
         while (!mpv.paused) {
-            delay(5000)
+            delay(15000)
             session.save()
+        }
+    }
+
+    // Position et cache relus seulement quand quelque chose les affiche : commandes masquées,
+    // rien ne réveille l'interface pendant la lecture.
+    LaunchedEffect(controls || panel != null) {
+        while (controls || panel != null) {
+            mpv.refresh()
+            delay(250)
         }
     }
 
@@ -265,7 +274,7 @@ private fun Gestures(
                 val stepPx = when (zone) {
                     Zone.LINE -> 44.dp; Zone.TEN -> 30.dp; Zone.MINUTE -> 38.dp
                 }.toPx()
-                val from = mpv.position
+                val from = mpv.now()
                 var dragging = false
                 var pinching = false
                 var bright = false

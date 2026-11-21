@@ -20,7 +20,10 @@ class Recent(val uri: String, val name: String, val position: Double, val durati
 class Session(private val context: Context) {
     val mpv = Mpv(context)
     private val prefs = context.getSharedPreferences("bioplay", Context.MODE_PRIVATE)
-    private val worker = Executors.newSingleThreadExecutor()
+    // Indexation des sous-titres en arrière-plan : ne dispute pas le disque ni le CPU au démarrage.
+    private val worker = Executors.newSingleThreadExecutor { r ->
+        Thread({ android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND); r.run() }, "subindex")
+    }
 
     var uri by mutableStateOf<Uri?>(null); private set
     var title by mutableStateOf(""); private set
