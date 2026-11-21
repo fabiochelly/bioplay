@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=bioplay
+GenericName=Lecteur vidéo
+Comment=Lecteur vidéo minimal (mpv), interface de verre
+Exec=bioplay %F
+Icon=bioplay
+Terminal=false
+Categories=AudioVideo;Video;Player;
+MimeType=video/x-matroska;video/mp4;video/webm;video/x-msvideo;video/quicktime;video/mpeg;video/mp2t;video/x-flv;video/ogg;video/3gpp;
+StartupWMClass=bioplay
