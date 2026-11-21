@@ -710,35 +710,42 @@ fn tracks_panel(ui: &mut Ui, p: &mut Player, max_height: f32) {
     ui.painter().rect_filled(line, CornerRadius::ZERO, Color32::from_white_alpha(28));
     ui.add_space(12.0);
     // Décalages et langue sur une seule ligne : la place va aux listes de pistes.
-    ui.horizontal(|ui| {
-        let w = (ui.available_width() - 150.0) / 2.0;
-        ui.allocate_ui(vec2(w, 48.0), |ui| delay(ui, p, tr("Décalage audio", "Audio delay"), "audio-delay", 0.05));
-        ui.allocate_ui(vec2(w, 48.0), |ui| delay(ui, p, tr("Décalage sous-titres", "Subtitle delay"), "sub-delay", 0.1));
-        language_switch(ui);
-    });
+    // Mise en page explicite : hauteur fixe, tout centré sur la même ligne, marges entre groupes.
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 50.0), Sense::hover());
+    let (switch_w, gap) = (136.0, 28.0);
+    let delay_w = (row.width() - switch_w - 2.0 * gap) / 2.0;
+    let audio = Rect::from_min_size(row.min, vec2(delay_w, row.height()));
+    let sub = Rect::from_min_size(pos2(audio.max.x + gap, row.min.y), vec2(delay_w, row.height()));
+    let switch = Rect::from_center_size(pos2(row.max.x - switch_w / 2.0, row.center().y), vec2(switch_w, 40.0));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(audio), |ui| delay(ui, p, tr("Décalage audio", "Audio delay"), "audio-delay", 0.05));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(sub), |ui| delay(ui, p, tr("Décalage sous-titres", "Subtitle delay"), "sub-delay", 0.1));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(switch), language_switch);
 }
 
 fn delay(ui: &mut Ui, p: &mut Player, label: &str, prop: &str, step: f64) {
     let v = if prop == "audio-delay" { p.mpv.state.audio_delay } else { p.mpv.state.sub_delay };
-    ui.horizontal(|ui| {
+    let full = ui.max_rect();
+    // Boutons ronds centrés verticalement sur la ligne, comme le bouton de langue.
+    let plus = Rect::from_center_size(pos2(full.max.x - 20.0, full.center().y), vec2(40.0, 40.0));
+    let minus = Rect::from_center_size(pos2(full.max.x - 68.0, full.center().y), vec2(40.0, 40.0));
+    if round_button(ui, plus, Icon::Plus).clicked() {
+        p.mpv.set_f64(prop, v + step);
+    }
+    if round_button(ui, minus, Icon::Minus).clicked() {
+        p.mpv.set_f64(prop, v - step);
+    }
+    let text = Rect::from_min_max(full.min, pos2(minus.min.x - 8.0, full.max.y));
+    ui.scope_builder(egui::UiBuilder::new().max_rect(text), |ui| {
         ui.vertical(|ui| {
+            // Bloc de texte (~42 pt) centré sur la ligne, comme les boutons.
+            ui.add_space(((full.height() - 42.0) / 2.0).max(0.0));
+            ui.spacing_mut().item_spacing.y = 2.0;
             ui.label(egui::RichText::new(label).font(semi(13.0)).color(INK2));
             let ms = (v * 1000.0).round() as i64;
             let txt = if ms == 0 { "0 ms".to_string() } else { format!("{ms:+} ms").replace('-', "−") };
             let r = ui.add(egui::Label::new(egui::RichText::new(txt).font(semi(17.0)).color(if ms == 0 { INK } else { ACCENT })).sense(Sense::click()));
             if r.clicked() {
                 p.mpv.set_f64(prop, 0.0);
-            }
-        });
-        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.add_space(6.0);
-            let (r, _) = ui.allocate_exact_size(vec2(40.0, 40.0), Sense::hover());
-            if round_button(ui, r, Icon::Plus).clicked() {
-                p.mpv.set_f64(prop, v + step);
-            }
-            let (r, _) = ui.allocate_exact_size(vec2(40.0, 40.0), Sense::hover());
-            if round_button(ui, r, Icon::Minus).clicked() {
-                p.mpv.set_f64(prop, v - step);
             }
         });
     });

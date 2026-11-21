@@ -136,9 +136,10 @@ fun TracksPanel(session: Session, onAddSubtitle: () -> Unit) {
     }
     Box(Modifier.padding(vertical = 10.dp).fillMaxWidth().height(1.dp).background(Color.White.copy(alpha = 0.12f)))
     // Décalages et langue sur une seule ligne : la place va aux listes de pistes.
-    Row(horizontalArrangement = Arrangement.spacedBy(16.dp), verticalAlignment = Alignment.CenterVertically) {
+    Row(horizontalArrangement = Arrangement.spacedBy(20.dp), verticalAlignment = Alignment.CenterVertically) {
         Delay(t("Décalage audio", "Audio delay"), mpv.audioDelay, 0.05, Modifier.weight(1f)) { mpv.audioDelayTo(it) }
         Delay(t("Décalage sous-titres", "Subtitle delay"), mpv.subDelay, 0.1, Modifier.weight(1f)) { mpv.subDelayTo(it) }
+        Spacer(Modifier.width(10.dp))
         LanguageSwitch(compact = true)
     }
 }
