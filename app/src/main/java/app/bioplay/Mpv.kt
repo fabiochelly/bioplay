@@ -89,6 +89,9 @@ class Mpv(context: Context) : MPVLib.EventObserver {
     var loaded by mutableStateOf(false); private set
     var ended by mutableStateOf(false); private set
     var hwdec by mutableStateOf(""); private set
+    /** Position de l'image vidéo dans la surface (bandes noires), pour le verre. */
+    var marginLeft by mutableDoubleStateOf(0.0); private set
+    var marginTop by mutableDoubleStateOf(0.0); private set
 
     var onLoaded: (() -> Unit)? = null
 
@@ -97,6 +100,9 @@ class Mpv(context: Context) : MPVLib.EventObserver {
         File(fonts, "inter-semibold.ttf").takeUnless { it.exists() }?.let { f ->
             context.assets.open("inter-semibold.ttf").use { i -> f.outputStream().use { i.copyTo(it) } }
         }
+        // Verre : le même shader que sur le bureau, recopié à chaque lancement (mises à jour).
+        val glass = File(context.filesDir, "glass.glsl")
+        context.assets.open("glass.glsl").use { i -> glass.outputStream().use { i.copyTo(it) } }
         listOf(
             "config" to "no",
             "vo" to VO,
@@ -134,6 +140,7 @@ class Mpv(context: Context) : MPVLib.EventObserver {
             "sub-margin-y" to "46",
             "sub-auto" to "no",
             "osd-level" to "0",
+            "glsl-shaders" to glass.path,
             "screenshot-directory" to context.cacheDir.path,
         ).forEach { (k, v) -> lib.setOptionString(k, v) }
         lib.init()
@@ -160,6 +167,7 @@ class Mpv(context: Context) : MPVLib.EventObserver {
             "container-fps" to MpvFormat.MPV_FORMAT_DOUBLE,
             "eof-reached" to MpvFormat.MPV_FORMAT_FLAG,
             "hwdec-current" to MpvFormat.MPV_FORMAT_STRING,
+            "osd-dimensions" to MpvFormat.MPV_FORMAT_STRING,
         ).forEach { (k, f) -> lib.observeProperty(k, f) }
     }
 
@@ -278,6 +286,14 @@ class Mpv(context: Context) : MPVLib.EventObserver {
         lib.setPropertyDouble("video-pan-y", panY)
     }
 
+    private var glassOpts = ""
+
+    fun setGlass(opts: String) {
+        if (!alive || opts == glassOpts) return
+        glassOpts = opts
+        lib.setPropertyString("glsl-shader-opts", opts)
+    }
+
     fun setPanscan(fill: Boolean) {
         if (!alive) return
         lib.setPropertyDouble("panscan", if (fill) 1.0 else 0.0)
@@ -327,6 +343,9 @@ class Mpv(context: Context) : MPVLib.EventObserver {
             "aid" -> post { aid = value.toIntOrNull() }
             "sid" -> post { sid = value.toIntOrNull() }
             "hwdec-current" -> post { hwdec = value }
+            "osd-dimensions" -> runCatching { org.json.JSONObject(value) }.getOrNull()?.let { o ->
+                post { marginLeft = o.optDouble("ml", 0.0); marginTop = o.optDouble("mt", 0.0) }
+            }
         }
     }
 

@@ -6,6 +6,8 @@ import android.view.Surface
 import android.view.SurfaceHolder
 import android.view.SurfaceView
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.activity.compose.BackHandler
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.draw.clip
@@ -93,6 +95,7 @@ fun PlayerScreen(session: Session, onBack: () -> Unit, onAddSubtitle: () -> Unit
     var scrub by remember { mutableStateOf<Scrub?>(null) }
     var panel by remember { mutableStateOf<Panel?>(null) }
     var surfaceHolder by remember { mutableStateOf<SurfaceHolder?>(null) }
+    val plates = remember { GlassPlates() }
 
     // Les contrôles s'effacent seuls pendant la lecture, jamais pendant un réglage.
     LaunchedEffect(controls, poke, mpv.paused, panel) {
@@ -119,6 +122,7 @@ fun PlayerScreen(session: Session, onBack: () -> Unit, onAddSubtitle: () -> Unit
         }
     }
 
+    CompositionLocalProvider(LocalPlates provides plates) {
     Box(Modifier.fillMaxSize().background(Color.Black)) {
         AndroidView(
             factory = { ctx ->
@@ -155,15 +159,30 @@ fun PlayerScreen(session: Session, onBack: () -> Unit, onAddSubtitle: () -> Unit
 
         scrub?.let { ScrubOsd(it, session, Modifier.align(Alignment.Center)) }
         Message(session, Modifier.align(Alignment.TopCenter).padding(top = 22.dp))
-    }
 
-    when (panel) {
-        Panel.TRACKS -> GlassDrawer({ panel = null }, 760.dp) { TracksPanel(session, onAddSubtitle) }
-        Panel.SPEED -> GlassDrawer({ panel = null }, 560.dp) { SpeedPanel(session) }
-        Panel.ZOOM -> GlassDrawer({ panel = null }, 560.dp) { ZoomPanel(session) }
-        Panel.LIST -> GlassDrawer({ panel = null }, 760.dp) { ListPanel(session) }
-        null -> {}
+        // Tiroirs dans l'écran (le flou vient du shader de mpv, pas du compositeur).
+        val current = panel
+        AnimatedVisibility(
+            current != null,
+            enter = fadeIn(tween(160)) + slideInVertically(tween(220)) { it / 4 },
+            exit = fadeOut(tween(140)) + slideOutVertically(tween(160)) { it / 5 },
+        ) {
+            var shown by remember { mutableStateOf(current) }
+            if (current != null) shown = current
+            GlassDrawer({ panel = null }, if (shown == Panel.SPEED || shown == Panel.ZOOM) 480.dp else 620.dp) {
+                when (shown) {
+                    Panel.TRACKS -> TracksPanel(session, onAddSubtitle)
+                    Panel.SPEED -> SpeedPanel(session)
+                    Panel.ZOOM -> ZoomPanel(session)
+                    Panel.LIST -> ListPanel(session)
+                    null -> {}
+                }
+            }
+        }
     }
+    }
+    BackHandler(panel != null) { panel = null }
+    GlassSync(session, plates)
 }
 
 /**
@@ -339,36 +358,37 @@ private fun Controls(session: Session, onBack: () -> Unit, onPanel: (Panel) -> U
             }
         }
 
+        // Une seule carte de verre sur toute la largeur : progression en haut, lecture à gauche,
+        // réglages à droite, tout à l'intérieur avec de l'air autour.
         Column(
-            Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.displayCutout).padding(horizontal = 22.dp, vertical = 16.dp).fillMaxWidth(),
+            Modifier.align(Alignment.BottomCenter).windowInsetsPadding(WindowInsets.displayCutout)
+                .padding(horizontal = 14.dp, vertical = 12.dp).fillMaxWidth()
+                .glass(RoundedCornerShape(30.dp), tint = 0.34f).padding(horizontal = 16.dp, vertical = 10.dp),
         ) {
             Row(verticalAlignment = Alignment.CenterVertically) {
-                Clock(session, Modifier.width(66.dp)) { it }
+                Clock(session, Modifier.width(72.dp)) { it }
                 SeekBar(session, Modifier.weight(1f), onPoke)
-                Clock(session, Modifier.width(66.dp), TextAlign.End) { mpv.duration - it }
+                Clock(session, Modifier.width(72.dp), TextAlign.End) { mpv.duration - it }
             }
-            Row(Modifier.padding(top = 8.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
-                Row(Modifier.glass(Capsule).padding(4.dp), verticalAlignment = Alignment.CenterVertically) {
-                    GlassButton({ session.stepSub(-1); onPoke() }, plain = true, size = 48.dp) { Icon(Icons.prevLine, size = 22.dp) }
-                    GlassButton({ mpv.togglePause(); onPoke() }, plain = true, size = 56.dp) {
-                        Icon(if (mpv.paused) Icons.play else Icons.pause, size = 30.dp)
-                    }
-                    GlassButton({ session.stepSub(1); onPoke() }, plain = true, size = 48.dp) { Icon(Icons.nextLine, size = 22.dp) }
+            Row(Modifier.padding(top = 4.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
+                GlassButton({ session.stepSub(-1); onPoke() }, plain = true, size = 50.dp) { Icon(Icons.prevLine, size = 24.dp) }
+                GlassButton({ mpv.togglePause(); onPoke() }, plain = true, size = 58.dp) {
+                    Icon(if (mpv.paused) Icons.play else Icons.pause, size = 32.dp)
                 }
+                GlassButton({ session.stepSub(1); onPoke() }, plain = true, size = 50.dp) { Icon(Icons.nextLine, size = 24.dp) }
                 Spacer(Modifier.weight(1f))
-                Row(Modifier.glass(Capsule).padding(4.dp), verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(2.dp)) {
-                    TracksButton(session) { onPanel(Panel.TRACKS) }
-                    GlassButton({ onPanel(Panel.SPEED) }, plain = true, shape = Capsule, size = 48.dp) {
-                        Row(verticalAlignment = Alignment.CenterVertically) {
-                            Icon(Icons.speed, size = 20.dp, tint = if (mpv.speed != 1.0) Ink.accent else Ink.primary)
-                            BasicText(speedLabel(mpv.speed), style = text(14, FontWeight.SemiBold, if (mpv.speed != 1.0) Ink.accent else Ink.primary), modifier = Modifier.padding(start = 7.dp))
-                        }
+                TracksButton(session) { onPanel(Panel.TRACKS) }
+                Spacer(Modifier.width(10.dp))
+                GlassButton({ onPanel(Panel.SPEED) }, plain = true, shape = Capsule, size = 50.dp) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.speed, size = 22.dp, tint = if (mpv.speed != 1.0) Ink.accent else Ink.primary)
+                        BasicText(speedLabel(mpv.speed), style = text(15, FontWeight.SemiBold, if (mpv.speed != 1.0) Ink.accent else Ink.primary), modifier = Modifier.padding(start = 7.dp))
                     }
-                    GlassButton({ onPanel(Panel.ZOOM) }, plain = true, size = 48.dp) {
-                        Icon(Icons.zoom, size = 22.dp, tint = if (session.zoom > 1.01 || session.fill) Ink.accent else Ink.primary)
-                    }
-                    GlassButton({ onPanel(Panel.LIST) }, plain = true, size = 48.dp) { Icon(Icons.list, size = 22.dp) }
                 }
+                GlassButton({ onPanel(Panel.ZOOM) }, plain = true, size = 50.dp) {
+                    Icon(Icons.zoom, size = 24.dp, tint = if (session.zoom > 1.01 || session.fill) Ink.accent else Ink.primary)
+                }
+                GlassButton({ onPanel(Panel.LIST) }, plain = true, size = 50.dp) { Icon(Icons.list, size = 24.dp) }
             }
         }
     }

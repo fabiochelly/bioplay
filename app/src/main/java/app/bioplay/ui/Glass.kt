@@ -20,6 +20,16 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.graphics.Outline
+import androidx.compose.ui.geometry.Size
+import androidx.compose.ui.layout.boundsInWindow
+import androidx.compose.ui.layout.onGloballyPositioned
+import androidx.compose.ui.platform.LocalLayoutDirection
+import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.composed
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.staticCompositionLocalOf
+import androidx.compose.runtime.mutableStateMapOf
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.draw.drawWithContent
 import androidx.compose.ui.geometry.Offset
@@ -56,21 +66,50 @@ fun loadFonts(assets: AssetManager) {
     )
 }
 
+/** Tailles de texte un peu plus grandes que sur le bureau : lues à bout de bras sur un téléphone. */
+private const val MOBILE = 1.15f
+
 fun text(size: Int, weight: FontWeight = FontWeight.Medium, color: Color = Ink.primary) =
-    TextStyle(fontFamily = Inter, fontWeight = weight, fontSize = size.sp, color = color, letterSpacing = (-0.01 * size).sp)
+    TextStyle(fontFamily = Inter, fontWeight = weight, fontSize = (size * MOBILE).sp, color = color, letterSpacing = (-0.01 * size).sp)
+
+/** Une plaque de verre à l'écran (pixels de la fenêtre) : mpv floute la vidéo dessous. */
+data class Plate(val x: Float, val y: Float, val w: Float, val h: Float, val radius: Float)
+
+class GlassPlates {
+    val map = mutableStateMapOf<Any, Plate>()
+}
+
+val LocalPlates = staticCompositionLocalOf<GlassPlates?> { null }
 
 /**
  * Verre liquide : teinte sombre légère, reflet vertical, liseré spéculaire plus vif en haut,
  * et halo lumineux. Tout est dessiné en une passe, sans calque hors écran.
  */
-fun Modifier.glass(shape: Shape, tint: Float = 0.28f, glow: Float = 1f): Modifier = this
+fun Modifier.glass(shape: Shape, tint: Float = 0.28f, glow: Float = 1f): Modifier = composed {
+    // Chaque plaque signale sa place : le shader de mpv floute la vidéo exactement dessous.
+    val plates = LocalPlates.current
+    val key = remember { Any() }
+    val density = LocalDensity.current
+    val dir = LocalLayoutDirection.current
+    DisposableEffect(plates) { onDispose { plates?.map?.remove(key) } }
+    this.then(
+        if (plates == null) Modifier else Modifier.onGloballyPositioned { c ->
+            val b = c.boundsInWindow()
+            val outline = shape.createOutline(Size(b.width, b.height), dir, density)
+            val r = (outline as? Outline.Rounded)?.roundRect?.topLeftCornerRadius?.x ?: 0f
+            plates.map[key] = Plate(b.left, b.top, b.width, b.height, r)
+        }
+    ).glassLook(shape, tint, glow)
+}
+
+private fun Modifier.glassLook(shape: Shape, tint: Float, glow: Float): Modifier = this
     .clip(shape)
     .background(Color.Black.copy(alpha = tint), shape)
     .background(
         Brush.verticalGradient(
-            0f to Color.White.copy(alpha = 0.17f * glow),
-            0.45f to Color.White.copy(alpha = 0.07f * glow),
-            1f to Color.White.copy(alpha = 0.10f * glow),
+            0f to Color.White.copy(alpha = 0.09f * glow),
+            0.45f to Color.White.copy(alpha = 0.04f * glow),
+            1f to Color.White.copy(alpha = 0.05f * glow),
         ),
         shape,
     )

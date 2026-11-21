@@ -39,6 +39,8 @@ android {
     // Polices rangées sans compression : projetées en mémoire au lieu d'être décompressées.
     androidResources { noCompress += listOf("ttf") }
 
+    // Le shader du verre est commun avec le bureau.
+    sourceSets["main"].assets.directories.add("$rootDir/desktop/shaders")
     sourceSets["main"].jniLibs.directories.add(layout.buildDirectory.dir("generated/jniLibs").get().asFile.path)
 
     packaging {

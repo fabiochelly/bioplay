@@ -10,7 +10,7 @@ use egui::{
 
 use crate::i18n::{en, tr};
 use crate::mpv::{track_detail, track_label};
-use crate::player::{clock, speed_label, Panel, Player, Zone};
+use crate::player::{clock, message_alpha, speed_label, Panel, Player, Zone, MESSAGE_LIFE};
 
 /// Le contrôleur s'efface 1,5 s après le dernier mouvement de souris…
 pub const HIDE_AFTER: Duration = Duration::from_millis(1500);
@@ -856,21 +856,59 @@ fn toast(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, screen: Rect)
     let Some((text, at)) = &p.message else { return };
     let age = at.elapsed().as_secs_f32();
     // Bulle brève : elle confirme l'action sans gêner la lecture.
-    if age > 1.05 {
+    if age > MESSAGE_LIFE {
         p.message = None;
         return;
     }
-    let a = (age / 0.08).min(1.0) * ((1.05 - age) / 0.25).min(1.0);
-    let g = ctx.fonts_mut(|f| f.layout_no_wrap(text.clone(), semi(15.0), INK));
-    let size = g.size() + vec2(40.0, 22.0);
-    let rect = Rect::from_center_size(pos2(screen.center().x, screen.min.y + 30.0 + size.y / 2.0), size);
-    plates.alpha = a;
-    plates.add(rect, size.y / 2.0, 0.4);
-    plates.alpha = 1.0;
-    egui::Area::new(Id::new("toast")).order(Order::Tooltip).fixed_pos(rect.min).interactable(false).show(ctx, |ui| {
-        ui.set_opacity(a);
-        ui.painter().galley(rect.center() - g.size() / 2.0, g, INK);
-    });
+    let a = message_alpha(age);
+    let top = screen.min.y + 30.0;
+    if let Some((value, max)) = p.gauge {
+        // Volume : largeur fixe, nom à gauche et valeur à droite (rien ne bouge quand les
+        // chiffres défilent), fine jauge dessous. Au-delà de 100 %, la jauge continue dans un
+        // second tronçon, en couleur d'accent.
+        let (name, number) = text.split_once(' ').unwrap_or((text.as_str(), ""));
+        let left = ctx.fonts_mut(|f| f.layout_no_wrap(name.to_string(), semi(15.0), INK));
+        let right = ctx.fonts_mut(|f| f.layout_no_wrap(number.to_string(), semi(15.0), INK));
+        let rect = Rect::from_min_size(pos2(screen.center().x - 110.0, top), vec2(220.0, 54.0));
+        plates.alpha = a;
+        plates.add(rect, 18.0, 0.4);
+        plates.alpha = 1.0;
+        let fade = |c: Color32| c.gamma_multiply(a);
+        let painter = ctx.layer_painter(egui::LayerId::new(Order::Tooltip, Id::new("toast")));
+        let inner = rect.shrink2(vec2(20.0, 0.0));
+        let line = rect.min.y + 13.0;
+        painter.galley(pos2(inner.min.x, line), left, fade(INK));
+        painter.galley(pos2(inner.max.x - right.size().x, line), right, fade(INK));
+        let (h, gap) = (3.0, 3.0);
+        let y = rect.max.y - 15.0;
+        let max = max.max(100.0) as f32;
+        let over = max > 100.5;
+        // Tronçon 0-100 %, puis (si mpv va plus haut) tronçon 100 %-maximum.
+        let w100 = if over { (inner.width() - gap) * 100.0 / max } else { inner.width() };
+        let segment = |x0: f32, w: f32, from: f32, to: f32, color: Color32| {
+            let track = Rect::from_min_size(pos2(x0, y), vec2(w, h));
+            painter.rect_filled(track, 1.5, fade(Color32::from_white_alpha(46)));
+            let f = ((value as f32 - from) / (to - from)).clamp(0.0, 1.0);
+            if f > 0.0 {
+                painter.rect_filled(Rect::from_min_size(track.min, vec2((w * f).max(h), h)), 1.5, fade(color));
+            }
+        };
+        segment(inner.min.x, w100, 0.0, 100.0, INK);
+        if over {
+            segment(inner.min.x + w100 + gap, inner.width() - w100 - gap, 100.0, max, ACCENT);
+        }
+    } else {
+        let g = ctx.fonts_mut(|f| f.layout_no_wrap(text.clone(), semi(15.0), INK));
+        let size = g.size() + vec2(40.0, 22.0);
+        let rect = Rect::from_center_size(pos2(screen.center().x, top + size.y / 2.0), size);
+        plates.alpha = a;
+        plates.add(rect, size.y / 2.0, 0.4);
+        plates.alpha = 1.0;
+        egui::Area::new(Id::new("toast")).order(Order::Tooltip).fixed_pos(rect.min).interactable(false).show(ctx, |ui| {
+            ui.set_opacity(a);
+            ui.painter().galley(rect.center() - g.size() / 2.0, g, INK);
+        });
+    }
     ctx.request_repaint();
 }
 

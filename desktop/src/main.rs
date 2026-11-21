@@ -113,7 +113,13 @@ impl App {
     }
 
     fn section(&self, name: &str, on: bool) {
-        self.player.mpv.command(&[if on { "enable-section" } else { "disable-section" }, name]);
+        // allow-hide-cursor : nos sections captent la souris, sans empêcher mpv de masquer le
+        // pointeur quand il ne bouge plus.
+        if on {
+            self.player.mpv.command(&["enable-section", name, "allow-hide-cursor"]);
+        } else {
+            self.player.mpv.command(&["disable-section", name]);
+        }
     }
 
     fn poke(&mut self) {
@@ -272,7 +278,12 @@ impl App {
         }
         let msg = match name {
             "speed" => Some(format!("{} {}", tr("Vitesse", "Speed"), player::speed_label(s.speed))),
-            "volume" => Some(format!("Volume {:.0} %", s.volume)),
+            "volume" => {
+                // Le volume a sa jauge, qui continue au-delà de 100 % jusqu'au maximum de mpv.
+                let (v, max) = (s.volume, p.mpv.get("volume-max").and_then(|m| m.parse().ok()).unwrap_or(130.0));
+                p.say_gauge(format!("Volume {v:.0} %"), v, max);
+                return;
+            }
             "sub-delay" => Some(if s.sub_delay.abs() < 1e-6 {
                 tr("Sous-titres : aucun décalage", "Subtitles: no delay").into()
             } else {
@@ -361,8 +372,8 @@ impl App {
 
         // Verre : rectangles passés au shader, en pixels de l'image vidéo (hors bandes noires).
         let s = &self.player.mpv.state;
-        let mut opts = format!("glass_n={}", plates.len().min(4));
-        for (i, g) in plates.iter().take(4).enumerate() {
+        let mut opts = format!("glass_n={}", plates.len().min(8));
+        for (i, g) in plates.iter().take(8).enumerate() {
             opts += &format!(
                 ",r{i}x={:.1},r{i}y={:.1},r{i}w={:.1},r{i}h={:.1},r{i}r={:.1},r{i}a={:.3}",
                 g.x - s.margin_left as f32,
@@ -489,7 +500,7 @@ fn main() {
     mpv.command_sync(&["define-section", "bioplay", BINDINGS, "force"]);
     mpv.command_sync(&["define-section", "bioplay-hover", HOVER_BINDINGS, "force"]);
     mpv.command_sync(&["define-section", "bioplay-panel", PANEL_BINDINGS, "force"]);
-    mpv.command_sync(&["enable-section", "bioplay"]);
+    mpv.command_sync(&["enable-section", "bioplay", "allow-hide-cursor"]);
 
     let overlay = overlay::Overlay::new().expect("contexte GPU de l'interface");
     let ctx = egui::Context::default();

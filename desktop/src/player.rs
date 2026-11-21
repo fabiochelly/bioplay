@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use bioplay_core::{Cue, Track as SubIndex};
 
@@ -46,6 +46,8 @@ pub struct Player {
     pub external: HashMap<String, SubIndex>,
     pub indexing: bool,
     pub message: Option<(String, Instant)>,
+    /// Jauge du message en cours (valeur, maximum de l'échelle) : le volume.
+    pub gauge: Option<(f64, f64)>,
     pub panel: Option<Panel>,
     pub scrub: Option<Scrub>,
     pub activity: Instant,
@@ -58,6 +60,16 @@ pub struct Player {
     pub key_seek: Option<(Instant, f64)>,
 }
 
+/// Durée d'un message, de son fondu d'entrée et de son fondu de sortie, en secondes.
+pub const MESSAGE_LIFE: f32 = 1.05;
+const MESSAGE_IN: f32 = 0.08;
+const MESSAGE_OUT: f32 = 0.25;
+
+/// Opacité d'un message affiché depuis [age] secondes (0 une fois sa durée passée).
+pub fn message_alpha(age: f32) -> f32 {
+    ((age / MESSAGE_IN).min(1.0) * ((MESSAGE_LIFE - age) / MESSAGE_OUT).min(1.0)).max(0.0)
+}
+
 impl Player {
     pub fn new(mpv: Mpv) -> Self {
         Self {
@@ -66,6 +78,7 @@ impl Player {
             external: HashMap::new(),
             indexing: false,
             message: None,
+            gauge: None,
             panel: None,
             scrub: None,
             activity: Instant::now(),
@@ -78,7 +91,28 @@ impl Player {
     }
 
     pub fn say(&mut self, text: impl Into<String>) {
-        self.message = Some((text.into(), Instant::now()));
+        self.gauge = None;
+        self.post(text.into());
+    }
+
+    /// Message accompagné d'une jauge : [value] sur une échelle qui va jusqu'à [max] (au moins 100).
+    pub fn say_gauge(&mut self, text: impl Into<String>, value: f64, max: f64) {
+        self.gauge = Some((value, max));
+        self.post(text.into());
+    }
+
+    /// Un message qui en remplace un autre encore à l'écran garde son opacité : pas de nouveau
+    /// fondu d'entrée, donc pas de clignotement quand les valeurs défilent (molette).
+    fn post(&mut self, text: String) {
+        let now = Instant::now();
+        let at = match &self.message {
+            Some((_, old)) => {
+                let a = message_alpha(old.elapsed().as_secs_f32());
+                now.checked_sub(Duration::from_secs_f32(MESSAGE_IN * a)).unwrap_or(now)
+            }
+            None => now,
+        };
+        self.message = Some((text, at));
     }
 
     pub fn has_file(&self) -> bool {

@@ -101,19 +101,21 @@ fun Chip(label: String, selected: Boolean, onClick: () -> Unit) {
 @Composable
 fun TracksPanel(session: Session, onAddSubtitle: () -> Unit) {
     val mpv = session.mpv
+    // Listes raccourcies sur un écran bas (téléphone en paysage) : décalages toujours visibles.
+    val listMax = ((LocalConfiguration.current.screenHeightDp * 0.8f - 230f).coerceIn(90f, 230f)).dp
     val audio = mpv.tracks.filter { it.type == "audio" }
     val subs = mpv.tracks.filter { it.type == "sub" }
     Row(horizontalArrangement = Arrangement.spacedBy(18.dp)) {
         Column(Modifier.weight(1f)) {
             Header(t("Audio", "Audio"), "${audio.size}")
-            LazyColumn(Modifier.heightIn(max = 230.dp)) {
+            LazyColumn(Modifier.heightIn(max = listMax)) {
                 items(audio, key = { it.id }) { t -> TrackChoice(t, mpv.aid == t.id) { mpv.setAudio(t.id); session.say("${t("Audio", "Audio")} : ${t.label}") } }
                 if (audio.isEmpty()) item { BasicText(t("Aucune piste audio", "No audio track"), style = text(14, color = Ink.faint), modifier = Modifier.padding(14.dp)) }
             }
         }
         Column(Modifier.weight(1f)) {
             Header(t("Sous-titres", "Subtitles"), "${subs.size}")
-            LazyColumn(Modifier.heightIn(max = 230.dp)) {
+            LazyColumn(Modifier.heightIn(max = listMax)) {
                 item { Choice(mpv.sid == null, { mpv.setSub(null); session.say(t("Sous-titres désactivés", "Subtitles off")) }, t("Désactivés", "Off")) }
                 items(subs, key = { it.id }) { t -> TrackChoice(t, mpv.sid == t.id) { mpv.setSub(t.id); session.say("${t("Sous-titres", "Subtitles")} : ${t.label}") } }
                 item {
@@ -215,7 +217,7 @@ fun ZoomPanel(session: Session) {
 fun ListPanel(session: Session) {
     val idx = session.subIndex
     val track = session.subTrack
-    val height = (LocalConfiguration.current.screenHeightDp * 0.62f).dp
+    val height = (LocalConfiguration.current.screenHeightDp * 0.8f - 110f).coerceAtLeast(120f).dp
     Header(
         track?.let { "${t("Sous-titres", "Subtitles")} · ${it.label}" } ?: t("Sous-titres", "Subtitles"),
         idx?.let { "${it.cues.size} ${t("lignes", "lines")}" },

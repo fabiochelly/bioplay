@@ -1,106 +1,66 @@
 package app.bioplay.ui
 
-import android.app.Dialog
-import android.graphics.drawable.GradientDrawable
-import android.view.Gravity
-import android.view.ViewGroup
-import android.view.WindowInsets
-import android.view.WindowInsetsController
-import android.view.WindowManager
-import androidx.activity.ComponentActivity
+import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.CompositionContext
-import androidx.compose.runtime.DisposableEffect
-import androidx.compose.runtime.getValue
-import androidx.compose.runtime.rememberCompositionContext
-import androidx.compose.runtime.rememberUpdatedState
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.snapshotFlow
+import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.platform.ComposeView
-import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.setViewTreeLifecycleOwner
-import androidx.savedstate.setViewTreeSavedStateRegistryOwner
-import app.bioplay.R
-import java.util.function.Consumer
-
-private const val RADIUS_DP = 30f
-private const val BLUR_DP = 34f
+import app.bioplay.Session
+import kotlinx.coroutines.flow.distinctUntilChanged
+import java.util.Locale
 
 /**
- * Tiroir de verre : une fenêtre à part, posée en bas de l'écran, que le compositeur floute en
- * temps réel sur la vidéo (Android 12+, flou entre fenêtres). Si le flou est coupé (économie
- * d'énergie, appareil qui ne le gère pas), la teinte s'épaissit pour rester lisible.
+ * Tiroir de verre, dans l'écran : un toucher à côté le ferme. Le flou de la vidéo dessous
+ * vient du shader de mpv (indépendant du téléphone, contrairement au flou entre fenêtres).
  */
-private class DrawerWindow(
-    activity: ComponentActivity,
-    parent: CompositionContext,
-    width: Dp,
-    content: @Composable () -> Unit,
-) : Dialog(activity, R.style.Theme_Bioplay_Drawer) {
-    private val density = activity.resources.displayMetrics.density
-    private val background = GradientDrawable().apply { cornerRadius = RADIUS_DP * density }
-    private val blurListener = Consumer<Boolean> { applyBlur(it) }
-
-    init {
-        val view = ComposeView(activity).apply {
-            setParentCompositionContext(parent)
-            setContent(content)
-        }
-        setContentView(view)
-        setCanceledOnTouchOutside(true)
-        window!!.apply {
-            decorView.setViewTreeLifecycleOwner(activity)
-            decorView.setViewTreeSavedStateRegistryOwner(activity)
-            setBackgroundDrawable(background)
-            val screen = activity.resources.displayMetrics.widthPixels
-            setLayout(minOf((width.value * density).toInt(), screen - (32 * density).toInt()), ViewGroup.LayoutParams.WRAP_CONTENT)
-            setGravity(Gravity.BOTTOM or Gravity.CENTER_HORIZONTAL)
-            attributes = attributes.apply { y = (14 * density).toInt() }
-            clearFlags(WindowManager.LayoutParams.FLAG_DIM_BEHIND)
-            addFlags(WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN)
-            attributes.layoutInDisplayCutoutMode = WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
-        }
-    }
-
-    private fun applyBlur(enabled: Boolean) {
-        window?.setBackgroundBlurRadius(if (enabled) (BLUR_DP * density).toInt() else 0)
-        background.setColor(if (enabled) 0x8C0E1116.toInt() else 0xEB0E1116.toInt())
-    }
-
-    override fun onStart() {
-        super.onStart()
-        val wm = context.getSystemService(WindowManager::class.java)
-        applyBlur(wm.isCrossWindowBlurEnabled)
-        wm.addCrossWindowBlurEnabledListener(blurListener)
-        window?.insetsController?.apply {
-            hide(WindowInsets.Type.systemBars())
-            systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
-        }
-    }
-
-    override fun onStop() {
-        context.getSystemService(WindowManager::class.java).removeCrossWindowBlurEnabledListener(blurListener)
-        super.onStop()
+@Composable
+fun GlassDrawer(onDismiss: () -> Unit, width: Dp, content: @Composable ColumnScope.() -> Unit) {
+    val screenH = LocalConfiguration.current.screenHeightDp.dp
+    Box(Modifier.fillMaxSize()) {
+        Box(Modifier.fillMaxSize().clickable(remember { MutableInteractionSource() }, indication = null, onClick = onDismiss))
+        Column(
+            Modifier.align(Alignment.BottomCenter).padding(horizontal = 14.dp, vertical = 12.dp)
+                .widthIn(max = width).fillMaxWidth().heightIn(max = screenH * 0.8f)
+                .glass(RoundedCornerShape(30.dp), tint = 0.5f)
+                .clickable(remember { MutableInteractionSource() }, indication = null) {}
+                .padding(20.dp),
+            content = content,
+        )
     }
 }
 
+/**
+ * Transmet à mpv la place des plaques de verre (en pixels de l'image vidéo, bandes noires
+ * retirées). Aucune plaque : glass_n=0, le shader ne coûte rien.
+ */
 @Composable
-fun GlassDrawer(onDismiss: () -> Unit, width: Dp = 620.dp, content: @Composable ColumnScope.() -> Unit) {
-    val activity = LocalContext.current as ComponentActivity
-    val parent = rememberCompositionContext()
-    val body by rememberUpdatedState(content)
-    val dismiss by rememberUpdatedState(onDismiss)
-    DisposableEffect(Unit) {
-        val window = DrawerWindow(activity, parent, width) {
-            Column(Modifier.fillMaxWidth().glass(androidx.compose.foundation.shape.RoundedCornerShape(RADIUS_DP.dp), tint = 0f).padding(20.dp)) { body() }
-        }
-        window.setOnCancelListener { dismiss() }
-        window.show()
-        onDispose { window.dismiss() }
+fun GlassSync(session: Session, plates: GlassPlates) {
+    val mpv = session.mpv
+    LaunchedEffect(plates) {
+        snapshotFlow {
+            val list = plates.map.values.take(8)
+            buildString {
+                append("glass_n=").append(list.size)
+                list.forEachIndexed { i, p ->
+                    append(String.format(Locale.ROOT, ",r%dx=%.1f,r%dy=%.1f,r%dw=%.1f,r%dh=%.1f,r%dr=%.1f,r%da=1",
+                        i, p.x - mpv.marginLeft, i, p.y - mpv.marginTop, i, p.w, i, p.h, i, p.radius, i))
+                }
+            }
+        }.distinctUntilChanged().collect { mpv.setGlass(it) }
     }
 }
