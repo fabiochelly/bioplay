@@ -131,7 +131,7 @@ class Mpv(context: Context) : MPVLib.EventObserver {
             // Liseré noir fin, sans ombre ; appliqué aussi aux ASS (tailles parfois démesurées).
             "sub-use-margins" to "no",
             "sub-ass-force-margins" to "no",
-            "sub-font-size" to "52",
+            "sub-font-size" to "60",
             "sub-color" to "#EBEBEB",
             "sub-outline-size" to "1.6",
             "sub-outline-color" to "#0A0A0A",
@@ -292,6 +292,15 @@ class Mpv(context: Context) : MPVLib.EventObserver {
         lib.setPropertyDouble("video-zoom", kotlin.math.log2(scale))
         lib.setPropertyDouble("video-pan-x", panX)
         lib.setPropertyDouble("video-pan-y", panY)
+    }
+
+    private var subMargin = 46
+
+    /** Marge basse des sous-titres (unités mpv, image de 720 lignes). */
+    fun subMarginTo(m: Int) {
+        if (!alive || m == subMargin) return
+        subMargin = m
+        lib.setPropertyString("sub-margin-y", m.toString())
     }
 
     private var glassOpts = ""

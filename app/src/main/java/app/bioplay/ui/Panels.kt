@@ -39,6 +39,8 @@ import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.CompositingStrategy
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.text.font.FontWeight
@@ -64,7 +66,7 @@ private fun Header(title: String, trailing: String? = null) {
 }
 
 @Composable
-private fun Choice(selected: Boolean, onClick: () -> Unit, title: String, detail: String? = null, modifier: Modifier = Modifier) {
+private fun Choice(selected: Boolean, onClick: () -> Unit, title: String, detail: String? = null, modifier: Modifier = Modifier, flag: String? = null) {
     Row(
         modifier.fillMaxWidth().padding(vertical = 2.dp).clip16()
             .background(if (selected) Ink.accent.copy(alpha = 0.16f) else Color.Transparent)
@@ -73,6 +75,7 @@ private fun Choice(selected: Boolean, onClick: () -> Unit, title: String, detail
             .padding(horizontal = 14.dp, vertical = 7.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
+        if (flag != null) LangFlag(flag, Modifier.padding(end = 12.dp).width(27.dp).height(18.dp), if (selected) 1f else 0.8f)
         Column(Modifier.weight(1f)) {
             BasicText(title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = text(15, FontWeight.SemiBold, if (selected) Ink.accent else Ink.primary))
             if (!detail.isNullOrBlank()) BasicText(detail, maxLines = 1, overflow = TextOverflow.Ellipsis, style = text(12, color = Ink.secondary))
@@ -141,7 +144,7 @@ fun TracksPanel(session: Session, onAddSubtitle: () -> Unit) {
 }
 
 @Composable
-private fun TrackChoice(t: Track, selected: Boolean, onClick: () -> Unit) = Choice(selected, onClick, t.label, t.detail)
+private fun TrackChoice(t: Track, selected: Boolean, onClick: () -> Unit) = Choice(selected, onClick, t.label, t.detail, flag = flagFor(t.lang, t.title))
 
 @Composable
 private fun Delay(label: String, value: Double, step: Double, modifier: Modifier, set: (Double) -> Unit) {
@@ -184,44 +187,8 @@ private fun LanguageHalf(code: String, selected: Boolean, compact: Boolean, fren
             .padding(horizontal = if (compact) 12.dp else 14.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
-        Flag(french, Modifier.width(if (compact) 24.dp else 27.dp).height(if (compact) 16.dp else 18.dp), if (selected) 1f else 0.55f)
+        LangFlag(if (french) "fr" else "en", Modifier.width(if (compact) 24.dp else 27.dp).height(if (compact) 16.dp else 18.dp), if (selected) 1f else 0.55f)
         BasicText(code, style = text(if (compact) 12 else 14, FontWeight.SemiBold, if (selected) Ink.accent else Ink.secondary), modifier = Modifier.padding(start = 7.dp))
-    }
-}
-
-/**
- * Drapeau pris dans une dalle de verre : couleurs franches, reflet brillant sur le haut, ombre
- * douce en bas, liseré lumineux. Une langue inactive est simplement estompée.
- */
-@Composable
-private fun Flag(french: Boolean, modifier: Modifier, alpha: Float) {
-    Canvas(modifier.clip(RoundedCornerShape(4.dp))) {
-        val a = 0.88f * alpha
-        val w = size.width
-        val h = size.height
-        if (french) {
-            drawRect(Color(0xFF2F5DB5).copy(alpha = a), Offset.Zero, Size(w / 3, h))
-            drawRect(Color(0xFFF4F5F7).copy(alpha = a), Offset(w / 3, 0f), Size(w / 3, h))
-            drawRect(Color(0xFFE0473F).copy(alpha = a), Offset(2 * w / 3, 0f), Size(w / 3, h))
-        } else {
-            val blue = Color(0xFF233F8C).copy(alpha = a)
-            val red = Color(0xFFD23A48).copy(alpha = a)
-            val white = Color(0xFFF4F5F7).copy(alpha = a)
-            drawRect(blue)
-            // Proportions officielles ramenées à la hauteur : sautoirs, puis croix.
-            drawLine(white, Offset(-1f, -1f), Offset(w + 1, h + 1), h * 0.2f)
-            drawLine(white, Offset(-1f, h + 1), Offset(w + 1, -1f), h * 0.2f)
-            drawLine(red, Offset(-1f, -1f), Offset(w + 1, h + 1), h * 0.067f)
-            drawLine(red, Offset(-1f, h + 1), Offset(w + 1, -1f), h * 0.067f)
-            drawRect(white, Offset(w / 2 - h * 0.167f, 0f), Size(h * 0.333f, h))
-            drawRect(white, Offset(0f, h * 0.333f), Size(w, h * 0.333f))
-            drawRect(red, Offset(w / 2 - h * 0.1f, 0f), Size(h * 0.2f, h))
-            drawRect(red, Offset(0f, h * 0.4f), Size(w, h * 0.2f))
-        }
-        // Dalle de verre : reflet en haut, ombre en bas, liseré.
-        drawRect(Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.42f * alpha), Color.White.copy(alpha = 0.06f * alpha)), endY = h * 0.5f), size = Size(w, h * 0.5f))
-        drawRect(Brush.verticalGradient(listOf(Color.Transparent, Color.Black.copy(alpha = 0.22f * alpha)), startY = h * 0.55f), Offset(0f, h * 0.55f), Size(w, h * 0.45f))
-        drawRoundRect(Color.White.copy(alpha = 0.5f * alpha), style = androidx.compose.ui.graphics.drawscope.Stroke(1.2f), cornerRadius = CornerRadius(4.dp.toPx()))
     }
 }
 

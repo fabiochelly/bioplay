@@ -63,4 +63,17 @@ fun GlassSync(session: Session, plates: GlassPlates) {
             }
         }.distinctUntilChanged().collect { mpv.setGlass(it) }
     }
+    // La carte de commandes ne cache jamais les sous-titres : tant qu'elle est là, ils remontent.
+    val density = androidx.compose.ui.platform.LocalDensity.current.density
+    LaunchedEffect(plates) {
+        snapshotFlow {
+            val h = mpv.surfaceH.toFloat()
+            val top = plates.map.values.filter { it.y + it.h > h - 40 * density }.minOfOrNull { it.y }
+            if (top == null) 46 else {
+                val mt = mpv.marginTop.coerceAtLeast(0.0).toFloat()
+                val videoH = (h - 2 * mt).coerceAtLeast(1f)
+                (((h - mt) - top + 10 * density) * 720f / videoH).toInt().coerceAtLeast(46)
+            }
+        }.distinctUntilChanged().collect { mpv.subMarginTo(it) }
+    }
 }

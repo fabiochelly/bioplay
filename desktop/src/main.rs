@@ -2,6 +2,7 @@
 //! et les raccourcis de l'utilisateur ; bioplay y pose son interface (superposition egui) et le
 //! verre (shader mpv qui floute la vidéo sous les plaques). Interface masquée : aucun coût.
 
+mod flags;
 mod i18n;
 mod mpv;
 mod overlay;

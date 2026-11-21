@@ -429,9 +429,11 @@ private fun TracksButton(session: Session, onClick: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(Icons.speaker, size = 20.dp)
+        audio?.let { flagFor(it.lang, it.title) }?.let { LangFlag(it, Modifier.padding(start = 8.dp).width(21.dp).height(14.dp)) }
         BasicText(audio?.let(::shortName) ?: "—", style = text(13, FontWeight.SemiBold), modifier = Modifier.padding(start = 7.dp))
         Box(Modifier.padding(horizontal = 12.dp).width(1.dp).height(20.dp).background(Color.White.copy(alpha = 0.22f)))
         Icon(if (sub != null) Icons.subtitles else Icons.subtitlesOff, size = 20.dp, tint = if (sub != null) Ink.accent else Ink.secondary)
+        sub?.let { flagFor(it.lang, it.title) }?.let { LangFlag(it, Modifier.padding(start = 8.dp).width(21.dp).height(14.dp)) }
         BasicText(
             sub?.let(::shortName) ?: t("Aucun", "Off"),
             style = text(13, FontWeight.SemiBold, if (sub != null) Ink.accent else Ink.secondary),

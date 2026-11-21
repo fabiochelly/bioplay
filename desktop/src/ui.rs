@@ -237,9 +237,10 @@ fn bar(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, screen: Rect, a
             toggle(p, Panel::Speed);
         }
         let (audio_name, sub_name) = track_names(p);
-        let tw = tracks_width(ui, &audio_name, sub_name.as_deref());
+        let tflags = track_flags(p);
+        let tw = tracks_width(ui, &audio_name, sub_name.as_deref(), tflags);
         rx -= tw + 6.0;
-        if tracks_button(ui, Rect::from_min_size(pos2(rx, cy - 21.0), vec2(tw, 42.0)), &audio_name, sub_name.as_deref()).clicked() {
+        if tracks_button(ui, Rect::from_min_size(pos2(rx, cy - 21.0), vec2(tw, 42.0)), &audio_name, sub_name.as_deref(), tflags).clicked() {
             toggle(p, Panel::Tracks);
         }
 
@@ -274,16 +275,24 @@ fn track_names(p: &Player) -> (String, Option<String>) {
     (audio, p.sub_track().map(name))
 }
 
+/// Drapeaux des pistes audio et sous-titres choisies.
+fn track_flags(p: &Player) -> (Option<&'static str>, Option<&'static str>) {
+    let s = &p.mpv.state;
+    let audio = s.tracks.iter().find(|t| t.kind == "audio" && Some(t.id) == s.aid).and_then(|t| crate::flags::flag_for(&t.lang, &t.title));
+    (audio, p.sub_track().and_then(|t| crate::flags::flag_for(&t.lang, &t.title)))
+}
+
 const TB_ICON: f32 = 22.0;
 
-fn tracks_width(ui: &Ui, audio: &str, sub: Option<&str>) -> f32 {
+fn tracks_width(ui: &Ui, audio: &str, sub: Option<&str>, flags: (Option<&str>, Option<&str>)) -> f32 {
     let w = |t: &str| ui.painter().layout_no_wrap(t.to_owned(), semi(13.0), INK).size().x;
     let sub_w = w(sub.unwrap_or(tr("Aucun", "Off")));
-    14.0 + TB_ICON + 7.0 + w(audio) + 13.0 + 1.0 + 13.0 + TB_ICON + 7.0 + sub_w + 16.0
+    let flag_w = |f: Option<&str>| if f.is_some() { 27.0 } else { 0.0 };
+    14.0 + TB_ICON + 7.0 + flag_w(flags.0) + w(audio) + 13.0 + 1.0 + 13.0 + TB_ICON + 7.0 + flag_w(flags.1) + sub_w + 16.0
 }
 
 /// Bouton des pistes : haut-parleur + langue audio, sous-titres + leur langue, liseré d'accent.
-fn tracks_button(ui: &mut Ui, r: Rect, audio: &str, sub: Option<&str>) -> Response {
+fn tracks_button(ui: &mut Ui, r: Rect, audio: &str, sub: Option<&str>, flags: (Option<&str>, Option<&str>)) -> Response {
     let resp = ui.interact(r, ui.id().with("tracks-button"), Sense::click());
     let k = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
     let cr = CornerRadius::same((r.height() / 2.0) as u8);
@@ -296,6 +305,10 @@ fn tracks_button(ui: &mut Ui, r: Rect, audio: &str, sub: Option<&str>) -> Respon
     let mut x = r.min.x + 14.0;
     icon(painter, pos2(x + TB_ICON / 2.0, cy), TB_ICON, Icon::Speaker, INK);
     x += TB_ICON + 7.0;
+    if let Some(f) = flags.0 {
+        crate::flags::draw(painter, Rect::from_min_size(pos2(x, cy - 7.0), vec2(21.0, 14.0)), f, 1.0);
+        x += 27.0;
+    }
     let g = painter.layout_no_wrap(audio.to_owned(), semi(13.0), INK);
     let w = g.size().x;
     painter.galley(pos2(x, cy - g.size().y / 2.0), g, INK);
@@ -308,6 +321,10 @@ fn tracks_button(ui: &mut Ui, r: Rect, audio: &str, sub: Option<&str>) -> Respon
     };
     icon(painter, pos2(x + TB_ICON / 2.0, cy), TB_ICON, ic, col);
     x += TB_ICON + 7.0;
+    if let Some(f) = flags.1 {
+        crate::flags::draw(painter, Rect::from_min_size(pos2(x, cy - 7.0), vec2(21.0, 14.0)), f, 1.0);
+        x += 27.0;
+    }
     let g = painter.layout_no_wrap(label, semi(13.0), col);
     painter.galley(pos2(x, cy - g.size().y / 2.0), g, col);
     resp
@@ -430,10 +447,12 @@ fn icon(painter: &egui::Painter, c: Pos2, size: f32, which: Icon, color: Color32
             painter.add(Shape::convex_polygon(vec![p(6.0, 6.0), p(14.5, 12.0), p(6.0, 18.0)], color, Stroke::NONE));
         }
         Icon::Tracks => {
-            painter.rect_stroke(Rect::from_min_max(p(3.0, 5.0), p(21.0, 19.0)), CornerRadius::same((2.5 * s) as u8), stroke, StrokeKind::Inside);
-            painter.line_segment([p(7.0, 13.0), p(11.0, 13.0)], stroke);
-            painter.line_segment([p(13.0, 13.0), p(17.0, 13.0)], stroke);
-            painter.line_segment([p(7.0, 16.0), p(15.0, 16.0)], stroke);
+            // Sous-titres : cadre arrondi à bord fin, deux lignes de texte en pastilles.
+            painter.rect_stroke(Rect::from_min_max(p(2.0, 4.0), p(22.0, 20.0)), CornerRadius::same((3.5 * s) as u8), Stroke::new(1.7 * s, color), StrokeKind::Inside);
+            let pill = CornerRadius::same((0.8 * s).max(1.0) as u8);
+            for (x0, x1, y) in [(5.9, 14.3, 11.4), (14.5, 18.1, 11.4), (5.9, 10.1, 14.6), (10.3, 18.1, 14.6)] {
+                painter.rect_filled(Rect::from_min_max(p(x0 + 0.4, y), p(x1 - 0.4, y + 1.6)), pill, color);
+            }
         }
         Icon::Speed => {
             painter.add(Shape::Path(egui::epaint::PathShape::line(
@@ -549,7 +568,7 @@ fn chip(ui: &mut Ui, label: &str, selected: bool) -> Response {
     resp
 }
 
-fn choice(ui: &mut Ui, selected: bool, title: &str, detail: &str) -> Response {
+fn choice(ui: &mut Ui, selected: bool, title: &str, detail: &str, flag: Option<&str>) -> Response {
     let w = ui.available_width();
     let h = if detail.is_empty() { 40.0 } else { 52.0 };
     let (r, resp) = ui.allocate_exact_size(vec2(w, h), Sense::click());
@@ -561,7 +580,11 @@ fn choice(ui: &mut Ui, selected: bool, title: &str, detail: &str) -> Response {
         ui.painter().rect_filled(r, cr, Color32::from_white_alpha(16));
     }
     let color = if selected { ACCENT } else { INK };
-    let x = r.min.x + 14.0;
+    let mut x = r.min.x + 14.0;
+    if let Some(f) = flag {
+        crate::flags::draw(ui.painter(), Rect::from_min_size(pos2(x, r.center().y - 9.0), vec2(27.0, 18.0)), f, if selected { 1.0 } else { 0.8 });
+        x += 39.0;
+    }
     if detail.is_empty() {
         ui.painter().text(pos2(x, r.center().y), Align2::LEFT_CENTER, title, semi(15.0), color);
     } else {
@@ -595,54 +618,13 @@ fn language_switch(ui: &mut Ui) {
             painter.rect_filled(seg, seg_cr, Color32::from_white_alpha(14));
         }
         let flag = Rect::from_min_size(pos2(seg.min.x + 11.0, seg.center().y - 8.0), vec2(24.0, 16.0));
-        draw_flag(&painter, flag, french, if selected { 1.0 } else { 0.55 });
+        crate::flags::draw(&painter, flag, if french { "fr" } else { "en" }, if selected { 1.0 } else { 0.55 });
         painter.text(pos2(flag.max.x + 7.0, seg.center().y), Align2::LEFT_CENTER, code, semi(12.5), if selected { ACCENT } else { INK2 });
         if resp.clicked() && !selected {
             crate::i18n::toggle();
         }
     }
     painter.rect_stroke(r, cr, Stroke::new(1.0, Color32::from_white_alpha(46)), StrokeKind::Inside);
-}
-
-/// Drapeau pris dans une dalle de verre : couleurs franches, reflet brillant sur le haut, ombre
-/// douce en bas, liseré lumineux. Une langue inactive est simplement estompée.
-fn draw_flag(painter: &egui::Painter, r: Rect, french: bool, alpha: f32) {
-    let a = 0.88 * alpha;
-    let c = |rgb: (u8, u8, u8)| Color32::from_rgba_unmultiplied(rgb.0, rgb.1, rgb.2, (255.0 * a) as u8);
-    let p = painter.with_clip_rect(r);
-    let (w, h) = (r.width(), r.height());
-    let white = c((244, 245, 247));
-    if french {
-        for (k, col) in [c((47, 93, 181)), white, c((224, 71, 63))].into_iter().enumerate() {
-            p.rect_filled(Rect::from_min_size(pos2(r.min.x + w * k as f32 / 3.0, r.min.y), vec2(w / 3.0, h)), CornerRadius::ZERO, col);
-        }
-    } else {
-        let (blue, red) = (c((35, 63, 140)), c((210, 58, 72)));
-        p.rect_filled(r, CornerRadius::ZERO, blue);
-        let (tl, br, bl, tr) = (r.left_top() - vec2(1.0, 1.0), r.right_bottom() + vec2(1.0, 1.0), r.left_bottom() + vec2(-1.0, 1.0), r.right_top() + vec2(1.0, -1.0));
-        p.line_segment([tl, br], Stroke::new(h * 0.2, white));
-        p.line_segment([bl, tr], Stroke::new(h * 0.2, white));
-        p.line_segment([tl, br], Stroke::new(h * 0.067, red));
-        p.line_segment([bl, tr], Stroke::new(h * 0.067, red));
-        p.rect_filled(Rect::from_center_size(r.center(), vec2(h * 0.333, h)), CornerRadius::ZERO, white);
-        p.rect_filled(Rect::from_center_size(r.center(), vec2(w, h * 0.333)), CornerRadius::ZERO, white);
-        p.rect_filled(Rect::from_center_size(r.center(), vec2(h * 0.2, h)), CornerRadius::ZERO, red);
-        p.rect_filled(Rect::from_center_size(r.center(), vec2(w, h * 0.2)), CornerRadius::ZERO, red);
-    }
-    // Dalle de verre : reflet en haut, ombre en bas, liseré.
-    let mut mesh = egui::Mesh::default();
-    let top = Color32::from_white_alpha((107.0 * alpha) as u8);
-    let mid = Color32::from_white_alpha((15.0 * alpha) as u8);
-    let shade = Color32::from_black_alpha((56.0 * alpha) as u8);
-    let ym = r.min.y + h * 0.5;
-    for (pt, col) in [(r.left_top(), top), (r.right_top(), top), (pos2(r.max.x, ym), mid), (pos2(r.min.x, ym), mid), (r.right_bottom(), shade), (r.left_bottom(), shade)] {
-        mesh.colored_vertex(pt, col);
-    }
-    for t in [[0, 1, 2], [0, 2, 3], [3, 2, 4], [3, 4, 5]] {
-        mesh.add_triangle(t[0], t[1], t[2]);
-    }
-    p.add(Shape::mesh(mesh));
-    painter.rect_stroke(r, CornerRadius::same(3), Stroke::new(1.0, Color32::from_white_alpha((128.0 * alpha) as u8)), StrokeKind::Inside);
 }
 
 // --- Tiroirs --------------------------------------------------------------------------------------
@@ -702,7 +684,7 @@ fn tracks_panel(ui: &mut Ui, p: &mut Player, max_height: f32) {
         header(&mut cols[0], tr("Audio", "Audio"), &audio.len().to_string());
         egui::ScrollArea::vertical().id_salt("audio").max_height(lists).show(&mut cols[0], |ui| {
             for t in &audio {
-                if choice(ui, p.mpv.state.aid == Some(t.id), &track_label(t), &track_detail(t)).clicked() {
+                if choice(ui, p.mpv.state.aid == Some(t.id), &track_label(t), &track_detail(t), crate::flags::flag_for(&t.lang, &t.title)).clicked() {
                     p.mpv.set("aid", &t.id.to_string());
                     p.say(format!("{} : {}", tr("Audio", "Audio"), track_label(t)));
                 }
@@ -710,12 +692,12 @@ fn tracks_panel(ui: &mut Ui, p: &mut Player, max_height: f32) {
         });
         header(&mut cols[1], tr("Sous-titres", "Subtitles"), &subs.len().to_string());
         egui::ScrollArea::vertical().id_salt("subs").max_height(lists).show(&mut cols[1], |ui| {
-            if choice(ui, p.mpv.state.sid.is_none(), tr("Désactivés", "Off"), "").clicked() {
+            if choice(ui, p.mpv.state.sid.is_none(), tr("Désactivés", "Off"), "", None).clicked() {
                 p.mpv.set("sid", "no");
                 p.say(tr("Sous-titres désactivés", "Subtitles off"));
             }
             for t in &subs {
-                if choice(ui, p.mpv.state.sid == Some(t.id), &track_label(t), &track_detail(t)).clicked() {
+                if choice(ui, p.mpv.state.sid == Some(t.id), &track_label(t), &track_detail(t), crate::flags::flag_for(&t.lang, &t.title)).clicked() {
                     p.mpv.set("sid", &t.id.to_string());
                     p.say(format!("{} : {}", tr("Sous-titres", "Subtitles"), track_label(t)));
                 }
@@ -1038,6 +1020,13 @@ fn home(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actions: &mut 
             }
             ui.add_space(10.0);
             language_switch(ui);
+            if std::env::var_os("BIOPLAY_FLAGS").is_some() {
+                ui.add_space(10.0);
+                let (r, _) = ui.allocate_exact_size(vec2(14.0 * 38.0, 26.0), Sense::hover());
+                for (i, f) in crate::flags::FLAGS.iter().enumerate() {
+                    crate::flags::draw(ui.painter(), Rect::from_min_size(pos2(r.min.x + i as f32 * 38.0, r.min.y), vec2(33.0, 22.0)), f, 1.0);
+                }
+            }
             if !p.recents.is_empty() {
                 ui.add_space(20.0);
                 ui.label(egui::RichText::new(tr("Reprendre", "Continue")).font(semi(13.0)).color(INK2));
