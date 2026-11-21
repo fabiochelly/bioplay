@@ -28,6 +28,10 @@ LEFT script-binding main/left
 Ctrl+RIGHT script-binding main/ctrl-right
 Ctrl+LEFT script-binding main/ctrl-left
 TAB script-binding main/tab
+Shift+KP_ADD script-binding main/sub-bigger
+Shift+KP_SUBTRACT script-binding main/sub-smaller
+Shift+UP script-binding main/sub-up
+Shift+DOWN script-binding main/sub-down
 MBTN_LEFT script-binding main/mouse-left";
 /// Actifs quand la souris est sur l'interface : la molette fait défiler, pas de plein écran.
 const HOVER_BINDINGS: &str = "MBTN_LEFT_DBL ignore
@@ -174,6 +178,10 @@ impl App {
                 p.mpv.seek(p.mpv.state.position + 10.0 * dir, true);
                 p.say(if dir > 0.0 { "+10 s" } else { "−10 s" });
             }
+            "sub-bigger" => p.sub_size(1),
+            "sub-smaller" => p.sub_size(-1),
+            "sub-up" => p.sub_height(1),
+            "sub-down" => p.sub_height(-1),
             "tab" => p.panel = if p.panel == Some(Panel::List) { None } else { Some(Panel::List) },
             "esc" => p.panel = None,
             _ => {}
@@ -211,6 +219,7 @@ impl App {
             mpv::Change::Binding(name, state) => self.binding(&name, &state),
             mpv::Change::Loaded => {
                 self.player.loaded_at = Some(Instant::now());
+                self.player.apply_subs();
                 let path = self.player.mpv.state.path.clone();
                 if Path::new(&path).is_file() {
                     self.index(path, None);
@@ -394,11 +403,12 @@ impl App {
         let bottom_ui = plates.iter().filter(|g| g.y + g.h > h - 40.0 * scale && g.alpha > 0.3).map(|g| g.y).fold(f32::MAX, f32::min);
         let video_h = (h as f64 - s.margin_top - s.margin_bottom).max(1.0);
         let video_bottom = h as f64 - s.margin_bottom;
+        let base = SUB_MARGIN + self.player.sub_lift;
         let margin = if bottom_ui < f32::MAX {
             let needed = (video_bottom - bottom_ui as f64 + 14.0 * scale as f64) * 720.0 / video_h;
-            (needed.ceil() as i32).max(SUB_MARGIN)
+            (needed.ceil() as i32).max(base)
         } else {
-            SUB_MARGIN
+            base
         };
         if margin != self.sub_margin {
             self.player.mpv.set("sub-margin-y", &margin.to_string());

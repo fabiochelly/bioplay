@@ -423,6 +423,8 @@ enum Icon {
     Folder,
     Plus,
     Minus,
+    Up,
+    Down,
     Close,
     Speaker,
     SubtitlesOff,
@@ -487,6 +489,12 @@ fn icon(painter: &egui::Painter, c: Pos2, size: f32, which: Icon, color: Color32
         }
         Icon::Minus => {
             painter.line_segment([p(6.0, 12.0), p(18.0, 12.0)], stroke);
+        }
+        Icon::Up => {
+            painter.add(Shape::line(vec![p(6.5, 15.0), p(12.0, 9.0), p(17.5, 15.0)], stroke));
+        }
+        Icon::Down => {
+            painter.add(Shape::line(vec![p(6.5, 9.0), p(12.0, 15.0), p(17.5, 9.0)], stroke));
         }
         Icon::Speaker => {
             painter.rect_filled(Rect::from_min_max(p(3.5, 9.0), p(8.0, 15.0)), CornerRadius::same((1.0 * s) as u8), color);
@@ -678,8 +686,8 @@ fn header(ui: &mut Ui, title: &str, trailing: &str) {
 }
 
 fn tracks_panel(ui: &mut Ui, p: &mut Player, max_height: f32) {
-    // En-têtes, séparateur et ligne des décalages occupent ~110 pt ; les listes prennent le reste.
-    let lists = (max_height - 110.0).clamp(110.0, 420.0);
+    // En-têtes, séparateur et deux lignes de réglages occupent ~166 pt ; les listes prennent le reste.
+    let lists = (max_height - 166.0).clamp(56.0, 420.0);
     let audio: Vec<_> = p.mpv.state.tracks.iter().filter(|t| t.kind == "audio").cloned().collect();
     let subs: Vec<_> = p.mpv.state.tracks.iter().filter(|t| t.kind == "sub").cloned().collect();
     ui.columns(2, |cols| {
@@ -722,19 +730,56 @@ fn tracks_panel(ui: &mut Ui, p: &mut Player, max_height: f32) {
     ui.scope_builder(egui::UiBuilder::new().max_rect(audio), |ui| delay(ui, p, tr("Décalage audio", "Audio delay"), "audio-delay", 0.05));
     ui.scope_builder(egui::UiBuilder::new().max_rect(sub), |ui| delay(ui, p, tr("Décalage sous-titres", "Subtitle delay"), "sub-delay", 0.1));
     ui.scope_builder(egui::UiBuilder::new().max_rect(switch), language_switch);
+
+    // Taille et hauteur des sous-titres (aussi Maj + pavé +/− et Maj + ↑/↓), communes à toutes les vidéos.
+    ui.add_space(6.0);
+    let (row, _) = ui.allocate_exact_size(vec2(ui.available_width(), 50.0), Sense::hover());
+    let size = Rect::from_min_size(row.min, vec2(delay_w, row.height()));
+    let height = Rect::from_min_size(pos2(size.max.x + gap, row.min.y), vec2(delay_w, row.height()));
+    let pct = (p.sub_scale * 100.0).round() as i64;
+    let size_txt = format!("{pct} %");
+    let r = ui.scope_builder(egui::UiBuilder::new().max_rect(size), |ui| stepper(ui, tr("Taille des sous-titres", "Subtitle size"), &size_txt, pct != 100, Icon::Minus, Icon::Plus)).inner;
+    match r {
+        Some(0) => {
+            p.sub_scale = 1.0;
+            p.sub_size(0);
+        }
+        Some(d) => p.sub_size(d),
+        None => {}
+    }
+    let lift = crate::player::lift_label(p.sub_lift);
+    let r = ui.scope_builder(egui::UiBuilder::new().max_rect(height), |ui| stepper(ui, tr("Hauteur des sous-titres", "Subtitle height"), &lift, p.sub_lift != 0, Icon::Down, Icon::Up)).inner;
+    match r {
+        Some(0) => p.sub_height(-p.sub_lift / 6),
+        Some(d) => p.sub_height(d),
+        None => {}
+    }
 }
 
 fn delay(ui: &mut Ui, p: &mut Player, label: &str, prop: &str, step: f64) {
     let v = if prop == "audio-delay" { p.mpv.state.audio_delay } else { p.mpv.state.sub_delay };
+    let ms = (v * 1000.0).round() as i64;
+    let txt = if ms == 0 { "0 ms".to_string() } else { format!("{ms:+} ms").replace('-', "−") };
+    match stepper(ui, label, &txt, ms != 0, Icon::Minus, Icon::Plus) {
+        Some(0) => p.mpv.set_f64(prop, 0.0),
+        Some(d) => p.mpv.set_f64(prop, v + d as f64 * step),
+        None => {}
+    }
+}
+
+/// Ligne « libellé + valeur » avec deux boutons ronds : renvoie −1, +1, ou 0 si la valeur
+/// (cliquable) est remise à zéro.
+fn stepper(ui: &mut Ui, label: &str, value: &str, active: bool, less: Icon, more: Icon) -> Option<i32> {
     let full = ui.max_rect();
+    let mut out = None;
     // Boutons ronds centrés verticalement sur la ligne, comme le bouton de langue.
     let plus = Rect::from_center_size(pos2(full.max.x - 20.0, full.center().y), vec2(40.0, 40.0));
     let minus = Rect::from_center_size(pos2(full.max.x - 68.0, full.center().y), vec2(40.0, 40.0));
-    if round_button(ui, plus, Icon::Plus).clicked() {
-        p.mpv.set_f64(prop, v + step);
+    if round_button(ui, plus, more).clicked() {
+        out = Some(1);
     }
-    if round_button(ui, minus, Icon::Minus).clicked() {
-        p.mpv.set_f64(prop, v - step);
+    if round_button(ui, minus, less).clicked() {
+        out = Some(-1);
     }
     let text = Rect::from_min_max(full.min, pos2(minus.min.x - 8.0, full.max.y));
     ui.scope_builder(egui::UiBuilder::new().max_rect(text), |ui| {
@@ -743,14 +788,13 @@ fn delay(ui: &mut Ui, p: &mut Player, label: &str, prop: &str, step: f64) {
             ui.add_space(((full.height() - 42.0) / 2.0).max(0.0));
             ui.spacing_mut().item_spacing.y = 2.0;
             ui.label(egui::RichText::new(label).font(semi(13.0)).color(INK2));
-            let ms = (v * 1000.0).round() as i64;
-            let txt = if ms == 0 { "0 ms".to_string() } else { format!("{ms:+} ms").replace('-', "−") };
-            let r = ui.add(egui::Label::new(egui::RichText::new(txt).font(semi(17.0)).color(if ms == 0 { INK } else { ACCENT })).sense(Sense::click()));
+            let r = ui.add(egui::Label::new(egui::RichText::new(value).font(semi(17.0)).color(if active { ACCENT } else { INK })).sense(Sense::click()));
             if r.clicked() {
-                p.mpv.set_f64(prop, 0.0);
+                out = Some(0);
             }
         });
     });
+    out
 }
 
 fn round_button(ui: &mut Ui, r: Rect, i: Icon) -> Response {

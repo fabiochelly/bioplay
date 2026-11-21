@@ -58,6 +58,10 @@ pub struct Player {
     pub loaded_at: Option<Instant>,
     /// Touche transmise à mpv et position à cet instant : un saut qui suit est annoncé.
     pub key_seek: Option<(Instant, f64)>,
+    /// Taille des sous-titres (facteur mpv `sub-scale`) et hauteur ajoutée à leur marge basse
+    /// (unités mpv, image de 720 lignes). Communes à toutes les vidéos, mémorisées.
+    pub sub_scale: f64,
+    pub sub_lift: i32,
 }
 
 /// Durée d'un message, de son fondu d'entrée et de son fondu de sortie, en secondes.
@@ -87,7 +91,47 @@ impl Player {
             shown: HashMap::new(),
             loaded_at: None,
             key_seek: None,
+            sub_scale: 1.0,
+            sub_lift: 0,
         }
+        .with_subs()
+    }
+
+    fn with_subs(mut self) -> Self {
+        let saved = std::fs::read_to_string(subs_file()).unwrap_or_default();
+        let mut it = saved.split_whitespace();
+        self.sub_scale = it.next().and_then(|v| v.parse().ok()).filter(|v: &f64| (0.5..=2.0).contains(v)).unwrap_or(1.0);
+        self.sub_lift = it.next().and_then(|v| v.parse().ok()).filter(|v: &i32| (-40..=400).contains(v)).unwrap_or(0);
+        self.apply_subs();
+        self
+    }
+
+    /// Réapplique la taille (un fichier repris peut avoir mémorisé la sienne dans mpv).
+    pub fn apply_subs(&self) {
+        self.mpv.set_f64("sub-scale", self.sub_scale);
+    }
+
+    /// Taille des sous-titres, par crans de 5 %.
+    pub fn sub_size(&mut self, steps: i32) {
+        self.sub_scale = ((self.sub_scale * 20.0).round() / 20.0 + steps as f64 * 0.05).clamp(0.5, 2.0);
+        self.apply_subs();
+        self.save_subs();
+        self.say(format!("{} {:.0} %", crate::i18n::tr("Taille des sous-titres", "Subtitle size"), self.sub_scale * 100.0));
+    }
+
+    /// Hauteur des sous-titres, par crans de 6 unités (≈ 1 % de l'image).
+    pub fn sub_height(&mut self, steps: i32) {
+        self.sub_lift = (self.sub_lift + steps * 6).clamp(-36, 396);
+        self.save_subs();
+        self.say(format!("{} {}", crate::i18n::tr("Hauteur des sous-titres", "Subtitle height"), lift_label(self.sub_lift)));
+    }
+
+    fn save_subs(&self) {
+        let f = subs_file();
+        if let Some(d) = f.parent() {
+            let _ = std::fs::create_dir_all(d);
+        }
+        let _ = std::fs::write(f, format!("{} {}\n", self.sub_scale, self.sub_lift));
     }
 
     pub fn say(&mut self, text: impl Into<String>) {
@@ -230,6 +274,16 @@ impl Player {
 
 fn clone_cue(c: &Cue) -> Cue {
     Cue { start: c.start, end: c.end, text: c.text.clone() }
+}
+
+/// « 0 », « +12 », « −6 » : hauteur ajoutée, en crans affichés comme des points.
+pub fn lift_label(lift: i32) -> String {
+    let n = lift / 6;
+    if n == 0 { "0".into() } else { format!("{n:+}").replace('-', "−") }
+}
+
+fn subs_file() -> PathBuf {
+    state_file().with_file_name("subs")
 }
 
 fn state_file() -> PathBuf {
