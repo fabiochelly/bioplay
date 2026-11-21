@@ -222,8 +222,7 @@ fn bar(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, screen: Rect, a
         let (audio_name, sub_name) = track_names(p);
         let tw = tracks_width(ui, &audio_name, sub_name.as_deref());
         rx -= tw + 6.0;
-        let key = (p.mpv.state.aid, p.mpv.state.sid);
-        if tracks_button(ui, Rect::from_min_size(pos2(rx, cy - 21.0), vec2(tw, 42.0)), &audio_name, sub_name.as_deref(), key).clicked() {
+        if tracks_button(ui, Rect::from_min_size(pos2(rx, cy - 21.0), vec2(tw, 42.0)), &audio_name, sub_name.as_deref()).clicked() {
             toggle(p, Panel::Tracks);
         }
 
@@ -266,59 +265,15 @@ fn tracks_width(ui: &Ui, audio: &str, sub: Option<&str>) -> f32 {
     14.0 + TB_ICON + 7.0 + w(audio) + 13.0 + 1.0 + 13.0 + TB_ICON + 7.0 + sub_w + 16.0
 }
 
-/// Bouton des pistes : haut-parleur + langue audio, sous-titres + leur langue. Liseré d'accent
-/// et reflet qui le traverse au survol, et une fois à chaque changement de piste.
-fn tracks_button(ui: &mut Ui, r: Rect, audio: &str, sub: Option<&str>, key: (Option<i64>, Option<i64>)) -> Response {
+/// Bouton des pistes : haut-parleur + langue audio, sous-titres + leur langue, liseré d'accent.
+fn tracks_button(ui: &mut Ui, r: Rect, audio: &str, sub: Option<&str>) -> Response {
     let resp = ui.interact(r, ui.id().with("tracks-button"), Sense::click());
-    let ctx = ui.ctx().clone();
-    let k = ctx.animate_bool_with_time(resp.id, resp.hovered(), 0.15);
+    let k = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
     let cr = CornerRadius::same((r.height() / 2.0) as u8);
     let painter = ui.painter();
-    let now = ctx.input(|i| i.time);
-
-    // Changement de piste : on retient l'instant pour lancer le reflet.
-    let mem = Id::new("tracks-key");
-    let last: Option<((Option<i64>, Option<i64>), f64)> = ctx.data(|d| d.get_temp(mem));
-    let changed_at = match last {
-        Some((k0, t)) if k0 == key => t,
-        Some(_) => {
-            ctx.data_mut(|d| d.insert_temp(mem, (key, now)));
-            now
-        }
-        None => {
-            ctx.data_mut(|d| d.insert_temp(mem, (key, -10.0)));
-            -10.0
-        }
-    };
-
     painter.rect_filled(r, cr, Color32::from_white_alpha((14.0 + 20.0 * k) as u8));
     // Liseré : dégradé d'accent, plus vif au survol.
     painter.rect_stroke(r, cr, Stroke::new(1.0, ACCENT.gamma_multiply(0.30 + 0.45 * k)), StrokeKind::Inside);
-
-    // Reflet : une bande lumineuse oblique qui balaie le bouton.
-    let since = (now - changed_at) as f32;
-    let phase = if since < 0.9 { Some(since / 0.9) } else if resp.hovered() { Some(((now * 0.7) % 1.6) as f32 / 1.2) } else { None };
-    if let Some(ph) = phase.filter(|ph| *ph <= 1.0) {
-        let inner = r.shrink2(vec2(r.height() * 0.42, 1.0));
-        let x = inner.min.x - 40.0 + ph * (inner.width() + 80.0);
-        let clip = painter.with_clip_rect(inner);
-        let mut mesh = egui::Mesh::default();
-        let (a, b) = (Color32::TRANSPARENT, Color32::from_white_alpha(46));
-        let sk = 14.0;
-        mesh.colored_vertex(pos2(x - 26.0 + sk, inner.min.y), a);
-        mesh.colored_vertex(pos2(x + sk, inner.min.y), b);
-        mesh.colored_vertex(pos2(x + 26.0 + sk, inner.min.y), a);
-        mesh.colored_vertex(pos2(x - 26.0 - sk, inner.max.y), a);
-        mesh.colored_vertex(pos2(x - sk, inner.max.y), b);
-        mesh.colored_vertex(pos2(x + 26.0 - sk, inner.max.y), a);
-        for t in [[0, 1, 4], [0, 4, 3], [1, 2, 5], [1, 5, 4]] {
-            mesh.add_triangle(t[0], t[1], t[2]);
-        }
-        clip.add(Shape::mesh(mesh));
-        ctx.request_repaint();
-    } else if resp.hovered() {
-        ctx.request_repaint_after(std::time::Duration::from_millis(60));
-    }
 
     let cy = r.center().y;
     let mut x = r.min.x + 14.0;
@@ -883,11 +838,12 @@ fn list_panel(ui: &mut Ui, p: &mut Player, max_height: f32) {
 fn toast(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, screen: Rect) {
     let Some((text, at)) = &p.message else { return };
     let age = at.elapsed().as_secs_f32();
-    if age > 1.7 {
+    // Bulle brève : elle confirme l'action sans gêner la lecture.
+    if age > 1.05 {
         p.message = None;
         return;
     }
-    let a = (age / 0.12).min(1.0) * ((1.7 - age) / 0.3).min(1.0);
+    let a = (age / 0.08).min(1.0) * ((1.05 - age) / 0.25).min(1.0);
     let g = ctx.fonts_mut(|f| f.layout_no_wrap(text.clone(), semi(15.0), INK));
     let size = g.size() + vec2(40.0, 22.0);
     let rect = Rect::from_center_size(pos2(screen.center().x, screen.min.y + 30.0 + size.y / 2.0), size);

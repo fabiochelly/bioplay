@@ -155,6 +155,16 @@ impl App {
         g.window.set_title(&title);
     }
 
+    /// Fréquence réelle de l'écran : avec le rendu intégré, mpv ne la connaît pas, et il en a
+    /// besoin pour caler les images (statistiques de synchro, `video-sync=display-*`).
+    fn tell_refresh_rate(&mut self) {
+        let Some(g) = &self.gl else { return };
+        let hz = g.window.current_monitor().and_then(|m| m.refresh_rate_millihertz()).map(|m| m as f64 / 1000.0);
+        if let (Some(hz), Some(p)) = (hz, self.player.as_ref()) {
+            p.mpv.set_f64("override-display-fps", hz);
+        }
+    }
+
     fn render(&mut self) {
         let (Some(g), Some(p)) = (self.gl.as_mut(), self.player.as_mut()) else { return };
         let size = g.window.inner_size();
@@ -236,6 +246,7 @@ impl App {
                 if ctrl {
                     let t = p.mpv.state.position + 10.0 * dir as f64;
                     p.mpv.seek(t, true);
+                    p.say(if dir > 0 { "+10 s" } else { "−10 s" });
                 } else {
                     p.step_line_or_ten(dir);
                 }
@@ -244,6 +255,7 @@ impl App {
             _ => {}
         }
         if let Some(name) = keys::name(key, location, self.mods) {
+            p.key_seek = Some((Instant::now(), p.mpv.state.position));
             p.mpv.command(&["keypress", &name]);
         }
     }
@@ -260,10 +272,22 @@ impl App {
                 self.player().save();
             }
             mpv::Change::Ended => {}
+            // Saut provoqué par un raccourci mpv (flèches haut/bas…) : annoncé dans une bulle.
+            mpv::Change::Restarted => {
+                let p = self.player();
+                if let Some((at, before)) = p.key_seek.take() {
+                    let d = p.mpv.state.position - before;
+                    if at.elapsed() < Duration::from_millis(1500) && d.abs() >= 0.9 {
+                        p.say(player::delta(d));
+                    }
+                }
+            }
             mpv::Change::Property(name) => {
                 let p = self.player.as_mut().unwrap();
                 let s = &p.mpv.state;
                 let value = match name {
+                    "aid" => s.aid.map(|v| v as f64).unwrap_or(-1.0),
+                    "sid" => s.sid.map(|v| v as f64).unwrap_or(-1.0),
                     "speed" => s.speed,
                     "volume" => s.volume,
                     "sub-delay" => s.sub_delay,
@@ -288,6 +312,12 @@ impl App {
                     "volume" if p.has_file() => Some(format!("Volume {:.0} %", s.volume)),
                     "sub-delay" if p.has_file() => Some(if s.sub_delay.abs() < 1e-6 { tr("Sous-titres : aucun décalage", "Subtitles: no delay").into() } else { format!("{} {:+.0} ms", tr("Sous-titres", "Subtitles"), s.sub_delay * 1000.0) }),
                     "audio-delay" if p.has_file() => Some(format!("Audio {:+.0} ms", s.audio_delay * 1000.0)),
+                    "aid" => s.tracks.iter().find(|t| t.kind == "audio" && Some(t.id) == s.aid)
+                        .map(|t| format!("{} : {}", tr("Audio", "Audio"), mpv::track_label(t))),
+                    "sid" => Some(match p.sub_track() {
+                        Some(t) => format!("{} : {}", tr("Sous-titres", "Subtitles"), mpv::track_label(t)),
+                        None => tr("Sous-titres désactivés", "Subtitles off").into(),
+                    }),
                     _ => None,
                 } };
                 if let Some(m) = msg {
@@ -364,6 +394,7 @@ impl ApplicationHandler<UserEvent> for App {
             }
         }
         self.sync_window();
+        self.tell_refresh_rate();
         // Pour les captures de développement : `--panel=list|tracks|speed|zoom`.
         if let Some(a) = std::env::args().find_map(|a| a.strip_prefix("--panel=").map(str::to_owned)) {
             self.player().panel = match a.as_str() {
@@ -428,6 +459,9 @@ impl ApplicationHandler<UserEvent> for App {
         }
         match event {
             WindowEvent::CloseRequested => el.exit(),
+            WindowEvent::Moved(_) | WindowEvent::ScaleFactorChanged { .. } => {
+                self.tell_refresh_rate();
+            }
             WindowEvent::Resized(s) => {
                 g.surface.resize(&g.context, NonZeroU32::new(s.width.max(1)).unwrap(), NonZeroU32::new(s.height.max(1)).unwrap());
                 self.resized = true;

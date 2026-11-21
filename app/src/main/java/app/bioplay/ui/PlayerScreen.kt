@@ -383,27 +383,15 @@ private fun shortName(t: app.bioplay.Track): String {
 }
 
 /**
- * Bouton des pistes : haut-parleur + langue audio, sous-titres + leur langue. Liseré d'accent ;
- * un reflet lumineux le traverse à chaque changement de piste et à chaque appui.
+ * Bouton des pistes : haut-parleur + langue audio, sous-titres + leur langue, liseré d'accent.
  */
 @Composable
 private fun TracksButton(session: Session, onClick: () -> Unit) {
     val mpv = session.mpv
     val audio = mpv.tracks.firstOrNull { it.type == "audio" && it.id == mpv.aid }
     val sub = session.subTrack
-    val sheen = remember { Animatable(1f) }
     val source = remember { MutableInteractionSource() }
     val pressed by source.collectIsPressedAsState()
-    LaunchedEffect(mpv.aid, mpv.sid) {
-        sheen.snapTo(0f)
-        sheen.animateTo(1f, tween(900, easing = FastOutSlowInEasing))
-    }
-    LaunchedEffect(pressed) {
-        if (pressed) {
-            sheen.snapTo(0f)
-            sheen.animateTo(1f, tween(700, easing = FastOutSlowInEasing))
-        }
-    }
     val scale by animateFloatAsState(if (pressed) 0.95f else 1f, spring(dampingRatio = 0.55f, stiffness = 900f), label = "press")
     Row(
         Modifier
@@ -411,19 +399,6 @@ private fun TracksButton(session: Session, onClick: () -> Unit) {
             .clip(Capsule)
             .background(Color.White.copy(alpha = if (pressed) 0.16f else 0.07f))
             .border(1.dp, Brush.horizontalGradient(listOf(Ink.accent.copy(alpha = 0.55f), Color.White.copy(alpha = 0.18f), Ink.accent.copy(alpha = 0.4f))), Capsule)
-            .drawWithContent {
-                drawContent()
-                val p = sheen.value
-                if (p < 1f) {
-                    val x = -size.width * 0.3f + p * size.width * 1.6f
-                    drawRect(
-                        Brush.linearGradient(
-                            listOf(Color.Transparent, Color.White.copy(alpha = 0.28f), Color.Transparent),
-                            start = Offset(x - 60f, 0f), end = Offset(x + 60f, size.height),
-                        )
-                    )
-                }
-            }
             .clickable(source, indication = null, onClick = onClick)
             .height(44.dp)
             .padding(horizontal = 14.dp),

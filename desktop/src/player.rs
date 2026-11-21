@@ -54,6 +54,8 @@ pub struct Player {
     /// Dernières valeurs annoncées : un message seulement quand l'utilisateur change quelque chose.
     pub shown: HashMap<&'static str, f64>,
     pub loaded_at: Option<Instant>,
+    /// Touche transmise à mpv et position à cet instant : un saut qui suit est annoncé.
+    pub key_seek: Option<(Instant, f64)>,
 }
 
 impl Player {
@@ -71,6 +73,7 @@ impl Player {
             over_ui: false,
             shown: HashMap::new(),
             loaded_at: None,
+            key_seek: None,
         }
     }
 
@@ -133,15 +136,18 @@ impl Player {
     pub fn step_line_or_ten(&mut self, dir: i32) {
         let pos = self.mpv.state.position;
         let ten = pos + 10.0 * dir as f64;
-        let target = match self.cue_after(dir, pos) {
-            Some(c) => {
-                let t = self.cue_time(&c);
-                let ahead = (t - pos) * dir as f64;
-                if ahead > 0.05 && ahead <= 10.0 { t } else { ten }
-            }
-            None => ten,
-        };
+        let line = self.cue_after(dir, pos).map(|c| self.cue_time(&c)).filter(|t| {
+            let ahead = (t - pos) * dir as f64;
+            ahead > 0.05 && ahead <= 10.0
+        });
+        let target = line.unwrap_or(ten);
         self.mpv.seek(target, true);
+        self.say(match (line.is_some(), dir > 0) {
+            (true, true) => crate::i18n::tr("Ligne suivante", "Next line").to_string(),
+            (true, false) => crate::i18n::tr("Ligne précédente", "Previous line").to_string(),
+            (false, true) => "+10 s".into(),
+            (false, false) => "−10 s".into(),
+        });
     }
 
     pub fn preview(&self, zone: Zone, steps: i32, from: f64) -> Scrub {
@@ -223,6 +229,17 @@ fn save_recents(list: &[Recent]) {
         .map(|r| format!("{}\t{}\t{:.1}\t{:.1}\n", r.path.replace('\t', " "), r.name.replace('\t', " "), r.position, r.duration))
         .collect();
     let _ = std::fs::write(f, body);
+}
+
+/// « +10 s », « −1 min 30 s » : un écart de temps lisible.
+pub fn delta(d: f64) -> String {
+    let sign = if d < 0.0 { "−" } else { "+" };
+    let s = d.abs().round() as i64;
+    match (s / 60, s % 60) {
+        (0, sec) => format!("{sign}{sec} s"),
+        (m, 0) => format!("{sign}{m} min"),
+        (m, sec) => format!("{sign}{m} min {sec} s"),
+    }
 }
 
 pub fn clock(seconds: f64) -> String {

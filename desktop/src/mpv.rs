@@ -117,6 +117,8 @@ pub enum Change {
     Loaded,
     Ended,
     Shutdown,
+    /// Lecture reprise après un saut : position définitive.
+    Restarted,
     /// Propriété modifiée : nom, pour les messages à l'écran.
     Property(&'static str),
 }
@@ -323,6 +325,7 @@ impl Mpv {
                 }
                 EVENT_FILE_LOADED => out.push(Change::Loaded),
                 EVENT_END_FILE => out.push(Change::Ended),
+                21 => out.push(Change::Restarted),
                 EVENT_PROPERTY_CHANGE => {
                     let p = unsafe { &*(e.data as *const EventProperty) };
                     let Some(&(name, _)) = OBSERVED.get(e.reply_userdata as usize) else { continue };
