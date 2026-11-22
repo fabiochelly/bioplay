@@ -5,6 +5,7 @@
 mod flags;
 mod i18n;
 mod library;
+mod libwin;
 mod mpv;
 mod overlay;
 mod player;
@@ -34,7 +35,8 @@ Shift+KP_ADD script-binding main/sub-bigger
 Shift+KP_SUBTRACT script-binding main/sub-smaller
 Shift+UP script-binding main/sub-up
 Shift+DOWN script-binding main/sub-down
-MBTN_LEFT script-binding main/mouse-left";
+MBTN_LEFT script-binding main/mouse-left
+CLOSE_WIN script-binding main/close";
 /// Actifs quand la souris est sur l'interface : la molette fait défiler, pas de plein écran.
 const HOVER_BINDINGS: &str = "MBTN_LEFT_DBL ignore
 MBTN_RIGHT ignore
@@ -42,11 +44,6 @@ WHEEL_UP script-binding main/wheel-up
 WHEEL_DOWN script-binding main/wheel-down";
 /// Actifs quand un tiroir est ouvert : Échap le ferme au lieu de quitter.
 const PANEL_BINDINGS: &str = "ESC script-binding main/esc";
-/// Accueil, dans un sous-dossier ou fenêtre ouverte : Échap, Retour arrière et le bouton
-/// « précédent » de la souris remontent au lieu de quitter.
-const BACK_BINDINGS: &str = "ESC script-binding main/esc
-BS script-binding main/esc
-MBTN_BACK script-binding main/esc";
 /// Durée de l'aperçu des sous-titres après un réglage de taille ou de hauteur.
 const PREVIEW_LIFE: Duration = Duration::from_millis(1600);
 /// Numéro de l'incrustation mpv qui porte l'aperçu.
@@ -62,7 +59,6 @@ enum Message {
     Indexed { path: String, external: Option<String>, tracks: Vec<bioplay_core::Track> },
     Keyframes { path: String, keyframes: Vec<f64> },
     Picked(String),
-    Folder(PathBuf),
 }
 
 struct App {
@@ -92,8 +88,6 @@ struct App {
     why: Vec<String>,
     /// Instant de masquage des commandes déjà traité (il change avec l'activité ou le survol).
     hidden_for: Option<Instant>,
-    /// Fenêtre transparente (accueil) ou opaque (lecture), dernier état demandé à mpv.
-    glass_home: Option<bool>,
     /// Mesure : envoi du dernier saut, et durées appui → reprise de l'image.
     seek_clock: Option<Instant>,
     seek_times: Vec<f64>,
@@ -109,7 +103,9 @@ struct App {
     shader_opts: String,
     hover_section: bool,
     panel_section: bool,
-    back_section: bool,
+    /// Vidéo ouverte de l'extérieur (« Ouvrir avec ») : fermer sa fenêtre quitte bioplay ;
+    /// sinon on revient à la bibliothèque.
+    outside: bool,
     last_save: Instant,
     seek_from: Option<f64>,
     indexing: Vec<String>,
@@ -128,9 +124,6 @@ impl App {
             self.player.embedded.clear();
             self.player.external.clear();
             self.player.panel = None;
-            self.player.folders_open = false;
-            // Miniatures libérées : la mémoire va au film.
-            self.player.library.forget_images();
             self.player.mpv.command(&["loadfile", path, "replace"]);
         }
         self.redraw("ouverture d'un fichier");
@@ -156,37 +149,27 @@ impl App {
         });
     }
 
-    fn pick(&self) {
-        let (tx, waker) = (self.tx.clone(), self.waker.clone());
-        std::thread::spawn(move || {
-            let f = rfd::FileDialog::new()
-                .set_title(tr("Ouvrir une vidéo", "Open a video"))
-                .add_filter(tr("Vidéos", "Videos"), VIDEO_EXT)
-                .add_filter(tr("Tous les fichiers", "All files"), &["*"])
-                .pick_file();
-            if let Some(f) = f {
-                let _ = tx.send(Message::Picked(f.to_string_lossy().into_owned()));
-                waker.wake();
-            }
-        });
-    }
-
     /// Retour à la bibliothèque : position gardée, lecture arrêtée, mpv revient à l'accueil.
+    /// Retour à la bibliothèque : position notée, lecture arrêtée (la fenêtre de mpv se ferme,
+    /// mpv reste prêt), fenêtre de la bibliothèque réaffichée.
     fn home(&mut self) {
         self.player.save();
         self.player.panel = None;
         self.player.mpv.command(&["stop"]);
+        self.outside = false;
+        libwin::show();
         self.redraw("retour à l'accueil");
     }
 
-    fn pick_folder(&self) {
-        let (tx, waker) = (self.tx.clone(), self.waker.clone());
-        std::thread::spawn(move || {
-            if let Some(f) = rfd::FileDialog::new().set_title(tr("Ajouter un dossier", "Add a folder")).pick_folder() {
-                let _ = tx.send(Message::Folder(f));
-                waker.wake();
-            }
-        });
+    /// Fermeture de la fenêtre de la vidéo : retour à la bibliothèque, ou fin de bioplay si la
+    /// vidéo venait de l'extérieur.
+    fn close(&mut self) {
+        if self.outside {
+            self.player.save();
+            self.player.mpv.command(&["quit"]);
+        } else {
+            self.home();
+        }
     }
 
     fn section(&self, name: &str, on: bool) {
@@ -282,11 +265,11 @@ impl App {
             "esc" => {
                 if p.panel.is_some() {
                     p.panel = None;
-                } else if p.folders_open {
-                    p.folders_open = false;
-                } else if let Some(up) = p.library.up(&p.place) {
-                    p.place = up;
                 }
+            }
+            "close" => {
+                self.close();
+                return;
             }
             _ => {}
         }
@@ -454,7 +437,6 @@ impl App {
                 }
             }
             Message::Picked(path) => self.open(&path),
-            Message::Folder(f) => self.player.library.add_folder(f),
         }
         self.redraw("message (index, fichier choisi, dossier)");
     }
@@ -598,12 +580,7 @@ impl App {
         let marks = overlay::shape_marks(&shapes);
         let prims = self.ctx.tessellate(shapes, out.pixels_per_point / reduce as f32);
         let t2 = Instant::now();
-        let home = !self.player.has_file();
-        if self.glass_home != Some(home) {
-            self.glass_home = Some(home);
-            self.player.mpv.set_window_glass(home);
-        }
-        let presented = self.overlay.present(&self.player.mpv, &prims, &marks, &mut out.textures_delta, [w as u32, h as u32], out.pixels_per_point, home, &self.player.thumbs, reduce);
+        let presented = self.overlay.present(&self.player.mpv, &prims, &marks, &mut out.textures_delta, [w as u32, h as u32], out.pixels_per_point, reduce);
         if let Some(p) = &mut self.profile {
             let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1000.0;
             p.push([ms(t0, t1), ms(t1, t2), ms(t2, Instant::now())]);
@@ -652,11 +629,6 @@ impl App {
         if over != self.hover_section {
             self.section("bioplay-hover", over);
             self.hover_section = over;
-        }
-        let back = !self.player.has_file() && (self.player.folders_open || self.player.library.up(&self.player.place).is_some());
-        if back != self.back_section {
-            self.section("bioplay-back", back);
-            self.back_section = back;
         }
         let panel = self.player.panel.is_some();
         if panel != self.panel_section {
@@ -716,10 +688,7 @@ impl App {
         }
         for a in actions {
             match a {
-                ui::Action::Open => self.pick(),
                 ui::Action::Home => self.home(),
-                ui::Action::AddFolder => self.pick_folder(),
-                ui::Action::Play(path) => self.open(&path),
             }
         }
     }
@@ -816,11 +785,6 @@ impl App {
                 self.overlay_wait = None;
                 self.redraw("image en attente (mpv occupé)");
             }
-            // Bibliothèque : relecture et miniatures en pause pendant la lecture.
-            self.player.library.set_hold(self.player.has_file());
-            if self.player.library.poll() && !self.player.has_file() {
-                self.redraw("bibliothèque (nouvelles données)");
-            }
             let now = Instant::now() + Duration::from_millis(2);
             if self.next_frame.is_some_and(|t| t <= now) {
                 self.redraw("demande d'egui (animation, bulle)");
@@ -851,11 +815,38 @@ fn runtime_dir() -> PathBuf {
 
 fn main() {
     i18n::init();
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if let Ok(f) = std::env::var("BIOPLAY_LIBSNAP") {
+        libwin::snapshot(&f);
+        return;
+    }
+    let (tx, rx) = channel();
+    // Mesures : le lecteur seul, sans la fenêtre de la bibliothèque.
+    if std::env::var_os("BIOPLAY_BENCH").is_some() {
+        player_main(args, tx, rx, None);
+        return;
+    }
+    let visible = !args.iter().any(|a| !a.starts_with("--"));
+    // mpv est préparé tout de suite, dans son fil (configuration, scripts, décodeurs) : ouvrir une
+    // vidéo depuis la bibliothèque ne coûte plus que sa fenêtre.
+    let (ready, waker) = std::sync::mpsc::sync_channel(1);
+    let player_tx = tx.clone();
+    std::thread::Builder::new()
+        .name("lecteur".into())
+        .spawn(move || player_main(args, player_tx, rx, Some(ready)))
+        .expect("fil du lecteur");
+    let Ok(wake) = waker.recv() else { return };
+    libwin::run(libwin::Link { tx, wake }, visible);
+}
+
+/// Le lecteur : mpv et son interface (egui dessinée en incrustation). Tourne jusqu'à la fin de
+/// mpv ; prévient alors la bibliothèque (fin de bioplay).
+fn player_main(args: Vec<String>, tx: std::sync::mpsc::Sender<Message>, rx: std::sync::mpsc::Receiver<Message>, ready: Option<std::sync::mpsc::SyncSender<mpv::Waker>>) {
     let mpv = mpv::Mpv::new().expect("libmpv");
     // Options mpv en ligne de commande, comme mpv : `bioplay --mute=yes --start=20 film.mkv`.
     let mut files = Vec::new();
     let mut panel = None;
-    for a in std::env::args().skip(1) {
+    for a in args {
         if let Some(o) = a.strip_prefix("--") {
             match o.split_once('=') {
                 Some(("panel", v)) => panel = Some(v.to_owned()),
@@ -874,14 +865,15 @@ fn main() {
     mpv.command_sync(&["define-section", "bioplay", BINDINGS, "force"]);
     mpv.command_sync(&["define-section", "bioplay-hover", HOVER_BINDINGS, "force"]);
     mpv.command_sync(&["define-section", "bioplay-panel", PANEL_BINDINGS, "force"]);
-    mpv.command_sync(&["define-section", "bioplay-back", BACK_BINDINGS, "force"]);
     mpv.command_sync(&["enable-section", "bioplay", "allow-hide-cursor"]);
 
     let overlay = overlay::Overlay::new().expect("contexte GPU de l'interface");
     let ctx = egui::Context::default();
     ui::fonts(&ctx);
-    let (tx, rx) = channel();
     let waker = mpv.waker();
+    if let Some(r) = ready {
+        let _ = r.send(waker.clone());
+    }
     let mut app = App {
         player: Player::new(mpv),
         overlay,
@@ -902,14 +894,13 @@ fn main() {
         drawn_sig: [0; 3],
         why: Vec::new(),
         hidden_for: None,
-        glass_home: None,
         seek_clock: None,
         seek_times: Vec::new(),
         visible: false,
         shader_opts: String::new(),
         hover_section: false,
         panel_section: false,
-        back_section: false,
+        outside: !files.is_empty(),
         last_save: Instant::now(),
         seek_from: None,
         indexing: Vec::new(),
@@ -928,14 +919,12 @@ fn main() {
     }
     // Bibliothèque relue en fond, mais pas pendant la lecture d'un fichier donné au lancement :
     // en pause dès le départ (sans quoi la relecture concurrencerait l'ouverture du film).
-    app.player.library.set_hold(!files.is_empty());
-    app.player.library.refresh();
     if let Ok(mode) = std::env::var("BIOPLAY_BENCH") {
         if mode == "play" {
             bench_play(&mut app);
             return;
         }
-        bench(&mut app, &mode);
+        snapshot(&mut app);
         return;
     }
     app.player.panel = match panel.as_deref() {
@@ -948,6 +937,7 @@ fn main() {
     app.run();
     app.player.save();
     app.overlay.hide(&app.player.mpv);
+    libwin::quit();
 }
 
 /// Temps processeur (ms) du processus entier et du fil principal, lus dans /proc.
@@ -1107,11 +1097,9 @@ fn threads_ms() -> std::collections::HashMap<String, (String, f64)> {
     out
 }
 
-/// Mesure du défilement de l'accueil, sans fenêtre : `BIOPLAY_BENCH=grid|list bioplay`.
-/// Écran simulé de 2880×1800 (échelle 2), vraie bibliothèque, un cran de molette toutes les
-/// 6 images. Affiche les durées par étape (médiane, 90e centile, maximum).
-fn bench(app: &mut App, mode: &str) {
-    app.player.library.set_hold(true);
+/// Capture des commandes de lecture, sans fenêtre : `BIOPLAY_BENCH=snapshot
+/// BIOPLAY_SNAPSHOT=f.png [BIOPLAY_SEEK=±1] bioplay film.mkv` (bulle de saut avec BIOPLAY_SEEK).
+fn snapshot(app: &mut App) {
     // Écran simulé, réimposé à chaque image (mpv sans fenêtre le remet à zéro).
     let screen = |app: &mut App| {
         let s = &mut app.player.mpv.state;
@@ -1119,20 +1107,14 @@ fn bench(app: &mut App, mode: &str) {
         s.osd_h = 1800.0;
         s.scale = 2.0;
     };
-    app.player.library.grid = mode != "list";
-    if let Ok(path) = std::env::var("BIOPLAY_PLACE") {
-        app.player.place.path = path;
-    }
     app.events.push(Event::PointerMoved(pos2(720.0, 500.0)));
     for _ in 0..20 {
-        // Laisse mpv charger un éventuel fichier (vérification des commandes de lecture).
         for c in app.player.mpv.wait(0.05) {
             app.on_change(c);
         }
         screen(app);
         app.frame();
     }
-    // Capture d'une bulle de saut (vérification) : BIOPLAY_SEEK=-1 ou 1.
     if let Some(d) = std::env::var("BIOPLAY_SEEK").ok().and_then(|v| v.parse::<f64>().ok()) {
         app.player.say_seek(d, 754.0, if d > 0.0 { "Next subtitle" } else { "−10 s" });
         app.player.activity = Instant::now() - Duration::from_secs(10);
@@ -1145,31 +1127,5 @@ fn bench(app: &mut App, mode: &str) {
     }
     if let Some(f) = std::env::var_os("BIOPLAY_SNAPSHOT") {
         app.overlay.snapshot(Path::new(&f));
-        return;
-    }
-    app.profile = Some(Vec::new());
-    for i in 0..360 {
-        if i % 6 == 0 {
-            app.last_wheel = Some(Instant::now());
-            app.events.push(Event::MouseWheel {
-                unit: egui::MouseWheelUnit::Line,
-                delta: vec2(0.0, if i < 180 { -1.0 } else { 1.0 }),
-                modifiers: Default::default(),
-                phase: egui::TouchPhase::Move,
-                source: egui::MouseWheelSource::Wheel,
-            });
-        }
-        // Réponses de mpv (image précédente lue), comme la vraie boucle.
-        let _ = app.player.mpv.wait(0.005);
-        screen(app);
-        app.frame();
-    }
-    let p = app.profile.take().unwrap_or_default();
-    println!("{} vidéos, mode {mode}, {} images", app.player.library.videos.len(), p.len());
-    for (k, name) in ["interface", "triangles", "rendu+envoi"].iter().enumerate() {
-        let mut v: Vec<f64> = p.iter().map(|x| x[k]).collect();
-        v.sort_by(|a, b| a.total_cmp(b));
-        let at = |q: f64| v[((v.len() - 1) as f64 * q) as usize];
-        println!("{name:>12} : médiane {:.1} ms, 90 % {:.1} ms, max {:.1} ms", at(0.5), at(0.9), at(1.0));
     }
 }

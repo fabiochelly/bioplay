@@ -10,3 +10,9 @@ egui = { version = "0.37", default-features = false }
 png = { version = "0.18", default-features = false }
 rfd = { version = "0.18", default-features = false, features = ["xdg-portal", "pollster", "wayland"] }
 serde_json = "1"
+# Fenêtre de la bibliothèque : Slint (winit + Skia, comme Biodrive), transparente, floutée par
+# le compositeur. L'interface est compilée dans le binaire.
+slint = { version = "1.19.0", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-skia", "renderer-software"] }
+
+[build-dependencies]
+slint-build = "1.19.0"

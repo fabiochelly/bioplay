@@ -51,10 +51,7 @@ fn med(size: f32) -> FontId {
 }
 
 pub enum Action {
-    Open,
     Home,
-    AddFolder,
-    Play(String),
 }
 
 /// Plaques de verre de l'image en cours, en pixels.
@@ -102,9 +99,8 @@ pub fn draw(ctx: &egui::Context, p: &mut Player, ppp: f32) -> (Vec<Plate>, Vec<A
     let mut actions = Vec::new();
     let screen = ctx.content_rect();
 
-    p.thumbs.clear();
+    // Sans vidéo, rien : la bibliothèque a sa propre fenêtre.
     if !p.has_file() {
-        home(ctx, p, &mut plates, &mut actions, screen);
         return (plates.list, actions);
     }
 
@@ -399,18 +395,13 @@ enum Icon {
     Speed,
     Zoom,
     List,
-    Folder,
     Plus,
     Minus,
     Up,
     Down,
-    Close,
     Speaker,
     SubtitlesOff,
     Back,
-    Open,
-    Grid,
-    Rows,
 }
 
 fn icon(painter: &egui::Painter, c: Pos2, size: f32, which: Icon, color: Color32) {
@@ -463,9 +454,6 @@ fn icon(painter: &egui::Painter, c: Pos2, size: f32, which: Icon, color: Color32
                 painter.line_segment([p(8.5, y), p(20.0, y)], stroke);
             }
         }
-        Icon::Folder => {
-            painter.add(Shape::line(vec![p(3.0, 18.0), p(3.0, 6.0), p(9.0, 6.0), p(11.0, 8.0), p(21.0, 8.0), p(21.0, 18.0), p(3.0, 18.0)], stroke));
-        }
         Icon::Plus => {
             painter.line_segment([p(6.0, 12.0), p(18.0, 12.0)], stroke);
             painter.line_segment([p(12.0, 6.0), p(12.0, 18.0)], stroke);
@@ -495,29 +483,8 @@ fn icon(painter: &egui::Painter, c: Pos2, size: f32, which: Icon, color: Color32
             painter.line_segment([p(3.0, 21.0), p(21.0, 3.0)], Stroke::new(2.6 * s, Color32::from_black_alpha(150)));
             painter.line_segment([p(3.5, 20.5), p(20.5, 3.5)], stroke);
         }
-        Icon::Open => {
-            // Dossier ouvert habituel : le fond, puis le rabat avant incliné.
-            let thin = Stroke::new(1.9 * s, color);
-            painter.add(Shape::line(vec![p(3.5, 18.5), p(3.5, 5.5), p(9.3, 5.5), p(11.3, 7.5), p(19.5, 7.5), p(19.5, 10.3)], thin));
-            painter.add(Shape::closed_line(vec![p(3.5, 18.5), p(6.4, 10.3), p(21.8, 10.3), p(18.9, 18.5)], thin));
-        }
         Icon::Back => {
             painter.add(Shape::line(vec![p(14.5, 6.0), p(8.5, 12.0), p(14.5, 18.0)], stroke));
-        }
-        Icon::Grid => {
-            for (x, y) in [(4.0, 4.0), (13.0, 4.0), (4.0, 13.0), (13.0, 13.0)] {
-                painter.rect_filled(Rect::from_min_max(p(x, y), p(x + 7.0, y + 7.0)), CornerRadius::same((1.5 * s) as u8), color);
-            }
-        }
-        Icon::Rows => {
-            for y in [4.5, 10.0, 15.5] {
-                painter.rect_filled(Rect::from_min_max(p(3.0, y), p(8.0, y + 4.0)), CornerRadius::same((1.0 * s) as u8), color);
-                painter.rect_filled(Rect::from_min_max(p(10.0, y + 1.0), p(21.0, y + 3.0)), CornerRadius::same((1.0 * s) as u8), color);
-            }
-        }
-        Icon::Close => {
-            painter.line_segment([p(7.0, 7.0), p(17.0, 17.0)], stroke);
-            painter.line_segment([p(17.0, 7.0), p(7.0, 17.0)], stroke);
         }
     }
 }
@@ -1060,417 +1027,6 @@ fn bubble(ctx: &egui::Context, plates: &mut Plates, screen: Rect, a: f32, dir: O
         painter.galley(pos2(left, top), g, INK);
         if let Some(d) = d {
             painter.galley(pos2(left, top + gy), d, INK2);
-        }
-    });
-}
-
-// --- Accueil -------------------------------------------------------------------------------------
-
-const NAV_H: f32 = 44.0;
-const NAV_Y: f32 = 20.0;
-const SIDE: f32 = 28.0;
-
-/// Accueil : une barre compacte (ouvrir, dossiers, vue, langue) puis les vidéos des dossiers
-/// surveillés, en miniatures ou en liste, chacune avec son avancée de lecture.
-fn home(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actions: &mut Vec<Action>, screen: Rect) {
-    egui::Area::new(Id::new("home-bg")).fade_in(false).order(Order::Background).fixed_pos(screen.min).show(ctx, |ui| {
-        ui.allocate_rect(screen, Sense::hover());
-    });
-    nav_bar(ctx, p, plates, actions, screen);
-    let body = Rect::from_min_max(pos2(screen.min.x, screen.min.y + NAV_Y + NAV_H + 14.0), screen.max);
-    egui::Area::new(Id::new("home-body")).fade_in(false).order(Order::Middle).fixed_pos(body.min).show(ctx, |ui| {
-        ui.set_clip_rect(body);
-        ui.set_min_size(body.size());
-        ui.set_max_size(body.size());
-        let lib = &mut p.library;
-        if lib.folders.is_empty() {
-            empty(ui, body, tr("Choisissez les dossiers où sont vos vidéos.", "Choose the folders holding your videos."), true, actions);
-        } else if lib.videos.is_empty() {
-            let msg = if lib.scanning { tr("Recherche des vidéos…", "Looking for videos…") } else { tr("Aucune vidéo dans ces dossiers.", "No video in these folders.") };
-            empty(ui, body, msg, false, actions);
-        } else {
-            let shelf = lib.shelf(&p.place);
-            p.place = shelf.place.clone();
-            let mut body = body;
-            if let Some(up) = p.library.up(&shelf.place) {
-                // Dossier en cours : bouton pour remonter et son nom, au-dessus de la grille
-                // (la place est réservée : le défilement commence en dessous).
-                let (bar, _) = ui.allocate_exact_size(vec2(body.width(), 54.0), Sense::hover());
-                let b = Rect::from_min_size(pos2(bar.min.x + SIDE, bar.min.y + 2.0), vec2(40.0, 40.0));
-                plates.add(b, 20.0, 0.42);
-                if icon_button(ui, b, Icon::Back).on_hover_text(tr("Remonter (Échap)", "Up (Esc)")).clicked() {
-                    p.place = up;
-                }
-                ui.painter().text(pos2(b.max.x + 12.0, b.center().y), Align2::LEFT_CENTER, &shelf.title, semi(18.0), INK);
-                body.min.y = bar.max.y;
-            }
-            // Zone de défilement posée exactement sous la barre (et sous le fil d'Ariane).
-            ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
-                ui.set_clip_rect(body);
-                if p.library.grid {
-                    grid(ui, p, &shelf, body, actions);
-                } else {
-                    list(ui, p, &shelf, body, actions);
-                }
-            });
-        }
-    });
-    if p.folders_open {
-        folders_sheet(ctx, p, plates, actions, screen);
-    }
-    static FLAGS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    if *FLAGS.get_or_init(|| std::env::var_os("BIOPLAY_FLAGS").is_some()) {
-        flag_gallery(ctx, screen);
-    }
-}
-
-fn nav_bar(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actions: &mut Vec<Action>, screen: Rect) {
-    egui::Area::new(Id::new("home-nav")).fade_in(false).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
-        let y = screen.min.y + NAV_Y;
-        let open = Rect::from_min_size(pos2(screen.min.x + SIDE, y), vec2(NAV_H, NAV_H));
-        plates.add(open, NAV_H / 2.0, 0.42);
-        if icon_button(ui, open, Icon::Open).on_hover_text(tr("Ouvrir une vidéo", "Open a video")).clicked() {
-            actions.push(Action::Open);
-        }
-        let label = tr("Dossiers", "Folders");
-        let fr = Rect::from_min_size(pos2(open.max.x + 10.0, y), vec2(pill_width(ui, label, true) + 6.0, NAV_H));
-        plates.add(fr, NAV_H / 2.0, 0.42);
-        if pill(ui, fr, Some(Icon::Folder), label, INK).clicked() {
-            p.folders_open = !p.folders_open;
-        }
-        // À droite : langue (drapeaux seuls), et juste avant, la bascule liste / miniatures.
-        let flags = Rect::from_min_size(pos2(screen.max.x - SIDE - 92.0, y), vec2(92.0, NAV_H));
-        plates.add(flags, NAV_H / 2.0, 0.42);
-        flag_switch(ui, flags);
-        let view = Rect::from_min_size(pos2(flags.min.x - 10.0 - NAV_H, y), vec2(NAV_H, NAV_H));
-        plates.add(view, NAV_H / 2.0, 0.42);
-        let (i, tip) = if p.library.grid { (Icon::Rows, tr("Afficher en liste", "Show as list")) } else { (Icon::Grid, tr("Afficher en miniatures", "Show as thumbnails")) };
-        if icon_button(ui, view, i).on_hover_text(tip).clicked() {
-            p.library.toggle_view();
-        }
-    });
-}
-
-/// Langue de l'interface : deux drapeaux, l'actif éclairé, l'autre estompé.
-fn flag_switch(ui: &mut Ui, r: Rect) {
-    let painter = ui.painter().clone();
-    let half = r.width() / 2.0;
-    for (i, french) in [true, false].into_iter().enumerate() {
-        let seg = Rect::from_min_size(pos2(r.min.x + i as f32 * half, r.min.y), vec2(half, r.height()));
-        let selected = en() != french;
-        let resp = ui.interact(seg, ui.id().with(("flag", i)), Sense::click());
-        let pad = seg.shrink2(vec2(if i == 0 { 5.0 } else { 0.0 }, 5.0));
-        let pad = if i == 0 { pad } else { pad.with_max_x(seg.max.x - 5.0) };
-        if selected {
-            painter.rect_filled(pad, CornerRadius::same(17), ACCENT.gamma_multiply(0.22));
-        } else if resp.hovered() {
-            painter.rect_filled(pad, CornerRadius::same(17), Color32::from_white_alpha(18));
-        }
-        let flag = Rect::from_center_size(pad.center(), vec2(24.0, 16.0));
-        crate::flags::draw(&painter, flag, if french { "fr" } else { "en" }, if selected { 1.0 } else { 0.5 });
-        if resp.clicked() && !selected {
-            crate::i18n::toggle();
-        }
-    }
-}
-
-fn empty(ui: &mut Ui, body: Rect, message: &str, add: bool, actions: &mut Vec<Action>) {
-    let c = pos2(body.center().x, body.min.y + body.height() * 0.42);
-    ui.painter().text(c, Align2::CENTER_CENTER, message, med(16.0), INK2);
-    if add {
-        let label = tr("Ajouter un dossier", "Add a folder");
-        let r = Rect::from_center_size(c + vec2(0.0, 52.0), vec2(pill_width(ui, label, true) + 8.0, 46.0));
-        ui.painter().rect_filled(r, CornerRadius::same(23), Color32::from_white_alpha(26));
-        ui.painter().rect_stroke(r, CornerRadius::same(23), Stroke::new(1.0, Color32::from_white_alpha(60)), StrokeKind::Inside);
-        if pill(ui, r, Some(Icon::Plus), label, INK).clicked() {
-            actions.push(Action::AddFolder);
-        }
-    }
-}
-
-/// Position mémorisée d'une vidéo (secondes), d'après les dernières lectures.
-fn position(p: &Player, path: &str) -> f64 {
-    p.positions.get(path).copied().unwrap_or(0.0)
-}
-
-/// Miniature à coins arrondis, durée en haut à droite et avancée de lecture en bas.
-fn thumbnail(ui: &mut Ui, p: &mut Player, v: &crate::library::Video, r: Rect, hovered: bool) {
-    let cr = CornerRadius::same(12);
-    let painter = ui.painter().clone();
-    match p.library.image(v) {
-        // L'image elle-même est posée par mpv sous l'interface ; ici, seulement ce qui la couvre.
-        Some(image) => p.thumbs.push(crate::overlay::Thumb { key: v.thumb(), rect: r, clip: ui.clip_rect(), radius: 12.0, image }),
-        None => {
-            painter.rect_filled(r, cr, Color32::from_white_alpha(14));
-            icon(&painter, r.center(), 26.0, Icon::Play, FAINT);
-        }
-    }
-    // Survol : liseré bleu d'accent (comme les boutons), l'image garde sa luminosité.
-    if hovered {
-        painter.rect_stroke(r, cr, Stroke::new(2.5, ACCENT), StrokeKind::Inside);
-    } else {
-        painter.rect_stroke(r, cr, Stroke::new(1.0, Color32::from_white_alpha(34)), StrokeKind::Inside);
-    }
-    if v.duration > 0.0 {
-        let g = painter.layout_no_wrap(clock(v.duration), semi(11.0), INK);
-        let b = Rect::from_min_size(pos2(r.max.x - 8.0 - g.size().x - 12.0, r.min.y + 7.0), g.size() + vec2(12.0, 3.0));
-        painter.rect_filled(b, CornerRadius::same((b.height() / 2.0) as u8), Color32::from_black_alpha(150));
-        painter.galley(b.min + vec2(6.0, 1.5), g, INK);
-        // Avancée : un rail discret sur chaque miniature, rempli jusqu'à la position.
-        let f = (position(p, &v.path) / v.duration).clamp(0.0, 1.0) as f32;
-        let rail = Rect::from_min_size(pos2(r.min.x + 9.0, r.max.y - 11.0), vec2(r.width() - 18.0, 4.0));
-        painter.rect_filled(rail, CornerRadius::same(2), Color32::from_black_alpha(110));
-        painter.rect_filled(rail, CornerRadius::same(2), Color32::from_white_alpha(52));
-        if f > 0.0 {
-            painter.rect_filled(Rect::from_min_size(rail.min, vec2((rail.width() * f).max(4.0), 4.0)), CornerRadius::same(2), ACCENT);
-        }
-    }
-}
-
-/// Titre sur deux lignes au plus, coupé proprement.
-fn title_galley(ui: &Ui, text: String, width: f32, size: f32) -> std::sync::Arc<egui::Galley> {
-    let mut job = egui::text::LayoutJob::simple(text, semi(size), INK, width);
-    job.wrap = egui::text::TextWrapping { max_width: width, max_rows: 2, break_anywhere: false, overflow_character: Some('…') };
-    ui.painter().layout_job(job)
-}
-
-/// « 12 vidéos », « 3 dossiers · 12 vidéos ».
-fn dir_count(d: &crate::library::Dir) -> String {
-    let v = format!("{} {}", d.videos, if d.videos > 1 { tr("vidéos", "videos") } else { tr("vidéo", "video") });
-    if d.dirs > 0 {
-        format!("{} {} · {v}", d.dirs, if d.dirs > 1 { tr("dossiers", "folders") } else { tr("dossier", "folder") })
-    } else {
-        v
-    }
-}
-
-/// Dossier dessiné : le dos et son onglet, deux feuilles qui dépassent, la face avant bleutée avec
-/// un reflet. Dans le même cadre 16:9 que les miniatures.
-pub(crate) fn folder_art(painter: &egui::Painter, r: Rect, hovered: bool) {
-    let h = r.height() * 0.86;
-    let w = (r.width() * 0.86).min(h * 1.42);
-    let x0 = r.center().x - w / 2.0;
-    let y0 = r.center().y - h / 2.0 + r.height() * 0.02;
-    let cr = CornerRadius::same((h * 0.07) as u8);
-    let lift = if hovered { -3.0 } else { 0.0 };
-    let gradient = |rect: Rect, top: Color32, bottom: Color32| {
-        // Dégradé vertical continu aux coins arrondis : deux bandeaux arrondis aux extrémités
-        // (couleurs de bout) et, entre eux, un quadrilatère aux couleurs interpolées.
-        let rr = cr.nw as f32;
-        painter.rect_filled(Rect::from_min_max(rect.min, pos2(rect.max.x, rect.min.y + rr * 2.0)), cr, top);
-        painter.rect_filled(Rect::from_min_max(pos2(rect.min.x, rect.max.y - rr * 2.0), rect.max), cr, bottom);
-        let (y1, y2) = (rect.min.y + rr, rect.max.y - rr);
-        let k = |y: f32| lerp_color(top, bottom, ((y - y1) / (y2 - y1).max(1.0)).clamp(0.0, 1.0));
-        let mut mesh = egui::Mesh::default();
-        mesh.colored_vertex(pos2(rect.min.x, y1), k(y1));
-        mesh.colored_vertex(pos2(rect.max.x, y1), k(y1));
-        mesh.colored_vertex(pos2(rect.max.x, y2), k(y2));
-        mesh.colored_vertex(pos2(rect.min.x, y2), k(y2));
-        mesh.add_triangle(0, 1, 2);
-        mesh.add_triangle(0, 2, 3);
-        painter.add(Shape::mesh(mesh));
-    };
-    let back_top = Color32::from_rgb(0x2B, 0x6D, 0xB3);
-    let back_bottom = Color32::from_rgb(0x17, 0x3F, 0x70);
-    painter.rect_filled(Rect::from_min_size(pos2(x0, y0), vec2(w * 0.38, h * 0.22)), cr, back_top);
-    gradient(Rect::from_min_size(pos2(x0, y0 + h * 0.1), vec2(w, h * 0.9)), back_top, back_bottom);
-    let sheet = CornerRadius::same((h * 0.04) as u8);
-    painter.rect_filled(Rect::from_min_size(pos2(x0 + w * 0.08, y0 + h * 0.17 + lift), vec2(w * 0.8, h * 0.5)), sheet, Color32::from_rgb(0xCF, 0xDD, 0xEB));
-    painter.rect_filled(Rect::from_min_size(pos2(x0 + w * 0.13, y0 + h * 0.23 + lift * 1.6), vec2(w * 0.76, h * 0.5)), sheet, Color32::from_rgb(0xF1, 0xF6, 0xFB));
-    let fy = y0 + h * 0.33;
-    let front = Rect::from_min_max(pos2(x0, fy), pos2(x0 + w, y0 + h));
-    gradient(front, Color32::from_rgb(0x8F, 0xD8, 0xFF), Color32::from_rgb(0x2F, 0x86, 0xCF));
-    painter.line_segment([pos2(x0 + cr.nw as f32, fy + 1.0), pos2(x0 + w - cr.ne as f32, fy + 1.0)], Stroke::new(1.5, Color32::from_white_alpha(170)));
-}
-
-fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
-    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
-    Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
-}
-
-/// Un élément de l'endroit affiché : dossier (indice dans `shelf.dirs`) ou vidéo (dans la bibliothèque).
-#[derive(Clone, Copy)]
-enum Item {
-    Dir(usize),
-    Video(usize),
-}
-
-fn items(shelf: &crate::library::Shelf) -> Vec<Item> {
-    (0..shelf.dirs.len()).map(Item::Dir).chain(shelf.videos.iter().map(|&i| Item::Video(i))).collect()
-}
-
-fn grid(ui: &mut Ui, p: &mut Player, shelf: &crate::library::Shelf, body: Rect, actions: &mut Vec<Action>) {
-    let gap = 16.0;
-    let inner = body.width() - SIDE * 2.0;
-    let cols = ((inner + gap) / (230.0 + gap)).floor().max(1.0) as usize;
-    let w = (inner - gap * (cols - 1) as f32) / cols as f32;
-    let th = w * 9.0 / 16.0;
-    let row_h = th + 50.0;
-    let all = items(shelf);
-    let rows = all.len().div_ceil(cols);
-    // Un défilement par dossier : on retrouve sa place en remontant.
-    egui::ScrollArea::vertical().id_salt(("grid", &shelf.place)).auto_shrink([false, false]).show_rows(ui, row_h, rows, |ui, range| {
-        for row in range {
-            let (line, _) = ui.allocate_exact_size(vec2(body.width(), row_h), Sense::hover());
-            for c in 0..cols {
-                let Some(&item) = all.get(row * cols + c) else { break };
-                let cell = Rect::from_min_size(pos2(line.min.x + SIDE + c as f32 * (w + gap), line.min.y), vec2(w, row_h - 6.0));
-                let art = Rect::from_min_size(cell.min, vec2(w, th));
-                match item {
-                    Item::Dir(i) => {
-                        let d = &shelf.dirs[i];
-                        let resp = ui.interact(cell, ui.id().with(("dir", &d.place)), Sense::click());
-                        folder_art(ui.painter(), art, resp.hovered());
-                        let clip = ui.painter().with_clip_rect(cell);
-                        clip.text(pos2(cell.min.x + 2.0, cell.min.y + th + 15.0), Align2::LEFT_CENTER, &d.name, semi(13.5), INK);
-                        clip.text(pos2(cell.min.x + 2.0, cell.min.y + th + 33.0), Align2::LEFT_CENTER, dir_count(d), med(11.5), INK2);
-                        if resp.clicked() {
-                            p.place = d.place.clone();
-                        }
-                    }
-                    Item::Video(i) => {
-                        let v = p.library.videos[i].clone();
-                        let resp = ui.interact(cell, ui.id().with(("tile", &v.path)), Sense::click());
-                        thumbnail(ui, p, &v, art, resp.hovered());
-                        let g = title_galley(ui, v.title(), w - 4.0, 13.5);
-                        ui.painter().galley(pos2(cell.min.x + 2.0, cell.min.y + th + 7.0), g, INK);
-                        if resp.clicked() {
-                            actions.push(Action::Play(v.path.clone()));
-                        }
-                    }
-                }
-            }
-        }
-        ui.add_space(20.0);
-    });
-}
-
-fn list(ui: &mut Ui, p: &mut Player, shelf: &crate::library::Shelf, body: Rect, actions: &mut Vec<Action>) {
-    let row_h = 86.0;
-    let all = items(shelf);
-    let width = (body.width() - SIDE * 2.0).min(980.0);
-    let x0 = body.center().x - width / 2.0;
-    egui::ScrollArea::vertical().id_salt(("list", &shelf.place)).auto_shrink([false, false]).show_rows(ui, row_h, all.len(), |ui, range| {
-        for i in range {
-            let (line, _) = ui.allocate_exact_size(vec2(body.width(), row_h), Sense::hover());
-            let row = Rect::from_min_size(pos2(x0, line.min.y + 3.0), vec2(width, row_h - 6.0));
-            let t = Rect::from_min_size(pos2(row.min.x + 6.0, row.min.y + 4.0), vec2(128.0, 72.0));
-            let tx = t.max.x + 16.0;
-            match all[i] {
-                Item::Dir(k) => {
-                    let d = &shelf.dirs[k];
-                    let resp = ui.interact(row, ui.id().with(("dirrow", &d.place)), Sense::click());
-                    if resp.hovered() {
-                        ui.painter().rect_filled(row, CornerRadius::same(16), Color32::from_white_alpha(14));
-                    }
-                    folder_art(ui.painter(), t, resp.hovered());
-                    ui.painter().text(pos2(tx, row.center().y - 10.0), Align2::LEFT_CENTER, &d.name, semi(15.0), INK);
-                    ui.painter().text(pos2(tx, row.center().y + 12.0), Align2::LEFT_CENTER, dir_count(d), med(12.0), INK2);
-                    if resp.clicked() {
-                        p.place = d.place.clone();
-                    }
-                }
-                Item::Video(k) => {
-                    let v = p.library.videos[k].clone();
-                    let resp = ui.interact(row, ui.id().with(("row", &v.path)), Sense::click());
-                    if resp.hovered() {
-                        ui.painter().rect_filled(row, CornerRadius::same(16), Color32::from_white_alpha(14));
-                    }
-                    thumbnail(ui, p, &v, t, resp.hovered());
-                    let g = title_galley(ui, v.title(), row.max.x - tx - 12.0, 15.0);
-                    let gh = g.size().y;
-                    let top = row.center().y - (gh + 20.0) / 2.0;
-                    ui.painter().galley(pos2(tx, top), g, INK);
-                    let pos = position(p, &v.path);
-                    let detail = if v.duration <= 0.0 {
-                        String::new()
-                    } else if pos > 0.0 {
-                        format!("{} {}", tr("Reste", "Left"), clock(v.duration - pos))
-                    } else {
-                        clock(v.duration)
-                    };
-                    ui.painter().text(pos2(tx, top + gh + 4.0), Align2::LEFT_TOP, detail, med(12.0), INK2);
-                    if resp.clicked() {
-                        actions.push(Action::Play(v.path.clone()));
-                    }
-                }
-            }
-        }
-        ui.add_space(20.0);
-    });
-}
-
-fn folders_sheet(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actions: &mut Vec<Action>, screen: Rect) {
-    // Un clic à côté ferme la fenêtre.
-    egui::Area::new(Id::new("folders-scrim")).fade_in(false).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
-        if ui.allocate_rect(screen, Sense::click()).clicked() {
-            p.folders_open = false;
-        }
-    });
-    let w = 520.0f32.min(screen.width() - 32.0);
-    let id = Id::new("folders");
-    let h: f32 = ctx.data(|d| d.get_temp(id)).unwrap_or(220.0);
-    let rect = Rect::from_min_size(pos2(screen.min.x + SIDE, screen.min.y + NAV_Y + NAV_H + 10.0), vec2(w, h));
-    plates.add(rect, 26.0, 0.62);
-    let mut remove = None;
-    let out = egui::Area::new(id).fade_in(false).order(Order::Tooltip).fixed_pos(rect.min).show(ctx, |ui| {
-        ui.set_width(w);
-        egui::Frame::NONE.inner_margin(20.0).show(ui, |ui| {
-            ui.set_width(w - 40.0);
-            let (head, _) = ui.allocate_exact_size(vec2(w - 40.0, 30.0), Sense::hover());
-            ui.painter().text(head.left_center(), Align2::LEFT_CENTER, tr("Dossiers surveillés", "Watched folders"), semi(17.0), INK);
-            if icon_button_tint(ui, Rect::from_center_size(pos2(head.max.x - 14.0, head.center().y), vec2(30.0, 30.0)), Icon::Close, INK2).clicked() {
-                p.folders_open = false;
-            }
-            ui.label(egui::RichText::new(tr("Leurs vidéos, sous-dossiers compris, s'affichent sur l'accueil.", "Their videos, subfolders included, are shown on the home screen.")).font(med(12.5)).color(INK2));
-            ui.add_space(10.0);
-            for f in p.library.folders.clone() {
-                let (row, _) = ui.allocate_exact_size(vec2(w - 40.0, 48.0), Sense::hover());
-                icon(ui.painter(), pos2(row.min.x + 12.0, row.center().y), 20.0, Icon::Folder, ACCENT);
-                let name = f.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| f.to_string_lossy().into_owned());
-                let clip = ui.painter().with_clip_rect(row.with_max_x(row.max.x - 44.0));
-                clip.text(pos2(row.min.x + 34.0, row.min.y + 15.0), Align2::LEFT_CENTER, name, semi(15.0), INK);
-                let n = p.library.count(&f);
-                let home = std::env::var("HOME").unwrap_or_default();
-                let shown = f.to_string_lossy().replacen(&home, "~", 1);
-                clip.text(pos2(row.min.x + 34.0, row.min.y + 33.0), Align2::LEFT_CENTER, format!("{shown} · {n} {}", tr("vidéos", "videos")), med(12.0), INK2);
-                if icon_button_tint(ui, Rect::from_center_size(pos2(row.max.x - 18.0, row.center().y), vec2(32.0, 32.0)), Icon::Close, FAINT).clicked() {
-                    remove = Some(f.clone());
-                }
-            }
-            ui.add_space(10.0);
-            let label = tr("Ajouter un dossier", "Add a folder");
-            let (r, _) = ui.allocate_exact_size(vec2(pill_width(ui, label, true) + 8.0, 44.0), Sense::hover());
-            ui.painter().rect_filled(r, CornerRadius::same(22), Color32::from_white_alpha(26));
-            ui.painter().rect_stroke(r, CornerRadius::same(22), Stroke::new(1.0, Color32::from_white_alpha(60)), StrokeKind::Inside);
-            if pill(ui, r, Some(Icon::Plus), label, INK).clicked() {
-                actions.push(Action::AddFolder);
-            }
-        });
-    });
-    if let Some(f) = remove {
-        p.library.remove_folder(&f);
-    }
-    let measured = out.response.rect.height();
-    if (measured - h).abs() > 0.5 {
-        ctx.data_mut(|d| d.insert_temp(id, measured));
-        ctx.request_repaint();
-    }
-}
-
-/// Galerie de contrôle (`BIOPLAY_FLAGS=1`) : tous les drapeaux, en grand et à la taille de la barre.
-fn flag_gallery(ctx: &egui::Context, screen: Rect) {
-    egui::Area::new(Id::new("flag-gallery")).fade_in(false).order(Order::Tooltip).fixed_pos(pos2(screen.min.x + SIDE, screen.max.y - 260.0)).interactable(false).show(ctx, |ui| {
-        let flags = crate::flags::all();
-        let per_row = 12;
-        let rows = flags.len().div_ceil(per_row);
-        let (r, _) = ui.allocate_exact_size(vec2(per_row as f32 * 40.0, rows as f32 * 30.0 + 22.0), Sense::hover());
-        for (i, f) in flags.iter().enumerate() {
-            let o = pos2(r.min.x + (i % per_row) as f32 * 40.0, r.min.y + (i / per_row) as f32 * 30.0);
-            crate::flags::draw(ui.painter(), Rect::from_min_size(o, vec2(33.0, 22.0)), &f.key, 1.0);
-        }
-        for (i, f) in flags.iter().take(per_row).enumerate() {
-            crate::flags::draw(ui.painter(), Rect::from_min_size(pos2(r.min.x + i as f32 * 40.0, r.max.y - 14.0), vec2(21.0, 14.0)), &f.key, 1.0);
         }
     });
 }

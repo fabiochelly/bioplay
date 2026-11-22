@@ -69,6 +69,11 @@ const EVENT_PROPERTY_CHANGE: c_int = 22;
 pub struct Waker(std::sync::Arc<std::sync::Mutex<usize>>);
 
 impl Waker {
+    /// Réveil sans effet (captures de la bibliothèque, sans lecteur).
+    pub fn none() -> Self {
+        Waker(std::sync::Arc::new(std::sync::Mutex::new(0)))
+    }
+
     pub fn wake(&self) {
         let h = self.0.lock().unwrap_or_else(|e| e.into_inner());
         if *h != 0 {
@@ -201,7 +206,9 @@ impl Mpv {
             ("config", "yes"),
             ("input-default-bindings", "yes"),
             ("input-vo-keyboard", "yes"),
-            ("force-window", "yes"),
+            // Pas de fenêtre sans vidéo : mpv attend, prêt, et sa fenêtre n'apparaît qu'à
+            // l'ouverture d'une vidéo (la bibliothèque a la sienne).
+            ("force-window", "no"),
             ("idle", "yes"),
             ("keep-open", "yes"),
             ("terminal", "no"),
@@ -212,11 +219,6 @@ impl Mpv {
         ] {
             m.option(k, v);
         }
-        // Fenêtre capable de transparence dès sa création (la surface d'affichage de gpu-next ne
-        // l'accepte pas si on la demande ensuite) : l'accueil laisse voir le fond d'écran flouté.
-        // En lecture, `set_window_glass(false)` rend la fenêtre opaque.
-        m.option("alpha", "yes");
-        m.option("background-color", "#00000000");
         // Mesure (BIOPLAY_BENCH) : aucune fenêtre, aucune configuration de l'utilisateur.
         if std::env::var_os("BIOPLAY_BENCH").is_some() {
             for (k, v) in [("vo", "null"), ("ao", "null"), ("force-window", "no"), ("config", "no")] {
@@ -273,20 +275,6 @@ impl Mpv {
     // `time-pos` change à chaque image : le suivre réveillerait bioplay des dizaines de fois par
     // seconde. Il n'est jamais suivi ; la position est déduite de la dernière lue et de l'horloge,
     // relue chez mpv à chaque reprise après un saut, pause, changement de vitesse ou de fichier.
-
-    /// Accueil : fenêtre transparente (le compositeur floute le fond d'écran derrière la vitre
-    /// sombre de l'interface). En lecture : réglages d'origine, fenêtre opaque (rien de plus à
-    /// mélanger pour le compositeur).
-    pub fn set_window_glass(&mut self, on: bool) {
-        if on {
-            self.set("alpha", "yes");
-            self.set("background-color", "#00000000");
-        } else {
-            // Réglages par défaut de mpv : image opaque, bandes noires.
-            self.set("alpha", "blend-tiles");
-            self.set("background-color", "#000000");
-        }
-    }
 
     pub fn is_seeking(&self) -> bool {
         self.seeking

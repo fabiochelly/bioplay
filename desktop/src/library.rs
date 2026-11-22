@@ -16,7 +16,6 @@ use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
 use std::time::UNIX_EPOCH;
 
-use crate::mpv::Waker;
 
 pub const VIDEO_EXT: &[&str] = &["mkv", "mk3d", "mp4", "m4v", "avi", "webm", "mov", "ts", "m2ts", "mts", "wmv", "flv", "mpg", "mpeg", "ogv", "3gp"];
 const THUMB_W: u32 = 320;
@@ -101,7 +100,7 @@ impl Video {
 
 enum Event {
     Scanned(Vec<Video>),
-    Thumb(String),
+    Thumb,
     Durations(Vec<(String, f64)>),
 }
 
@@ -112,7 +111,8 @@ pub struct Library {
     pub grid: bool,
     tx: Sender<Event>,
     rx: Receiver<Event>,
-    waker: Waker,
+    /// Prévient la fenêtre de la bibliothèque qu'il y a du nouveau (`poll`).
+    waker: Notify,
     /// Pause du travail de fond pendant la lecture : le fil dort (sans réveil périodique) tant
     /// qu'elle dure.
     hold: Hold,
@@ -122,12 +122,10 @@ pub struct Library {
     shelf_cache: Option<(Place, u64, Arc<Shelf>)>,
     /// Change à chaque modification de la liste des vidéos.
     version: u64,
-    /// Miniatures lues du disque (None : illisible).
-    images: HashMap<String, Option<Arc<egui::ColorImage>>>,
 }
 
 impl Library {
-    pub fn new(waker: Waker) -> Self {
+    pub fn new(waker: Notify) -> Self {
         let (tx, rx) = channel();
         let folders = std::fs::read_to_string(folders_file())
             .unwrap_or_default()
@@ -147,7 +145,6 @@ impl Library {
             hold: Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new())),
             busy: Arc::new(AtomicBool::new(false)),
             again: false,
-            images: HashMap::new(),
             shelf_cache: None,
             version: 0,
         };
@@ -324,7 +321,7 @@ impl Library {
                 write_list(&found);
             }
             let _ = tx.send(Event::Scanned(found.clone()));
-            waker.wake();
+            waker();
             if complete {
                 prune(&found);
             }
@@ -341,8 +338,8 @@ impl Library {
                         durations.push((v.path.clone(), dur));
                     }
                     make_thumb(&v.path, dur, &file);
-                    let _ = tx.send(Event::Thumb(v.thumb()));
-                    waker.wake();
+                    let _ = tx.send(Event::Thumb);
+                    waker();
                 } else {
                     let dur = probe(&v.path);
                     if dur > 0.0 {
@@ -360,7 +357,7 @@ impl Library {
                 }).collect();
                 write_list(&updated);
                 let _ = tx.send(Event::Durations(durations));
-                waker.wake();
+                waker();
             }
             busy.store(false, Ordering::Release);
         });
@@ -379,9 +376,8 @@ impl Library {
                         self.version += 1;
                     }
                 }
-                Event::Thumb(id) => {
-                    self.images.remove(&id);
-                }
+                // Une miniature de plus : la fenêtre la lira en affichant sa rangée.
+                Event::Thumb => {}
                 Event::Durations(d) => {
                     self.version += 1;
                     let map: HashMap<String, f64> = d.into_iter().collect();
@@ -400,31 +396,10 @@ impl Library {
         changed
     }
 
-    /// Miniature d'une vidéo, lue du cache disque à la première demande.
-    pub fn image(&mut self, v: &Video) -> Option<Arc<egui::ColorImage>> {
-        let id = v.thumb();
-        if let Some(t) = self.images.get(&id) {
-            return t.clone();
-        }
-        let file = thumbs_dir().join(format!("{id}.png"));
-        if !file.exists() {
-            // Pas encore faite : relue quand le fil l'annoncera.
-            return None;
-        }
-        // Mémoire bornée : les vignettes lues gardent au plus ~25 Mo.
-        if self.images.len() > 110 {
-            self.images.clear();
-        }
-        let img = read_png(&file).map(Arc::new);
-        self.images.insert(id, img.clone());
-        img
-    }
-
-    /// Libère les miniatures (lecture en cours : la mémoire va au film).
-    pub fn forget_images(&mut self) {
-        self.images.clear();
-    }
 }
+
+/// Réveil de la fenêtre propriétaire, appelable depuis le fil de travail.
+pub type Notify = Arc<dyn Fn() + Send + Sync>;
 
 type Hold = Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>;
 
@@ -565,11 +540,6 @@ fn encode_png(file: &Path, w: u32, h: u32, px: &[u8]) -> bool {
     e.write_header().and_then(|mut wr| wr.write_image_data(px)).is_ok()
 }
 
-fn read_png(file: &Path) -> Option<egui::ColorImage> {
-    let (w, h, px) = decode_rgb(file)?;
-    Some(egui::ColorImage::from_rgb([w as usize, h as usize], &px))
-}
-
 // --- Fichiers -----------------------------------------------------------------------------------
 
 fn home() -> PathBuf {
@@ -590,6 +560,11 @@ fn folders_file() -> PathBuf {
 
 fn view_file() -> PathBuf {
     state_dir().join("view")
+}
+
+/// Fichier de la miniature d'une vidéo (peut ne pas exister encore).
+pub fn thumb_path(v: &Video) -> PathBuf {
+    thumbs_dir().join(format!("{}.png", v.thumb()))
 }
 
 fn thumbs_dir() -> PathBuf {

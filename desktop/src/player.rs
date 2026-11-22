@@ -60,13 +60,6 @@ pub struct Player {
     pub recents: Vec<Recent>,
     /// Position par chemin (index de `recents`) : lue pour chaque miniature à chaque image.
     pub positions: HashMap<String, f64>,
-    pub library: crate::library::Library,
-    /// Miniatures de l'accueil à poser cette image (incrustations mpv sous l'interface).
-    pub thumbs: Vec<crate::overlay::Thumb>,
-    /// Dossier affiché dans la bibliothèque.
-    pub place: crate::library::Place,
-    /// Fenêtre des dossiers surveillés ouverte (accueil).
-    pub folders_open: bool,
     pub over_ui: bool,
     /// Dernières valeurs annoncées : un message seulement quand l'utilisateur change quelque chose.
     pub shown: HashMap<&'static str, f64>,
@@ -94,14 +87,9 @@ pub fn message_alpha(age: f32) -> f32 {
 
 impl Player {
     pub fn new(mpv: Mpv) -> Self {
-        let library = crate::library::Library::new(mpv.waker());
         let recents = load_recents();
         let positions = recents.iter().rev().map(|r| (r.path.clone(), r.position)).collect();
         Self {
-            library,
-            folders_open: false,
-            place: Default::default(),
-            thumbs: Vec::new(),
             mpv,
             embedded: HashMap::new(),
             keyframes: Vec::new(),
@@ -404,6 +392,11 @@ fn load_recents() -> Vec<Recent> {
             })
         })
         .collect()
+}
+
+/// Position mémorisée de chaque vidéo (avancée des miniatures de la bibliothèque).
+pub fn positions() -> HashMap<String, f64> {
+    load_recents().into_iter().rev().map(|r| (r.path, r.position)).collect()
 }
 
 fn save_recents(list: &[Recent]) {
