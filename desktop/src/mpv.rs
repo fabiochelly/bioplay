@@ -160,6 +160,10 @@ pub struct Mpv {
     pub own_seeks: std::cell::Cell<u32>,
     /// Dernier `overlay-add` traité par mpv (il lit l'image à ce moment-là, pas avant).
     pub overlay_done: std::cell::Cell<u64>,
+    /// Cible du dernier saut lancé par bioplay, tant qu'il n'est pas terminé.
+    /// (cible, envoi, terminé) : mpv fond les sauts rapprochés, si bien qu'une fin de saut
+    /// peut précéder un saut encore en file ; la cible reste donc valable une seconde.
+    pub target: std::cell::Cell<Option<(f64, std::time::Instant, bool)>>,
 }
 
 fn cs(s: &str) -> CString {
@@ -174,7 +178,7 @@ impl Mpv {
         if h.is_null() {
             return Err("mpv_create a échoué".into());
         }
-        let mut m = Self { h, state: State { speed: 1.0, scale: 1.0, ..Default::default() }, own_seeks: Default::default(), overlay_done: Default::default() };
+        let mut m = Self { h, state: State { speed: 1.0, scale: 1.0, ..Default::default() }, own_seeks: Default::default(), overlay_done: Default::default(), target: Default::default() };
         // mpv ouvre et dessine sa propre fenêtre en gpu-next : même image, même coût que mpv
         // (Dolby Vision et HDR compris). bioplay y ajoute son interface en superposition.
         for (k, v) in [
@@ -287,7 +291,17 @@ impl Mpv {
         let max = if self.state.duration > 0.0 { self.state.duration } else { f64::MAX };
         let t = t.clamp(0.0, max);
         self.own_seeks.set(self.own_seeks.get() + 1);
+        self.target.set(Some((t, std::time::Instant::now(), false)));
         self.command(&["seek", &format!("{t:.3}"), if exact { "absolute+exact" } else { "absolute+keyframes" }]);
+    }
+
+    /// Position d'où partir pour un saut relatif : la cible du saut en cours s'il y en a un
+    /// (sinon des appuis rapprochés viseraient tous le même instant), sinon la position.
+    pub fn pos(&self) -> f64 {
+        match self.target.get() {
+            Some((t, at, done)) if !done || at.elapsed() < std::time::Duration::from_secs(1) => t,
+            _ => self.state.position,
+        }
     }
 
     /// Réveille `wait` depuis un autre fil (index des sous-titres prêt, fichier choisi…).
@@ -334,7 +348,12 @@ impl Mpv {
             EVENT_FILE_LOADED => out.push(Change::Loaded),
             EVENT_END_FILE => out.push(Change::Ended),
             EVENT_SEEK => out.push(Change::Seeking),
-            EVENT_PLAYBACK_RESTART => out.push(Change::Restarted),
+            EVENT_PLAYBACK_RESTART => {
+                if let Some((t, at, _)) = self.target.get() {
+                    self.target.set(Some((t, at, true)));
+                }
+                out.push(Change::Restarted)
+            }
             EVENT_CLIENT_MESSAGE => {
                 let m = unsafe { &*(e.data as *const ClientMessage) };
                 let args: Vec<String> = (0..m.num_args as usize)

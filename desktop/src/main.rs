@@ -64,6 +64,9 @@ enum Message {
 }
 
 struct App {
+    /// Compteurs (mesures) : tours de boucle et images dessinées.
+    wakeups: u64,
+    frames: u64,
     player: Player,
     overlay: overlay::Overlay,
     ctx: egui::Context,
@@ -77,6 +80,10 @@ struct App {
     next_frame: Option<Instant>,
     dirty: bool,
     last_frame: Instant,
+    /// Horloge et barre telles qu'affichées (secondes, pixels) : redessin seulement s'il change.
+    shown: [f64; 4],
+    /// Image en attente : `overlay_done` au moment où mpv n'avait pas encore lu le tampon.
+    overlay_wait: Option<u64>,
     /// Aperçu des sous-titres affiché (incrustation mpv).
     preview_on: bool,
     /// La lecture tournait à l'ouverture du tiroir : elle reprend à sa fermeture.
@@ -219,12 +226,13 @@ impl App {
         let p = &mut self.player;
         match name {
             // Flèches : ligne suivante / précédente (au plus 10 s) ; Ctrl : 10 s tout court.
-            "right" => p.step_line_or_ten(1),
-            "left" => p.step_line_or_ten(-1),
+            "right" => p.step_line_or_ten(1, state.starts_with('r')),
+            "left" => p.step_line_or_ten(-1, state.starts_with('r')),
             "ctrl-right" | "ctrl-left" => {
                 let dir = if name == "ctrl-right" { 1.0 } else { -1.0 };
-                p.mpv.seek(p.mpv.state.position + 10.0 * dir, true);
-                p.say(if dir > 0.0 { "+10 s" } else { "−10 s" });
+                let target = p.mpv.pos() + 10.0 * dir;
+                p.mpv.seek(target, !state.starts_with('r'));
+                p.say_seek(dir, target, player::delta(10.0 * dir));
             }
             "sub-bigger" => p.sub_size(1),
             "sub-smaller" => p.sub_size(-1),
@@ -294,7 +302,7 @@ impl App {
                 if let Some(before) = self.seek_from.take() {
                     let d = self.player.mpv.state.position - before;
                     if d.abs() >= 0.9 && self.player.loaded_at.is_some_and(|t| t.elapsed() > Duration::from_secs(1)) {
-                        self.player.say(player::delta(d));
+                        self.player.say_seek(d, self.player.mpv.state.position, player::delta(d));
                         self.dirty = true;
                     }
                 }
@@ -307,9 +315,19 @@ impl App {
         match name {
             "mouse-pos" => return self.mouse_moved(),
             // L'horloge et la barre ne bougent que si l'interface est visible.
+            // Et seulement quand ce qu'elles affichent change : la seconde de l'horloge, ou un
+            // pixel de la barre (lecture ou cache). Tiroir ouvert (liste des sous-titres) : 30/s.
             "time-pos" | "demuxer-cache-time" => {
-                if self.visible && self.last_frame.elapsed() > Duration::from_millis(33) {
-                    self.dirty = true;
+                if self.visible {
+                    let s = &self.player.mpv.state;
+                    let dur = s.duration.max(0.001);
+                    let px = s.osd_w.max(1.0) / dur;
+                    let shown = [s.position.floor(), (dur - s.position).floor(), (s.position * px).floor(), (s.cached * px).floor()];
+                    let panel = self.player.panel.is_some() && self.last_frame.elapsed() > Duration::from_millis(33);
+                    if shown != self.shown || panel {
+                        self.shown = shown;
+                        self.dirty = true;
+                    }
                 }
                 return;
             }
@@ -441,6 +459,7 @@ impl App {
     }
 
     fn frame(&mut self) {
+        self.frames += 1;
         let s = &self.player.mpv.state;
         let (w, h, scale) = (s.osd_w as f32, s.osd_h as f32, s.scale as f32);
         if w < 1.0 || h < 1.0 {
@@ -470,10 +489,12 @@ impl App {
         if !moving {
             self.last_wheel = None;
         }
-        let prims = self.ctx.tessellate(std::mem::take(&mut out.shapes), out.pixels_per_point / reduce as f32);
+        let shapes = std::mem::take(&mut out.shapes);
+        let marks = overlay::shape_marks(&shapes);
+        let prims = self.ctx.tessellate(shapes, out.pixels_per_point / reduce as f32);
         let t2 = Instant::now();
         let home = !self.player.has_file();
-        let presented = self.overlay.present(&self.player.mpv, &prims, &mut out.textures_delta, [w as u32, h as u32], out.pixels_per_point, home, &self.player.thumbs, reduce);
+        let presented = self.overlay.present(&self.player.mpv, &prims, &marks, &mut out.textures_delta, [w as u32, h as u32], out.pixels_per_point, home, &self.player.thumbs, reduce);
         if let Some(p) = &mut self.profile {
             let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1000.0;
             p.push([ms(t0, t1), ms(t1, t2), ms(t2, Instant::now())]);
@@ -551,11 +572,11 @@ impl App {
             .get(&egui::ViewportId::ROOT)
             .map(|v| v.repaint_delay)
             .filter(|d| *d < Duration::from_secs(3600))
-            .map(|d| Instant::now() + d.max(Duration::from_millis(8)));
-        // Image pas encore posée (mpv n'avait pas lu la précédente) : on réessaie très vite.
+            .map(|d| Instant::now() + d.max(Duration::from_millis(16)));
+        // Image pas encore posée (mpv n'avait pas lu la précédente) : on la refait dès sa
+        // réponse (qui réveille la boucle), sans tourner en attendant.
         if !presented {
-            let soon = Instant::now() + Duration::from_millis(8);
-            self.next_frame = Some(self.next_frame.map_or(soon, |n| n.min(soon)));
+            self.overlay_wait = Some(self.player.mpv.overlay_done.get());
         }
         // Image nette à la fin du mouvement.
         if let Some(t) = self.last_wheel {
@@ -590,7 +611,13 @@ impl App {
     }
 
     fn run(&mut self) {
-        loop {
+        while self.step(None) {}
+    }
+
+    /// Un tour de boucle : attend le prochain réveil (au plus `limit`), traite, redessine si besoin.
+    /// Faux à la fermeture de mpv.
+    fn step(&mut self, limit: Option<Duration>) -> bool {
+        {
             let now = Instant::now();
             // Réveils : prochaine image prévue, masquage de l'interface après inactivité.
             let hide_at = self.player.activity + if self.player.over_ui { ui::HIDE_AFTER_HOVER } else { ui::HIDE_AFTER } + Duration::from_millis(100);
@@ -601,15 +628,23 @@ impl App {
             if self.visible && hide_at > now {
                 wake = wake.min(hide_at);
             }
+            if let Some(l) = limit {
+                wake = wake.min(now + l);
+            }
             let timeout = if self.dirty { 0.0 } else { wake.saturating_duration_since(now).as_secs_f64() };
+            self.wakeups += 1;
             for c in self.player.mpv.wait(timeout) {
                 if matches!(c, mpv::Change::Shutdown) {
-                    return;
+                    return false;
                 }
                 self.on_change(c);
             }
             while let Ok(m) = self.rx.try_recv() {
                 self.on_message(m);
+            }
+            if self.overlay_wait.is_some_and(|d| self.player.mpv.overlay_done.get() > d) {
+                self.overlay_wait = None;
+                self.dirty = true;
             }
             // Bibliothèque : relecture et miniatures en pause pendant la lecture.
             self.player.library.set_hold(self.player.has_file());
@@ -630,6 +665,7 @@ impl App {
                 self.last_save = Instant::now();
             }
         }
+        true
     }
 }
 
@@ -681,8 +717,12 @@ fn main() {
         rx,
         waker,
         next_frame: None,
+        wakeups: 0,
+        frames: 0,
         dirty: true,
         last_frame: Instant::now(),
+        shown: [0.0; 4],
+        overlay_wait: None,
         visible: false,
         shader_opts: String::new(),
         hover_section: false,
@@ -705,6 +745,10 @@ fn main() {
         }
     }
     if let Ok(mode) = std::env::var("BIOPLAY_BENCH") {
+        if mode == "play" {
+            bench_play(&mut app);
+            return;
+        }
         bench(&mut app, &mode);
         return;
     }
@@ -718,6 +762,110 @@ fn main() {
     app.run();
     app.player.save();
     app.overlay.hide(&app.player.mpv);
+}
+
+/// Temps processeur (ms) du processus entier et du fil principal, lus dans /proc.
+fn cpu_ms() -> (f64, f64) {
+    let read = |p: &str| {
+        let s = std::fs::read_to_string(p).unwrap_or_default();
+        let f: Vec<&str> = s.rsplit_once(')').map_or("", |r| r.1).split_whitespace().collect();
+        let t = |i: usize| f.get(i).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+        (t(11) + t(12)) * 10.0 // utime + stime, en tops de 10 ms
+    };
+    (read("/proc/self/stat"), read("/proc/thread-self/stat"))
+}
+
+/// Mesure de la lecture, sans fenêtre : `BIOPLAY_BENCH=play bioplay film.mkv`. Vraie boucle,
+/// vraies durées ; compte réveils, images dessinées, envois à mpv et temps processeur.
+fn bench_play(app: &mut App) {
+    let screen = |app: &mut App| {
+        let s = &mut app.player.mpv.state;
+        s.osd_w = 2880.0;
+        s.osd_h = 1800.0;
+        s.scale = 2.0;
+    };
+    let t = Instant::now();
+    while app.player.mpv.state.duration <= 0.0 && t.elapsed() < Duration::from_secs(10) {
+        screen(app);
+        app.step(Some(Duration::from_millis(20)));
+    }
+    let secs = std::env::var("BIOPLAY_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(10.0);
+    for phase in ["commandes visibles", "commandes masquées", "sauts → (2 par s)", "→ maintenue (30 par s)"] {
+        // Commandes masquées : souris partie, inactivité ancienne.
+        app.events.push(Event::PointerGone);
+        app.pointer = None;
+        app.player.activity = Instant::now() - Duration::from_secs(10);
+        for _ in 0..20 {
+            screen(app);
+            app.step(Some(Duration::from_millis(20)));
+        }
+        if phase == "commandes visibles" {
+            // Souris bougée au milieu de l'image : les commandes apparaissent.
+            app.events.push(Event::PointerMoved(pos2(720.0, 450.0)));
+            app.player.activity = Instant::now();
+            app.dirty = true;
+            for _ in 0..10 {
+                screen(app);
+                app.step(Some(Duration::from_millis(20)));
+            }
+        }
+        let threads0 = threads_ms();
+        let (w0, f0, s0, (c0, m0)) = (app.wakeups, app.frames, app.overlay.sends, cpu_ms());
+        let start = Instant::now();
+        let mut key = start;
+        while start.elapsed().as_secs_f64() < secs {
+            screen(app);
+            match phase {
+                "commandes visibles" => app.player.activity = Instant::now(),
+                "commandes masquées" => {}
+                _ => {
+                    let every = if phase.contains("30") { 33 } else { 500 };
+                    if Instant::now() >= key {
+                        let state = if phase.contains("30") && key > start { "r" } else { "d" };
+                        app.binding("right", state);
+                        app.dirty = true;
+                        key += Duration::from_millis(every);
+                    }
+                }
+            }
+            app.step(Some(key.saturating_duration_since(Instant::now()).max(Duration::from_millis(1))));
+        }
+        let el = start.elapsed().as_secs_f64();
+        let (c1, m1) = cpu_ms();
+        println!(
+            "{phase:24} réveils {:6.1}/s  images {:5.1}/s  envois {:5.1}/s  CPU processus {:5.1} %  fil principal {:5.1} %  position {:.0} s",
+            (app.wakeups - w0) as f64 / el,
+            (app.frames - f0) as f64 / el,
+            (app.overlay.sends - s0) as f64 / el,
+            (c1 - c0) / el / 10.0,
+            (m1 - m0) / el / 10.0,
+            app.player.mpv.state.position,
+        );
+        // Fils les plus coûteux (par nom), en % d'un cœur.
+        let mut by: std::collections::HashMap<String, f64> = Default::default();
+        for (tid, (name, ms)) in threads_ms() {
+            let before = threads0.get(&tid).map_or(0.0, |t| t.1);
+            *by.entry(name).or_default() += ms - before;
+        }
+        let mut v: Vec<_> = by.into_iter().filter(|(_, ms)| *ms > 0.0).collect();
+        v.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let top: Vec<String> = v.iter().take(6).map(|(n, ms)| format!("{n} {:.1} %", ms / el / 10.0)).collect();
+        println!("{:24}   {}", "", top.join(" · "));
+    }
+}
+
+/// Temps processeur de chaque fil (ms), avec son nom.
+fn threads_ms() -> std::collections::HashMap<String, (String, f64)> {
+    let mut out = std::collections::HashMap::new();
+    for e in std::fs::read_dir("/proc/self/task").into_iter().flatten().flatten() {
+        let s = std::fs::read_to_string(e.path().join("stat")).unwrap_or_default();
+        let Some((head, rest)) = s.rsplit_once(')') else { continue };
+        let name = head.split_once('(').map_or("", |h| h.1).to_owned();
+        let f: Vec<&str> = rest.split_whitespace().collect();
+        let t = |i: usize| f.get(i).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+        out.insert(e.file_name().to_string_lossy().into_owned(), (name, (t(11) + t(12)) * 10.0));
+    }
+    out
 }
 
 /// Mesure du défilement de l'accueil, sans fenêtre : `BIOPLAY_BENCH=grid|list bioplay`.
@@ -744,6 +892,17 @@ fn bench(app: &mut App, mode: &str) {
         }
         screen(app);
         app.frame();
+    }
+    // Capture d'une bulle de saut (vérification) : BIOPLAY_SEEK=-1 ou 1.
+    if let Some(d) = std::env::var("BIOPLAY_SEEK").ok().and_then(|v| v.parse::<f64>().ok()) {
+        app.player.say_seek(d, 754.0, if d > 0.0 { "Next subtitle" } else { "−10 s" });
+        app.player.activity = Instant::now() - Duration::from_secs(10);
+        for _ in 0..12 {
+            std::thread::sleep(Duration::from_millis(20));
+            let _ = app.player.mpv.wait(0.001);
+            screen(app);
+            app.frame();
+        }
     }
     if let Some(f) = std::env::var_os("BIOPLAY_SNAPSHOT") {
         app.overlay.snapshot(Path::new(&f));

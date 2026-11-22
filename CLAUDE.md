@@ -21,7 +21,10 @@ Lecteur vidéo minimal (Android + bureau) construit sur libmpv, interface « ver
   fond, miniatures (mises à l'échelle une fois, copiées par lignes) et interface y sont composés
   par bandes, une par cœur ; pendant un défilement, en demi-résolution agrandie par mpv (`dw/dh`).
   Mesure sans fenêtre : `BIOPLAY_BENCH=grid|list [BIOPLAY_PLACE=sous/dossier]
-  [BIOPLAY_SNAPSHOT=f.png] bioplay [fichier]` (durées par étape, ou capture de l'interface). Relecture en arrière-plan à chaque lancement, rien
+  [BIOPLAY_SNAPSHOT=f.png] bioplay [fichier]` (durées par étape, ou capture de l'interface) ;
+  `BIOPLAY_BENCH=play bioplay --hwdec=auto-copy film.mkv` : vraie boucle, réveils, images, envois
+  et CPU (processus, fils) commandes visibles / masquées / sauts. Redessin seulement de ce qui
+  change, forme par forme (`shape_marks`), et seulement quand l'affichage change (seconde, pixel). Relecture en arrière-plan à chaque lancement, rien
   pendant la lecture.
 
 - Partages réseau (Android, `Smb.kt`, smbj) : adresses `smb://hôte[:port]/partage/chemin`, compte par

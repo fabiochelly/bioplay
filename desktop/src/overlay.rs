@@ -45,6 +45,8 @@ pub struct Overlay {
     /// touche pas (ni réécriture ni réallocation) avant sa réponse.
     sent: [u64; BUFFERS],
     seq: u64,
+    /// Images envoyées à mpv (mesures).
+    pub sends: u64,
     next: usize,
     shown: bool,
     last: Option<Last>,
@@ -71,6 +73,7 @@ impl Overlay {
             buffers: Default::default(),
             sent: [0; BUFFERS],
             seq: 0,
+            sends: 0,
             next: 0,
             shown: false,
             last: None,
@@ -112,6 +115,7 @@ impl Overlay {
         &mut self,
         mpv: &Mpv,
         prims: &[egui::ClippedPrimitive],
+        marks: &[(u64, Rect)],
         textures: &mut egui::TexturesDelta,
         size: [u32; 2],
         ppp: f32,
@@ -133,7 +137,7 @@ impl Overlay {
             return false;
         }
         let t0 = std::time::Instant::now();
-        let drawn = self.render(prims, textures, rsize, ppp / r as f32, home, thumbs);
+        let drawn = self.render(prims, Some(marks), textures, rsize, ppp / r as f32, home, thumbs);
         let t1 = std::time::Instant::now();
         let dbg = std::env::var_os("BIOPLAY_DEBUG_DAMAGE").is_some();
         match drawn {
@@ -146,6 +150,7 @@ impl Overlay {
                 // Sans attendre : mpv copie l'image en traitant la commande ; le tampon reste
                 // intact jusqu'à sa réponse (voir `sent`).
                 self.seq += 1;
+                self.sends += 1;
                 self.sent[i] = self.seq;
                 mpv.command_reply(OVERLAY_TAG + self.seq, &[
                     "overlay-add", "0", &dx.to_string(), &dy.to_string(), &addr, "0", "bgra",
@@ -161,7 +166,7 @@ impl Overlay {
     }
 
     /// Remplit le prochain tampon ; ne touche pas à mpv.
-    fn render(&mut self, prims: &[egui::ClippedPrimitive], textures: &mut egui::TexturesDelta, size: [u32; 2], ppp: f32, backdrop: bool, thumbs: &[Thumb]) -> Drawn {
+    fn render(&mut self, prims: &[egui::ClippedPrimitive], marks: Option<&[(u64, Rect)]>, textures: &mut egui::TexturesDelta, size: [u32; 2], ppp: f32, backdrop: bool, thumbs: &[Thumb]) -> Drawn {
         self.update_textures(textures);
         let (w, h) = (size[0].max(1) as i32, size[1].max(1) as i32);
         // Zone dessinée : union des maillages, bornée par leurs rectangles de découpe.
@@ -254,7 +259,21 @@ impl Overlay {
         if self.scaled.len() > 160 {
             self.scaled.retain(|k, _| used.contains(k));
         }
-        let mut all_info = prims_info.clone();
+        // Ce qui a changé, élément par élément (texte, plaque, icône) quand les empreintes des
+        // formes sont fournies : egui fond toute une zone en un seul maillage, si bien qu'une
+        // seconde de l'horloge ferait sinon redessiner toute la barre.
+        let to_px = |r: Rect| {
+            [
+                ((r.min.x * ppp).floor() as i32 - 2 - x0).clamp(0, bw as i32),
+                ((r.min.y * ppp).floor() as i32 - 2 - y0).clamp(0, bh as i32),
+                ((r.max.x * ppp).ceil() as i32 + 2 - x0).clamp(0, bw as i32),
+                ((r.max.y * ppp).ceil() as i32 + 2 - y0).clamp(0, bh as i32),
+            ]
+        };
+        let mut all_info = match marks {
+            Some(m) => m.iter().map(|(h, r)| (*h, to_px(*r))).collect(),
+            None => prims_info.clone(),
+        };
         for (r, c, k) in &placed {
             let mut hsh = std::collections::hash_map::DefaultHasher::new();
             std::hash::Hash::hash(&(k, r, c), &mut hsh);
@@ -310,7 +329,10 @@ impl Overlay {
         let back: Option<&[u8]> = if backdrop { self.backdrop.iter().find(|b| (b.0, b.1) == (w as usize, h as usize)).map(|b| b.2.as_slice()) } else { None };
         let (textures, scaled) = (&self.textures, &self.scaled);
         // Dessin par bandes horizontales, une par cœur : chaque bande fait tout pour ses lignes.
-        let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8);
+        // Petite zone (une seconde de l'horloge, un bouton survolé) : peu de fils, car chaque fil
+        // reparcourt les triangles et coûte du processeur pour rien (≈ un fil par 200 000 pixels).
+        let zone_px = (zone[2] - zone[0]).max(0) as usize * (zone[3] - zone[1]).max(0) as usize;
+        let threads = (zone_px / 200_000 + 1).min(std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8));
         let band_rows = bh.div_ceil(threads).max(16);
         std::thread::scope(|sc| {
             for (bi, band) in buf.chunks_mut(stride * band_rows).enumerate() {
@@ -480,6 +502,54 @@ impl Overlay {
 }
 
 /// Zone de la superposition en cours de dessin (BGRA prémultiplié).
+/// Empreinte et emprise (points) de chaque forme egui, avant leur fusion en maillages : sert à
+/// ne redessiner que les éléments qui ont changé. Les textes sont identifiés par leur contenu
+/// (`LayoutJob`), pas par l'adresse de leur mise en page (réutilisable par un autre texte).
+pub fn shape_marks(shapes: &[egui::epaint::ClippedShape]) -> Vec<(u64, Rect)> {
+    use std::hash::{Hash, Hasher};
+    use std::io::Write;
+    struct W<'a>(&'a mut std::collections::hash_map::DefaultHasher);
+    impl Write for W<'_> {
+        fn write(&mut self, b: &[u8]) -> std::io::Result<usize> {
+            self.0.write(b);
+            Ok(b.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+    let mut out = Vec::with_capacity(shapes.len());
+    let mut stack: Vec<(Rect, &egui::Shape)> = shapes.iter().map(|c| (c.clip_rect, &c.shape)).rev().collect();
+    while let Some((clip, shape)) = stack.pop() {
+        if let egui::Shape::Vec(v) = shape {
+            stack.extend(v.iter().rev().map(|s| (clip, s)));
+            continue;
+        }
+        if matches!(shape, egui::Shape::Noop) {
+            continue;
+        }
+        let r = shape.visual_bounding_rect().intersect(clip);
+        if !r.is_positive() {
+            continue;
+        }
+        let mut h = std::collections::hash_map::DefaultHasher::new();
+        for f in [clip.min.x, clip.min.y, clip.max.x, clip.max.y] {
+            f.to_bits().hash(&mut h);
+        }
+        match shape {
+            egui::Shape::Text(t) => {
+                t.galley.job.hash(&mut h);
+                let _ = write!(W(&mut h), "{:?}{:?}{:?}{:?}{:?}{:?}", t.pos, t.underline, t.fallback_color, t.override_text_color, t.opacity_factor, t.angle);
+            }
+            other => {
+                let _ = write!(W(&mut h), "{other:?}");
+            }
+        }
+        out.push((h.finish(), r));
+    }
+    out
+}
+
 /// Empreinte d'un maillage : sommets, indices, texture et découpe.
 fn mesh_hash(clip: Rect, m: &egui::Mesh) -> u64 {
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
@@ -649,6 +719,11 @@ mod tests {
     /// Une image d'interface : un grand panneau, du texte, et une rangée de boutons dont
     /// `lit` est éclairé (comme un survol).
     fn frame(ctx: &egui::Context, lit: usize) -> (Vec<egui::ClippedPrimitive>, egui::TexturesDelta) {
+        let (p, t, _) = frame_marks(ctx, lit);
+        (p, t)
+    }
+
+    fn frame_marks(ctx: &egui::Context, lit: usize) -> (Vec<egui::ClippedPrimitive>, egui::TexturesDelta, Vec<(u64, Rect)>) {
         let raw = egui::RawInput {
             screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(640.0, 400.0))),
             ..Default::default()
@@ -663,8 +738,47 @@ mod tests {
                 p.circle_filled(c, 20.0, Color32::from_white_alpha(a));
                 p.circle_stroke(c, 20.0, egui::Stroke::new(1.0, Color32::from_white_alpha(40)));
             }
+            // Horloge qui change (glyphes déjà connus grâce à la ligne fixe).
+            p.text(egui::pos2(40.0, 80.0), egui::Align2::LEFT_TOP, "0123456789:−", egui::FontId::proportional(13.0), Color32::WHITE);
+            p.text(egui::pos2(40.0, 200.0), egui::Align2::LEFT_TOP, format!("1:2{lit}"), egui::FontId::proportional(13.0), Color32::WHITE);
+            p.text(egui::pos2(560.0, 200.0), egui::Align2::RIGHT_TOP, format!("−0:3{lit}"), egui::FontId::proportional(13.0), Color32::WHITE);
         });
-        (ctx.tessellate(out.shapes, out.pixels_per_point), out.textures_delta)
+        let marks = shape_marks(&out.shapes);
+        (ctx.tessellate(out.shapes, out.pixels_per_point), out.textures_delta, marks)
+    }
+
+    #[test]
+    fn partial_redraw_by_shape_matches_full() {
+        let ctx = egui::Context::default();
+        crate::ui::fonts(&ctx);
+        let ppp = 2.0;
+        ctx.set_pixels_per_point(ppp);
+        let size = [1280, 800];
+        let mut partial = Overlay::new().unwrap();
+        let mut full = Overlay::new().unwrap();
+        // Toutes les variantes une fois : leurs glyphes entrent dans l'atlas.
+        for lit in [1, 2, 4, 0, 0] {
+            let (p, mut t, m) = frame_marks(&ctx, lit);
+            partial.render(&p, Some(&m), &mut t, size, ppp, false, &[]);
+            full.render(&p, None, &mut t, size, ppp, false, &[]);
+        }
+        let mut smaller = 0;
+        for lit in [1, 4, 4, 2, 0] {
+            let (p, mut t, m) = frame_marks(&ctx, lit);
+            assert!(t.set.is_empty(), "les glyphes ne doivent pas changer");
+            let a = partial.render(&p, Some(&m), &mut t, size, ppp, false, &[]);
+            full.last = None;
+            full.render(&p, None, &mut t, size, ppp, false, &[]);
+            let pa = &partial.buffers[partial.last.as_ref().unwrap().buffer];
+            let fa = &full.buffers[full.last.as_ref().unwrap().buffer];
+            // Découpage en bandes différent (nombre de fils selon la zone) : arrondis à ±1 près.
+            let worst = pa.iter().zip(fa.iter()).map(|(a, b)| (*a as i32 - *b as i32).abs()).max().unwrap_or(0);
+            assert!(pa.len() == fa.len() && worst <= 1, "rendu partiel (par forme) différent du rendu complet ({lit}) : écart {worst}");
+            if matches!(a, Drawn::New { .. }) {
+                smaller += 1;
+            }
+        }
+        assert!(smaller >= 3);
     }
 
     #[test]
@@ -677,17 +791,17 @@ mod tests {
         let mut partial = Overlay::new().unwrap();
         let mut full = Overlay::new().unwrap();
         // Quelques images pour que les polices et la mise en page se stabilisent.
-        for _ in 0..3 {
-            let (p, mut t) = frame(&ctx, 0);
-            partial.render(&p, &mut t, size, ppp, false, &[]);
-            full.render(&p, &mut t, size, ppp, false, &[]);
+        for lit in [1, 2, 4, 0, 0] {
+            let (p, mut t) = frame(&ctx, lit);
+            partial.render(&p, None, &mut t, size, ppp, false, &[]);
+            full.render(&p, None, &mut t, size, ppp, false, &[]);
         }
         for lit in [1, 4, 4, 2] {
             let (p, mut t) = frame(&ctx, lit);
             assert!(t.set.is_empty(), "les glyphes ne doivent pas changer");
-            let a = partial.render(&p, &mut t, size, ppp, false, &[]);
+            let a = partial.render(&p, None, &mut t, size, ppp, false, &[]);
             full.last = None;
-            full.render(&p, &mut t, size, ppp, false, &[]);
+            full.render(&p, None, &mut t, size, ppp, false, &[]);
             let pa = &partial.buffers[partial.last.as_ref().unwrap().buffer];
             let fa = &full.buffers[full.last.as_ref().unwrap().buffer];
             if !matches!(a, Drawn::Same) {
@@ -733,7 +847,7 @@ mod bench {
             let prims = ctx.tessellate(out.shapes, out.pixels_per_point);
             let mut t = out.textures_delta;
             let s = std::time::Instant::now();
-            o.render(&prims, &mut t, size, ppp, true, &thumbs);
+            o.render(&prims, None, &mut t, size, ppp, true, &thumbs);
             times.push(s.elapsed().as_secs_f64() * 1000.0);
         }
         eprintln!("rendu par image (ms) : {times:.1?}");
@@ -766,7 +880,7 @@ mod look {
             });
             prims = ctx.tessellate(out.shapes, out.pixels_per_point);
             tex = out.textures_delta;
-            o.render(&prims, &mut tex, [1120, 360], ppp, false, &[]);
+            o.render(&prims, None, &mut tex, [1120, 360], ppp, false, &[]);
         }
         let buf = &o.buffers[o.last.as_ref().unwrap().buffer];
         let l = o.last.as_ref().unwrap();

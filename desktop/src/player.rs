@@ -48,6 +48,10 @@ pub struct Player {
     pub message: Option<(String, Instant)>,
     /// Jauge du message en cours (valeur, maximum de l'échelle) : le volume.
     pub gauge: Option<(f64, f64)>,
+    /// Message d'un saut : sens (−1, +1), dessiné en icône devant l'heure atteinte, et le détail
+    /// (« +10 s », « Sous-titre suivant ») en petit dessous.
+    pub seek_dir: Option<i32>,
+    pub seek_detail: String,
     pub panel: Option<Panel>,
     pub scrub: Option<Scrub>,
     pub activity: Instant,
@@ -75,8 +79,8 @@ pub struct Player {
 
 /// Durée d'un message, de son fondu d'entrée et de son fondu de sortie, en secondes.
 pub const MESSAGE_LIFE: f32 = 1.05;
-const MESSAGE_IN: f32 = 0.08;
-const MESSAGE_OUT: f32 = 0.25;
+pub const MESSAGE_IN: f32 = 0.08;
+pub const MESSAGE_OUT: f32 = 0.25;
 
 /// Opacité d'un message affiché depuis [age] secondes (0 une fois sa durée passée).
 pub fn message_alpha(age: f32) -> f32 {
@@ -97,6 +101,8 @@ impl Player {
             indexing: false,
             message: None,
             gauge: None,
+            seek_dir: None,
+            seek_detail: String::new(),
             panel: None,
             scrub: None,
             activity: Instant::now(),
@@ -153,12 +159,22 @@ impl Player {
 
     pub fn say(&mut self, text: impl Into<String>) {
         self.gauge = None;
+        self.seek_dir = None;
         self.post(text.into());
+    }
+
+    /// Saut : l'heure atteinte dans le film, avec une icône du sens.
+    pub fn say_seek(&mut self, dir: f64, at: f64, detail: impl Into<String>) {
+        self.gauge = None;
+        self.seek_dir = Some(if dir < 0.0 { -1 } else { 1 });
+        self.seek_detail = detail.into();
+        self.post(clock(at.max(0.0)));
     }
 
     /// Message accompagné d'une jauge : [value] sur une échelle qui va jusqu'à [max] (au moins 100).
     pub fn say_gauge(&mut self, text: impl Into<String>, value: f64, max: f64) {
         self.gauge = Some((value, max));
+        self.seek_dir = None;
         self.post(text.into());
     }
 
@@ -231,7 +247,7 @@ impl Player {
         if steps == 0 {
             return;
         }
-        match self.cue_after(steps, self.mpv.state.position) {
+        match self.cue_after(steps, self.mpv.pos()) {
             Some(c) => self.mpv.seek(self.cue_time(&c), true),
             None => {
                 self.mpv.own_seeks.set(self.mpv.own_seeks.get() + 1);
@@ -242,21 +258,24 @@ impl Player {
 
     /// Flèches : saut à la ligne suivante (ou précédente), limité à 10 s. Sans index de
     /// sous-titres (MP4, AVI…), simple saut de 10 s.
-    pub fn step_line_or_ten(&mut self, dir: i32) {
-        let pos = self.mpv.state.position;
+    pub fn step_line_or_ten(&mut self, dir: i32, repeat: bool) {
+        let pos = self.mpv.pos();
         let ten = pos + 10.0 * dir as f64;
         let line = self.cue_after(dir, pos).map(|c| self.cue_time(&c)).filter(|t| {
             let ahead = (t - pos) * dir as f64;
             ahead > 0.05 && ahead <= 10.0
         });
+        // Touche maintenue, sauts de 10 s : à l'image clé (≈ 30 ms au lieu de 200 à 700 ms pour
+        // un saut précis), l'image suit le doigt ; un appui simple reste précis.
         let target = line.unwrap_or(ten);
-        self.mpv.seek(target, true);
-        self.say(match (line.is_some(), dir > 0) {
-            (true, true) => crate::i18n::tr("Ligne suivante", "Next line").to_string(),
-            (true, false) => crate::i18n::tr("Ligne précédente", "Previous line").to_string(),
-            (false, true) => "+10 s".into(),
-            (false, false) => "−10 s".into(),
-        });
+        self.mpv.seek(target, line.is_some() || !repeat);
+        let tr = crate::i18n::tr;
+        let detail = match (line.is_some(), dir > 0) {
+            (true, true) => tr("Sous-titre suivant", "Next subtitle").to_string(),
+            (true, false) => tr("Sous-titre précédent", "Previous subtitle").to_string(),
+            (false, _) => delta(target - pos),
+        };
+        self.say_seek(dir as f64, target, detail);
     }
 
     pub fn preview(&self, zone: Zone, steps: i32, from: f64) -> Scrub {

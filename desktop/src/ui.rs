@@ -10,7 +10,7 @@ use egui::{
 
 use crate::i18n::{en, tr};
 use crate::mpv::{track_detail, track_label};
-use crate::player::{clock, message_alpha, speed_label, Panel, Player, Zone, MESSAGE_LIFE};
+use crate::player::{clock, message_alpha, speed_label, Panel, Player, Zone, MESSAGE_IN, MESSAGE_LIFE, MESSAGE_OUT};
 
 /// Le contrôleur s'efface 1,5 s après le dernier mouvement de souris…
 pub const HIDE_AFTER: Duration = Duration::from_millis(1500);
@@ -21,7 +21,6 @@ pub const INK: Color32 = Color32::from_rgb(247, 248, 250);
 pub const INK2: Color32 = Color32::from_rgba_premultiplied(181, 182, 184, 184);
 pub const FAINT: Color32 = Color32::from_rgba_premultiplied(99, 99, 100, 102);
 pub const ACCENT: Color32 = Color32::from_rgb(143, 216, 255);
-pub const ACCENT_DEEP: Color32 = Color32::from_rgb(79, 178, 240);
 
 pub fn fonts(ctx: &egui::Context) {
     // Inter seule : les polices par défaut d'egui (Ubuntu, Hack, emoji) ne sont pas chargées.
@@ -126,10 +125,12 @@ pub fn draw(ctx: &egui::Context, p: &mut Player, ppp: f32) -> (Vec<Plate>, Vec<A
         }
     }
     plates.alpha = 1.0;
+    // Une seule bulle à la fois : pendant un glissé, l'heure visée remplace les messages.
     if let Some(s) = &p.scrub {
-        scrub_osd(ctx, p, s, &mut plates, screen);
+        scrub_osd(ctx, &mut plates, s, screen);
+    } else {
+        toast(ctx, p, &mut plates, screen);
     }
-    toast(ctx, p, &mut plates, screen);
     (plates.list, actions)
 }
 
@@ -376,13 +377,14 @@ fn seekbar(ui: &mut Ui, p: &mut Player, rect: Rect) {
     if cache > f {
         painter.rect_filled(Rect::from_min_size(track.min, vec2(track.width() * cache, h)), cr, Color32::from_white_alpha(40));
     }
-    let done = Rect::from_min_size(track.min, vec2(track.width() * f, h));
-    gradient(painter, done, ACCENT_DEEP, Color32::WHITE, cr);
+    // Partie lue : à plat, du bleu des contours de boutons ; le curseur n'apparaît qu'au survol.
     let x = track.min.x + track.width() * f;
-    if hover {
-        painter.circle_filled(pos2(x, track.center().y), h * 2.2, ACCENT.gamma_multiply(0.25));
+    if f > 0.0 {
+        painter.rect_filled(Rect::from_min_max(track.min, pos2(x.max(track.min.x + h), track.max.y)), cr, ACCENT);
     }
-    painter.circle_filled(pos2(x, track.center().y), h * 1.15, Color32::WHITE);
+    if hover {
+        painter.circle_filled(pos2(x, track.center().y), h * 1.3, Color32::WHITE);
+    }
     // Survol : l'heure visée et la ligne de sous-titre à ce moment.
     if let Some(q) = r.hover_pos() {
         let t = frac_at(q.x) * dur;
@@ -397,27 +399,6 @@ fn seekbar(ui: &mut Ui, p: &mut Player, rect: Rect) {
         painter.rect_filled(bubble, CornerRadius::same(12), Color32::from_black_alpha(190));
         painter.galley(bubble.center() - g.size() / 2.0, g, INK);
     }
-}
-
-fn gradient(painter: &egui::Painter, r: Rect, a: Color32, b: Color32, cr: CornerRadius) {
-    if r.width() < 1.0 {
-        return;
-    }
-    // Dégradé horizontal : mesh à 4 sommets, coins arrondis par un rectangle plein à gauche.
-    painter.rect_filled(Rect::from_min_size(r.min, vec2(r.height().min(r.width()), r.height())), cr, a);
-    let inner = Rect::from_min_max(pos2(r.min.x + r.height() / 2.0, r.min.y), r.max);
-    if inner.width() <= 0.0 {
-        return;
-    }
-    let mut mesh = egui::Mesh::default();
-    mesh.colored_vertex(inner.left_top(), a);
-    mesh.colored_vertex(inner.right_top(), b);
-    mesh.colored_vertex(inner.right_bottom(), b);
-    mesh.colored_vertex(inner.left_bottom(), a);
-    mesh.add_triangle(0, 1, 2);
-    mesh.add_triangle(0, 2, 3);
-    painter.add(Shape::mesh(mesh));
-    painter.circle_filled(pos2(r.max.x, r.center().y), r.height() / 2.0, b);
 }
 
 // --- Boutons et icônes ----------------------------------------------------------------------------
@@ -861,7 +842,9 @@ fn slider(ui: &mut Ui, value: f64, min: f64, max: f64, step: f64, marks: &[f64])
     let track = Rect::from_center_size(r.center(), vec2(r.width(), h));
     let painter = ui.painter();
     painter.rect_filled(track, CornerRadius::same(4), Color32::from_white_alpha(40));
-    gradient(painter, Rect::from_min_size(track.min, vec2(track.width() * f, h)), ACCENT_DEEP, ACCENT, CornerRadius::same(4));
+    if f > 0.0 {
+        painter.rect_filled(Rect::from_min_size(track.min, vec2((track.width() * f).max(h), h)), CornerRadius::same(4), ACCENT);
+    }
     for m in marks {
         let x = track.min.x + track.width() * ((m - min) / (max - min)) as f32;
         painter.circle_filled(pos2(x, track.center().y), 2.0, Color32::from_white_alpha(140));
@@ -1027,60 +1010,72 @@ fn toast(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, screen: Rect)
             segment(inner.min.x + w100 + gap, inner.width() - w100 - gap, 100.0, max, ACCENT);
         }
     } else {
-        let g = ctx.fonts_mut(|f| f.layout_no_wrap(text.clone(), semi(15.0), INK));
-        let size = g.size() + vec2(40.0, 22.0);
-        let rect = Rect::from_center_size(pos2(screen.center().x, top + size.y / 2.0), size);
-        plates.alpha = a;
-        plates.add(rect, size.y / 2.0, 0.4);
-        plates.alpha = 1.0;
-        egui::Area::new(Id::new("toast")).order(Order::Tooltip).fixed_pos(rect.min).interactable(false).show(ctx, |ui| {
-            ui.set_opacity(a);
-            ui.painter().galley(rect.center() - g.size() / 2.0, g, INK);
-        });
+        let detail = if p.seek_dir.is_some() { p.seek_detail.clone() } else { String::new() };
+        bubble(ctx, plates, screen, a, p.seek_dir, text.clone(), detail);
     }
-    ctx.request_repaint();
+    // Images seulement pendant les fondus ; entre les deux, la bulle est immobile.
+    let hold_end = MESSAGE_LIFE - MESSAGE_OUT;
+    if age >= MESSAGE_IN && age < hold_end {
+        ctx.request_repaint_after(std::time::Duration::from_secs_f32(hold_end - age));
+    } else {
+        ctx.request_repaint();
+    }
 }
 
-fn scrub_osd(ctx: &egui::Context, p: &Player, s: &crate::player::Scrub, plates: &mut Plates, screen: Rect) {
+/// Glissé ou molette sur l'image : l'heure visée, avec le sens du saut.
+fn scrub_osd(ctx: &egui::Context, plates: &mut Plates, s: &crate::player::Scrub, screen: Rect) {
+    let dir = (s.steps != 0).then(|| s.steps.signum());
     let sign = if s.steps > 0 { "+" } else if s.steps < 0 { "−" } else { "" };
     let n = s.steps.abs();
-    let head = match s.zone {
+    let detail = match s.zone {
         Zone::Line if n == 0 => tr("Sous-titres", "Subtitles").to_string(),
-        Zone::Line => format!("{sign}{n} {}", if n > 1 { tr("lignes", "lines") } else { tr("ligne", "line") }),
+        Zone::Line => format!("{sign}{n} {}", if n > 1 { tr("sous-titres", "subtitles") } else { tr("sous-titre", "subtitle") }),
         Zone::Ten if n == 0 => "10 s".into(),
         Zone::Ten => format!("{sign}{} s", n * 10),
         Zone::Minute if n == 0 => "1 min".into(),
         Zone::Minute => format!("{sign}{n} min"),
     };
-    let sub = if s.zone == Zone::Line && s.cue.is_none() && p.sub_index().is_none() {
-        tr("saut par mpv", "jump via mpv").to_string()
-    } else {
-        format!("{}  /  {}", clock(s.target), clock(p.mpv.state.duration))
-    };
-    let w = 520.0f32.min(screen.width() - 48.0);
-    let id = Id::new("scrub");
-    let h: f32 = ctx.data(|d| d.get_temp(id)).unwrap_or(150.0);
-    let rect = Rect::from_center_size(screen.center(), vec2(w, h));
-    plates.add(rect, 28.0, 0.45);
-    let out = egui::Area::new(id).order(Order::Tooltip).fixed_pos(rect.min).interactable(false).show(ctx, |ui| {
-        ui.set_width(w);
-        egui::Frame::NONE.inner_margin(egui::Margin::symmetric(26, 18)).show(ui, |ui| {
-            ui.set_width(w - 52.0);
-            ui.vertical_centered(|ui| {
-                ui.label(egui::RichText::new(head).font(semi(30.0)).color(INK));
-                ui.label(egui::RichText::new(sub).font(med(15.0)).color(INK2));
-                if let Some(c) = &s.cue {
-                    ui.add_space(8.0);
-                    ui.add(egui::Label::new(egui::RichText::new(&c.text).font(med(17.0)).color(ACCENT)).wrap());
-                }
-            });
-        });
+    bubble(ctx, plates, screen, 1.0, dir, clock(s.target), detail);
+}
+
+/// Bulle en haut de l'image : un texte, précédé d'une icône ⏩ / ⏪ pour un saut.
+fn bubble(ctx: &egui::Context, plates: &mut Plates, screen: Rect, a: f32, dir: Option<i32>, text: String, detail: String) {
+    let g = ctx.fonts_mut(|f| f.layout_no_wrap(text, semi(15.0), INK));
+    // Détail (« +10 s », « Sous-titre suivant ») : plus petit et plus discret, sous l'heure.
+    let d = (!detail.is_empty()).then(|| ctx.fonts_mut(|f| f.layout_no_wrap(detail, med(11.5), INK2)));
+    let icon = if dir.is_some() { 22.0 } else { 0.0 };
+    let text_w = g.size().x.max(d.as_ref().map_or(0.0, |d| d.size().x));
+    let text_h = g.size().y + d.as_ref().map_or(0.0, |d| d.size().y);
+    let size = vec2(text_w + 40.0 + icon, text_h + 22.0);
+    let rect = Rect::from_center_size(pos2(screen.center().x, screen.min.y + 30.0 + size.y / 2.0), size);
+    let radius = if d.is_some() { 20.0 } else { size.y / 2.0 };
+    plates.alpha = a;
+    plates.add(rect, radius, 0.4);
+    plates.alpha = 1.0;
+    egui::Area::new(Id::new("toast")).order(Order::Tooltip).fixed_pos(rect.min).interactable(false).show(ctx, |ui| {
+        ui.set_opacity(a);
+        let painter = ui.painter();
+        let left = rect.min.x + 20.0 + icon;
+        let top = rect.center().y - text_h / 2.0;
+        if let Some(dir) = dir {
+            // Double chevron en traits fins (dessiné, pas un caractère), pointé dans le sens du saut,
+            // à hauteur de l'heure.
+            let (h, w, gap) = (11.0f32, 5.5f32, 6.0f32);
+            let cy = top + g.size().y / 2.0;
+            let x0 = rect.min.x + 21.0;
+            let stroke = Stroke::new(1.6, ACCENT);
+            for k in 0..2 {
+                let x = x0 + k as f32 * gap;
+                let (tip, base) = if dir > 0 { (x + w, x) } else { (x, x + w) };
+                painter.add(Shape::line(vec![pos2(base, cy - h / 2.0), pos2(tip, cy), pos2(base, cy + h / 2.0)], stroke));
+            }
+        }
+        let gy = g.size().y;
+        painter.galley(pos2(left, top), g, INK);
+        if let Some(d) = d {
+            painter.galley(pos2(left, top + gy), d, INK2);
+        }
     });
-    let measured = out.response.rect.height();
-    if (measured - h).abs() > 0.5 {
-        ctx.data_mut(|d| d.insert_temp(id, measured));
-        ctx.request_repaint();
-    }
 }
 
 // --- Accueil -------------------------------------------------------------------------------------
