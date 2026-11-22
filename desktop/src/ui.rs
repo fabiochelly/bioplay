@@ -21,6 +21,9 @@ pub const INK: Color32 = Color32::from_rgb(247, 248, 250);
 pub const INK2: Color32 = Color32::from_rgba_premultiplied(181, 182, 184, 184);
 pub const FAINT: Color32 = Color32::from_rgba_premultiplied(99, 99, 100, 102);
 pub const ACCENT: Color32 = Color32::from_rgb(143, 216, 255);
+/// Partie lue de la barre de progression : bleu électrique, plus saturé que l'accent (un trait
+/// fin sur une piste claire paraissait trop pâle).
+pub const PROGRESS: Color32 = Color32::from_rgb(0x2E, 0x9B, 0xFF);
 
 pub fn fonts(ctx: &egui::Context) {
     // Inter seule : les polices par défaut d'egui (Ubuntu, Hack, emoji) ne sont pas chargées.
@@ -107,7 +110,7 @@ impl Plates {
 
 pub fn draw(ctx: &egui::Context, p: &mut Player, ppp: f32) -> (Vec<Plate>, Vec<Action>) {
     let painter = ctx.layer_painter(egui::LayerId::new(Order::Background, Id::new("plates")));
-    let mut plates = Plates { list: Vec::new(), ppp, alpha: 1.0, painter, opaque: !p.has_file() };
+    let mut plates = Plates { list: Vec::new(), ppp, alpha: 1.0, painter, opaque: !p.has_file() || p.force_opaque };
     let mut actions = Vec::new();
     let screen = ctx.content_rect();
 
@@ -123,7 +126,9 @@ pub fn draw(ctx: &egui::Context, p: &mut Player, ppp: f32) -> (Vec<Plate>, Vec<A
     // pas indéfiniment : après 3 s d'immobilité elle s'efface quand même (reprise de lecture).
     let hovering = p.over_ui && p.activity.elapsed() < HIDE_AFTER_HOVER;
     let show = !idle || hovering || p.mpv.state.paused || p.panel.is_some() || p.scrub.is_some();
-    let alpha = ctx.animate_bool_with_time(Id::new("overlay"), show, if show { 0.14 } else { 0.35 });
+    // Apparition et disparition instantanées (pas de fondu : chaque image d'un fondu redessinait
+    // toute la barre).
+    let alpha = if show { 1.0 } else { 0.0 };
 
     surface(ctx, p, screen);
 
@@ -373,10 +378,10 @@ fn seekbar(ui: &mut Ui, p: &mut Player, rect: Rect) {
     if cache > f {
         painter.rect_filled(Rect::from_min_size(track.min, vec2(track.width() * cache, h)), cr, Color32::from_white_alpha(40));
     }
-    // Partie lue : à plat, du bleu des contours de boutons ; le curseur n'apparaît qu'au survol.
+    // Partie lue : à plat, bleu électrique ; le curseur n'apparaît qu'au survol.
     let x = track.min.x + track.width() * f;
     if f > 0.0 {
-        painter.rect_filled(Rect::from_min_max(track.min, pos2(x.max(track.min.x + h), track.max.y)), cr, ACCENT);
+        painter.rect_filled(Rect::from_min_max(track.min, pos2(x.max(track.min.x + h), track.max.y)), cr, PROGRESS);
     }
     if hover {
         painter.circle_filled(pos2(x, track.center().y), h * 1.3, Color32::WHITE);
@@ -1214,7 +1219,7 @@ fn thumbnail(ui: &mut Ui, p: &mut Player, rec: &mut Rec, v: &crate::library::Vid
         if f > 0.0 {
             let wf = (rail.width() * f).max(4.0);
             fill = wf.round() as u32;
-            rec.rect_filled(Rect::from_min_size(rail.min, vec2(wf, 4.0)), CornerRadius::same(2), ACCENT);
+            rec.rect_filled(Rect::from_min_size(rail.min, vec2(wf, 4.0)), CornerRadius::same(2), PROGRESS);
         }
     }
     fill

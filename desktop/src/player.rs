@@ -72,6 +72,8 @@ pub struct Player {
     pub over_ui: bool,
     /// Mesure : position de défilement imposée à la grille (`BIOPLAY_SCROLLTEST`).
     pub test_scroll: Option<f32>,
+    /// Mesure : barre de lecture opaque au lieu du verre (`BIOPLAY_GLASSTEST`).
+    pub force_opaque: bool,
     /// Dernières valeurs annoncées : un message seulement quand l'utilisateur change quelque chose.
     pub shown: HashMap<&'static str, f64>,
     pub loaded_at: Option<Instant>,
@@ -123,6 +125,7 @@ impl Player {
             positions,
             over_ui: false,
             test_scroll: None,
+            force_opaque: false,
             shown: HashMap::new(),
             loaded_at: None,
             sub_scale: 1.0,

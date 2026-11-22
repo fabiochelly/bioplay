@@ -747,6 +747,9 @@ impl App {
         if std::env::var_os("BIOPLAY_SCROLLTEST").is_some() {
             return scroll_test(self);
         }
+        if std::env::var_os("BIOPLAY_GLASSTEST").is_some() {
+            return glass_test(self);
+        }
         while self.step(None) {}
     }
 
@@ -1021,6 +1024,57 @@ fn scroll_test(app: &mut App) {
     for (n, ms) in v.iter().take(10) {
         println!("  {n} {:.1} %", ms / el / 10.0);
     }
+}
+
+/// Mesure en vrai du coût du verre pendant la lecture (`BIOPLAY_GLASSTEST=1 bioplay film`) :
+/// barre affichée 6 s avec le verre, puis 6 s opaque ; pour chacune, temps de carte graphique
+/// moyen par image (passes de rendu de mpv, `vo-passes`), dont le verre, et images sautées ou
+/// en retard.
+fn glass_test(app: &mut App) {
+    let t = Instant::now();
+    while app.player.mpv.state.duration <= 0.0 && t.elapsed() < Duration::from_secs(10) {
+        if !app.step(Some(Duration::from_millis(50))) {
+            return;
+        }
+    }
+    let num = |app: &App, k: &str| app.player.mpv.get(k).and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0);
+    for (name, opaque) in [("verre", false), ("opaque", true)] {
+        app.player.force_opaque = opaque;
+        app.player.activity = Instant::now();
+        app.dirty = true;
+        // Laisse la barre apparaître et les mesures de mpv se stabiliser.
+        let warm = Instant::now();
+        while warm.elapsed() < Duration::from_secs(2) {
+            app.player.activity = Instant::now();
+            if !app.step(Some(Duration::from_millis(50))) {
+                return;
+            }
+        }
+        let (d0, l0) = (num(app, "frame-drop-count"), num(app, "vo-delayed-frame-count"));
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_secs(6) {
+            app.player.activity = Instant::now();
+            if !app.step(Some(Duration::from_millis(50))) {
+                return;
+            }
+        }
+        let (d1, l1) = (num(app, "frame-drop-count"), num(app, "vo-delayed-frame-count"));
+        let mut total = 0.0;
+        let mut glass = 0.0;
+        if let Some(v) = app.player.mpv.get("vo-passes").and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok()) {
+            for p in v.get("fresh").and_then(|f| f.as_array()).into_iter().flatten() {
+                let avg = p.get("avg").and_then(|x| x.as_f64()).unwrap_or(0.0) / 1e6;
+                let desc = p.get("desc").and_then(|x| x.as_str()).unwrap_or("");
+                total += avg;
+                if desc.contains("bioplay glass") {
+                    glass += avg;
+                }
+            }
+        }
+        println!("{name:7} : carte graphique {total:.2} ms par image (verre {glass:.2} ms) ; images sautées {:.0}, en retard {:.0} en 6 s", d1 - d0, l1 - l0);
+    }
+    app.player.mpv.command(&["quit"]);
+    while app.step(Some(Duration::from_millis(50))) {}
 }
 
 /// Temps processeur (ms) du processus entier et du fil principal, lus dans /proc.
