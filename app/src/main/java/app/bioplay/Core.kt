@@ -9,6 +9,10 @@ object Core {
     /** Prend possession de [fd] et le ferme. Format : voir `core/src/model.rs`. */
     @JvmStatic
     external fun index(fd: Int): String
+
+    /** Instants (s) des images clés (index du MKV ; vide sinon). Prend possession de [fd]. */
+    @JvmStatic
+    external fun keyframes(fd: Int): DoubleArray
 }
 
 class Cue(val start: Long, val end: Long, val text: String)

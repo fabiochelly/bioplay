@@ -190,10 +190,11 @@ fun PlayerScreen(session: Session, onBack: () -> Unit, onAddSubtitle: () -> Unit
         runCatching { if (controls && keys) playFocus.requestFocus() else rootFocus.requestFocus() }
     }
     fun seekBy(d: Double) {
-        val max = if (mpv.duration > 0) mpv.duration else Double.MAX_VALUE
-        val target = (mpv.now() + d).coerceIn(0.0, max)
-        mpv.seek(target)
-        session.say("${if (d > 0) "+" else "−"}${delta(abs(d))}  ·  ${clock(target)}")
+        // Toujours sur une image clé (immédiat) : la bulle donne le saut réel.
+        val from = session.from()
+        val target = session.seekSpan(from, from + d)
+        val real = target - from
+        session.say("${if (real >= 0) "+" else "−"}${delta(abs(real))}  ·  ${clock(target)}")
     }
     fun onKey(e: KeyEvent): Boolean {
         if (e.type != KeyEventType.KeyDown) return false
@@ -403,7 +404,11 @@ private fun Gestures(
                     dragging -> {
                         val s = current
                         if (s != null && s.steps != 0) {
-                            if (s.zone == Zone.LINE && s.cue == null) session.stepSub(s.steps, from) else mpv.seek(s.target)
+                            when {
+                                s.zone == Zone.LINE && s.cue == null -> session.stepSub(s.steps, from)
+                                s.zone == Zone.LINE -> session.seekLine(s.target)
+                                else -> session.seekSpan(from, s.target)
+                            }
                         } else if (s != null) mpv.seek(from)
                         onScrub(null)
                     }
@@ -614,8 +619,8 @@ private fun SeekBar(session: Session, modifier: Modifier, onPoke: () -> Unit) {
             .onKeyEvent { e ->
                 if (e.type != KeyEventType.KeyDown) return@onKeyEvent false
                 val d = when (e.key) { Key.DirectionLeft -> -10.0; Key.DirectionRight -> 10.0; else -> return@onKeyEvent false }
-                val max = if (mpv.duration > 0) mpv.duration else Double.MAX_VALUE
-                mpv.seek((mpv.now() + d).coerceIn(0.0, max), exact = false)
+                val from = session.from()
+                session.seekSpan(from, from + d)
                 onPoke()
                 true
             }

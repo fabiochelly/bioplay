@@ -297,6 +297,21 @@ class Mpv(context: Context) : MPVLib.EventObserver {
         lib.command(arrayOf("seek", "%.3f".format(Locale.ROOT, t), if (exact) "absolute+exact" else "absolute+keyframes"))
     }
 
+    /**
+     * Saut rapide sur l'image clé [key] (≈ 30 ms au lieu de 200 à 700 ms pour un saut précis).
+     * Un saut absolu à l'image clé va à celle qui précède la demande : on demande à peine après.
+     */
+    fun seekKeyframe(key: Double) {
+        if (!alive) return
+        lib.command(arrayOf("seek", "%.3f".format(Locale.ROOT, key + 0.001), "absolute+keyframes"))
+    }
+
+    /** Saut relatif à l'image clé (sans index d'images clés) : mpv va dans le bon sens. */
+    fun seekRelativeKeyframe(by: Double) {
+        if (!alive) return
+        lib.command(arrayOf("seek", "%.3f".format(Locale.ROOT, by), "relative+keyframes"))
+    }
+
     fun subSeek(steps: Int) {
         if (!alive) return
         lib.command(arrayOf("sub-seek", steps.toString()))

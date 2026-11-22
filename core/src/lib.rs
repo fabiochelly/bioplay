@@ -49,7 +49,7 @@ pub fn index_encoded(file: File) -> String {
 #[cfg(target_os = "android")]
 mod android {
     use jni::objects::JClass;
-    use jni::sys::{jint, jstring};
+    use jni::sys::{jdoubleArray, jint, jstring};
     use jni::JNIEnv;
     use std::fs::File;
     use std::os::fd::FromRawFd;
@@ -60,5 +60,20 @@ mod android {
         let file = unsafe { File::from_raw_fd(fd) };
         let out = super::index_encoded(file);
         env.new_string(out).map(|s| s.into_raw()).unwrap_or(std::ptr::null_mut())
+    }
+
+    /// `Core.keyframes(fd)` : instants (s) des images clés d'après l'index du MKV (vide sinon) ;
+    /// prend possession du descripteur et le ferme.
+    #[no_mangle]
+    pub extern "system" fn Java_app_bioplay_Core_keyframes(env: JNIEnv, _: JClass, fd: jint) -> jdoubleArray {
+        let file = unsafe { File::from_raw_fd(fd) };
+        let k = std::panic::catch_unwind(move || super::keyframes(file)).unwrap_or_default();
+        match env.new_double_array(k.len() as i32) {
+            Ok(a) => {
+                let _ = env.set_double_array_region(&a, 0, &k);
+                a.into_raw()
+            }
+            Err(_) => std::ptr::null_mut(),
+        }
     }
 }

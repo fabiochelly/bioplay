@@ -87,6 +87,8 @@ class Session(private val context: Context) {
         title = name
         key = "$title|$size"
         embedded = emptyMap()
+        keyframes = DoubleArray(0)
+        aim = Double.NaN
         external.clear()
         resetZoom()
         content = Content.decode(prefs.getString("crop3:$key", null)) ?: Content.FULL
@@ -98,6 +100,9 @@ class Session(private val context: Context) {
         val gen = ++generation
         indexing = true
         worker.execute {
+            // Images clés d'abord (index du fichier, quelques Ko) : sauts rapides tout de suite.
+            val keys = runCatching { readFd(target)?.let { Core.keyframes(it) } }.getOrNull() ?: DoubleArray(0)
+            mpv.post { if (gen == generation) keyframes = keys }
             val found = runCatching { readFd(target)?.let { SubIndex.parse(Core.index(it)) } }.getOrNull().orEmpty()
             mpv.post {
                 if (gen == generation) {
@@ -195,10 +200,74 @@ class Session(private val context: Context) {
         return c.takeIf { subClock(seconds) < it.end }
     }
 
-    fun stepSub(steps: Int, from: Double = mpv.now()) {
+    fun stepSub(steps: Int, from: Double = from()) {
         if (steps == 0) return
         val cue = cueAfter(steps, from)
-        if (cue != null) mpv.seek(cueTime(cue)) else mpv.subSeek(steps)
+        if (cue != null) seekLine(cueTime(cue)) else mpv.subSeek(steps)
+    }
+
+    // --- Sauts sur les images clés ---------------------------------------------------------
+
+    /** Images clés de la vidéo (s, MKV) : sauts immédiats quand l'une tombe près de la cible. */
+    private var keyframes = DoubleArray(0)
+    /** Dernier saut : cible voulue et image atteinte (une image clé un peu avant, parfois). */
+    private var aim = Double.NaN
+    private var landing = Double.NaN
+
+    /**
+     * D'où partir pour un saut : la cible du saut précédent tant que la lecture n'a pas quitté
+     * l'intervalle image atteinte – cible (sinon « réplique suivante » viserait la même).
+     * Pendant un saut, mpv donne déjà sa cible comme position.
+     */
+    fun from(): Double {
+        val p = mpv.now()
+        val t = aim
+        if (!t.isNaN() && p >= minOf(t, landing) - 0.1 && p <= maxOf(t, landing) + 0.1) return t
+        return p
+    }
+
+    /**
+     * Début d'une réplique : sur une image clé s'il y en a une entre 2 s avant et 0,15 s après
+     * (immédiat ; arriver un peu avant ne fait rien perdre), sinon saut précis.
+     */
+    fun seekLine(t: Double) {
+        val k = keyframes
+        var i = k.binarySearch(t + 0.15).let { if (it >= 0) it else -it - 2 }
+        while (i >= 0 && k[i] > t + 0.15) i--
+        val key = k.getOrNull(i)?.takeIf { it >= t - 2.0 }
+        if (key != null) mpv.seekKeyframe(key) else mpv.seek(t)
+        aim = t
+        landing = key ?: t
+    }
+
+    /**
+     * Saut d'une durée depuis [from] vers [t] : toujours sur une image clé (immédiat ; la
+     * précision compte peu ici), la plus proche de la cible dans le bon sens. Rend l'instant atteint.
+     */
+    fun seekSpan(from: Double, t: Double): Double {
+        val max = if (mpv.duration > 0) mpv.duration else Double.MAX_VALUE
+        val goal = t.coerceIn(0.0, max)
+        val dir = if (goal >= from) 1.0 else -1.0
+        val k = keyframes
+        if (k.isEmpty()) {
+            mpv.seekRelativeKeyframe(goal - from)
+            aim = goal; landing = goal
+            return goal
+        }
+        val i = k.binarySearch(goal).let { if (it >= 0) it else -it - 1 }
+        val near = (maxOf(0, i - 2) until minOf(k.size, i + 2)).map { k[it] }
+        val beyond = if (dir > 0) (i until k.size).asSequence().map { k[it] }.firstOrNull { it > from + 1.0 }
+        else (i - 1 downTo 0).asSequence().map { k[it] }.firstOrNull { it < from - 1.0 }
+        val key = (near + listOfNotNull(beyond)).filter { (it - from) * dir > 1.0 }.minByOrNull { abs(it - goal) }
+        return if (key != null) {
+            mpv.seekKeyframe(key)
+            aim = key; landing = key
+            key
+        } else {
+            mpv.seek(goal, exact = false)
+            aim = goal; landing = goal
+            goal
+        }
     }
 
     // --- Zoom ----------------------------------------------------------------------------

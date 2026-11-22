@@ -273,7 +273,7 @@ fun ListPanel(session: Session) {
             Row(
                 Modifier.fillMaxWidth().clip16()
                     .background(if (now) Ink.accent.copy(alpha = 0.14f) else Color.Transparent)
-                    .clickable { session.mpv.seek(session.cueTime(c)) }
+                    .clickable { session.seekLine(session.cueTime(c)) }
                     .padding(horizontal = 12.dp, vertical = 9.dp),
             ) {
                 BasicText(clock(c.start / 1000.0), style = text(13, FontWeight.SemiBold, if (now) Ink.accent else Ink.faint), modifier = Modifier.width(72.dp).padding(top = 1.dp))
