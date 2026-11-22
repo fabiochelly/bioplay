@@ -4,6 +4,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.pm.ActivityInfo
 import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
@@ -16,7 +17,10 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
+import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -28,6 +32,7 @@ import app.bioplay.ui.loadFonts
 
 class MainActivity : ComponentActivity() {
     private lateinit var session: Session
+    private lateinit var library: Library
     private var playing by mutableStateOf(false)
     private var homeVersion by mutableIntStateOf(0)
     /** Ouverte par « Ouvrir avec » : le retour rend la main à l'app d'origine. */
@@ -38,6 +43,9 @@ class MainActivity : ComponentActivity() {
         runCatching { contentResolver.takePersistableUriPermission(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
         fromOutside = false
         play(uri)
+    }
+    private val pickFolder = registerForActivityResult(ActivityResultContracts.OpenDocumentTree()) { uri ->
+        uri?.let { library.addFolder(it) }
     }
     private val pickSubtitle = registerForActivityResult(ActivityResultContracts.OpenDocument()) { uri ->
         uri?.let { session.addSubtitle(it) }
@@ -65,6 +73,8 @@ class MainActivity : ComponentActivity() {
         Lang.init(this)
         app.bioplay.ui.Flags.load(this)
         session = Session(this)
+        library = Library(this)
+        library.start()
 
         onBackPressedDispatcher.addCallback(this, object : OnBackPressedCallback(true) {
             override fun handleOnBackPressed() = leavePlayer()
@@ -82,16 +92,21 @@ class MainActivity : ComponentActivity() {
                     if (playing) session.save()
                 }
             }
+            // Défilement gardé pendant la lecture : on revient là où l'on était.
+            val gridState = rememberLazyGridState()
+            val listState = rememberLazyListState()
             if (playing) {
                 PlayerScreen(session, onBack = ::leavePlayer, onAddSubtitle = { pickSubtitle.launch(arrayOf("*/*")) })
             } else {
-                val recents = remember(homeVersion) { session.recents() }
-                HomeScreen(
-                    recents,
-                    onOpen = { pickVideo.launch(arrayOf("video/*", "application/x-matroska")) },
-                    onResume = { r -> fromOutside = false; play(Uri.parse(r.uri)) },
-                    onForget = { r -> session.forget(r.uri); homeVersion++ },
-                )
+                // Relu au retour du lecteur : barres d'avancée à jour.
+                key(homeVersion) {
+                    HomeScreen(
+                        library, gridState, listState,
+                        onOpen = { pickVideo.launch(arrayOf("video/*", "application/x-matroska")) },
+                        onAddFolder = { pickFolder.launch(null) },
+                        onPlay = { v -> fromOutside = false; play(Uri.parse(v.uri)) },
+                    )
+                }
             }
         }
         immersive()
@@ -111,6 +126,9 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun play(uri: Uri) {
+        // Seule la lecture est en paysage forcé ; l'accueil suit le téléphone.
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
+        library.hold = true
         playing = true
         session.open(uri)
     }
@@ -120,7 +138,9 @@ class MainActivity : ComponentActivity() {
         session.save()
         session.mpv.stop()
         audio.abandonAudioFocusRequest(focus)
+        library.hold = false
         if (fromOutside) finish() else {
+            requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_USER
             playing = false
             homeVersion++
         }
@@ -155,6 +175,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         audio.abandonAudioFocusRequest(focus)
         session.close()
+        library.close()
         super.onDestroy()
     }
 }
