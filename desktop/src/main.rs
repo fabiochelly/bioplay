@@ -92,6 +92,8 @@ struct App {
     why: Vec<String>,
     /// Instant de masquage des commandes déjà traité (il change avec l'activité ou le survol).
     hidden_for: Option<Instant>,
+    /// Fenêtre transparente (accueil) ou opaque (lecture), dernier état demandé à mpv.
+    glass_home: Option<bool>,
     /// Mesure : envoi du dernier saut, et durées appui → reprise de l'image.
     seek_clock: Option<Instant>,
     seek_times: Vec<f64>,
@@ -597,6 +599,10 @@ impl App {
         let prims = self.ctx.tessellate(shapes, out.pixels_per_point / reduce as f32);
         let t2 = Instant::now();
         let home = !self.player.has_file();
+        if self.glass_home != Some(home) {
+            self.glass_home = Some(home);
+            self.player.mpv.set_window_glass(home);
+        }
         let presented = self.overlay.present(&self.player.mpv, &prims, &marks, &mut out.textures_delta, [w as u32, h as u32], out.pixels_per_point, home, &self.player.thumbs, reduce);
         if let Some(p) = &mut self.profile {
             let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1000.0;
@@ -896,6 +902,7 @@ fn main() {
         drawn_sig: [0; 3],
         why: Vec::new(),
         hidden_for: None,
+        glass_home: None,
         seek_clock: None,
         seek_times: Vec::new(),
         visible: false,

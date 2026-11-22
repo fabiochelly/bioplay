@@ -180,6 +180,8 @@ pub struct Mpv {
     /// Dernière position lue chez mpv et son instant (la position n'est pas suivie).
     anchor: (f64, std::time::Instant),
     seeking: bool,
+    /// Réglages `alpha` et `background-color` d'origine (rendus en lecture).
+    window_orig: Option<(String, String)>,
 }
 
 fn cs(s: &str) -> CString {
@@ -194,7 +196,7 @@ impl Mpv {
         if h.is_null() {
             return Err("mpv_create a échoué".into());
         }
-        let m = Self { h, waker: Waker(std::sync::Arc::new(std::sync::Mutex::new(h as usize))), state: State { speed: 1.0, scale: 1.0, ..Default::default() }, own_seeks: Default::default(), overlay_done: Default::default(), target: Default::default(), anchor: (0.0, std::time::Instant::now()), seeking: false };
+        let m = Self { h, waker: Waker(std::sync::Arc::new(std::sync::Mutex::new(h as usize))), state: State { speed: 1.0, scale: 1.0, ..Default::default() }, own_seeks: Default::default(), overlay_done: Default::default(), target: Default::default(), anchor: (0.0, std::time::Instant::now()), seeking: false, window_orig: None };
         // mpv ouvre et dessine sa propre fenêtre en gpu-next : même image, même coût que mpv
         // (Dolby Vision et HDR compris). bioplay y ajoute son interface en superposition.
         for (k, v) in [
@@ -268,6 +270,24 @@ impl Mpv {
     // `time-pos` change à chaque image : le suivre réveillerait bioplay des dizaines de fois par
     // seconde. Il n'est jamais suivi ; la position est déduite de la dernière lue et de l'horloge,
     // relue chez mpv à chaque reprise après un saut, pause, changement de vitesse ou de fichier.
+
+    /// Accueil : fenêtre transparente (le compositeur floute le fond d'écran derrière la vitre
+    /// sombre de l'interface). En lecture : réglages d'origine, fenêtre opaque (rien de plus à
+    /// mélanger pour le compositeur).
+    pub fn set_window_glass(&mut self, on: bool) {
+        if self.window_orig.is_none() {
+            let alpha = self.get("alpha").unwrap_or_else(|| "blend-tiles".into());
+            let bg = self.get("background-color").unwrap_or_else(|| "#000000".into());
+            self.window_orig = Some((alpha, bg));
+        }
+        if on {
+            self.set("alpha", "yes");
+            self.set("background-color", "#00000000");
+        } else if let Some((alpha, bg)) = self.window_orig.clone() {
+            self.set("alpha", &alpha);
+            self.set("background-color", &bg);
+        }
+    }
 
     pub fn is_seeking(&self) -> bool {
         self.seeking

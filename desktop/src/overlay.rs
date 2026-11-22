@@ -466,50 +466,22 @@ impl Overlay {
         }
     }
 
-    /// Fond de l'accueil : trois lumières en dégradés radiaux, avec un tramage léger qui supprime
-    /// les marches des dégradés sombres.
+    /// Fond de l'accueil : vitre sombre semi-transparente sur le fond d'écran flouté.
     fn backdrop(&mut self, w: usize, h: usize) -> &[u8] {
         if !self.backdrop.iter().any(|b| (b.0, b.1) == (w, h)) {
+            // Vitre sombre semi-transparente : la fenêtre est transparente sur l'accueil et le
+            // compositeur floute le fond d'écran derrière (flou gaussien de Hyprland). Un peu plus
+            // dense vers le bas, sous les titres. BGRA prémultiplié.
             let mut px = vec![0u8; w * h * 4];
-            let aspect = w as f32 / h as f32;
-            let glows = [
-                (0.18f32, 0.25f32, 0.75f32, [0.16f32, 0.30, 0.75], 0.55f32),
-                (0.85, 0.80, 0.85, [0.50, 0.22, 0.85], 0.45),
-                (0.60, 0.08, 0.50, [0.10, 0.70, 0.65], 0.25),
-            ];
-            // Calculé par bandes, une par cœur (une fois par taille d'écran).
-            let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
-            let band = h.div_ceil(threads).max(1);
-            std::thread::scope(|sc| {
-                for (bi, chunk) in px.chunks_mut(w * 4 * band).enumerate() {
-                    sc.spawn(move || {
-                        for (ry, line) in chunk.chunks_exact_mut(w * 4).enumerate() {
-                            let y = bi * band + ry;
-                            let v = y as f32 / h as f32;
-                            for x in 0..w {
-                                let u = x as f32 / w as f32;
-                                let mut c = [0.020f32, 0.027, 0.047];
-                                for (cx, cy, r, col, k) in glows {
-                                    let dx = (u - cx) * aspect;
-                                    let dy = v - cy;
-                                    let e = (-(dx * dx + dy * dy) / (r * r) * 2.2).exp() * k;
-                                    for i in 0..3 {
-                                        c[i] += col[i] * e;
-                                    }
-                                }
-                                // Tramage : bruit de ±0,75 niveau, déterministe.
-                                let n = ((x as u32).wrapping_mul(0x9E37_79B1) ^ (y as u32).wrapping_mul(0x85EB_CA77)).wrapping_mul(0xC2B2_AE3D) >> 24;
-                                let d = (n as f32 / 255.0 - 0.5) * 1.5;
-                                let o = x * 4;
-                                line[o] = (c[2] * 255.0 + d).clamp(0.0, 255.0) as u8;
-                                line[o + 1] = (c[1] * 255.0 + d).clamp(0.0, 255.0) as u8;
-                                line[o + 2] = (c[0] * 255.0 + d).clamp(0.0, 255.0) as u8;
-                                line[o + 3] = 255;
-                            }
-                        }
-                    });
+            for (y, line) in px.chunks_exact_mut(w * 4).enumerate() {
+                let v = y as f32 / h.max(1) as f32;
+                let a = 0.50 + 0.14 * v;
+                let c = [0.020f32 * a, 0.032 * a, 0.062 * a, a];
+                let p = [(c[2] * 255.0) as u8, (c[1] * 255.0) as u8, (c[0] * 255.0) as u8, (c[3] * 255.0) as u8];
+                for o in line.chunks_exact_mut(4) {
+                    o.copy_from_slice(&p);
                 }
-            });
+            }
             if self.backdrop.len() >= 2 {
                 self.backdrop.remove(0);
             }
