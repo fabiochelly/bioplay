@@ -142,7 +142,7 @@ fn surface(ctx: &egui::Context, p: &mut Player, screen: Rect) {
         if r.drag_started() {
             let y = r.interact_pointer_pos().map(|q| (q.y - screen.min.y) / screen.height()).unwrap_or(0.5);
             let zone = if y < 0.36 { Zone::Minute } else if y < 0.64 { Zone::Ten } else { Zone::Line };
-            p.scrub = Some(p.preview(zone, 0, p.mpv.state.position));
+            p.scrub = Some(p.preview(zone, 0, p.mpv.position()));
         }
         if r.dragged() {
             if let (Some(s), Some(origin), Some(now)) = (&p.scrub, ctx.input(|i| i.pointer.press_origin()), r.interact_pointer_pos()) {
@@ -254,10 +254,9 @@ fn bar(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actions: &mut V
             toggle(p, Panel::Speed);
         }
         let (audio_name, sub_name) = track_names(p);
-        let tflags = track_flags(p);
-        let tw = tracks_width(ui, &audio_name, sub_name.as_deref(), tflags);
+        let tw = tracks_width(ui, &audio_name, sub_name.as_deref());
         rx -= tw + 6.0;
-        if tracks_button(ui, Rect::from_min_size(pos2(rx, cy - 21.0), vec2(tw, 42.0)), &audio_name, sub_name.as_deref(), tflags).clicked() {
+        if tracks_button(ui, Rect::from_min_size(pos2(rx, cy - 21.0), vec2(tw, 42.0)), &audio_name, sub_name.as_deref()).clicked() {
             toggle(p, Panel::Tracks);
         }
 
@@ -292,24 +291,17 @@ fn track_names(p: &Player) -> (String, Option<String>) {
     (audio, p.sub_track().map(name))
 }
 
-/// Drapeaux des pistes audio et sous-titres choisies.
-fn track_flags(p: &Player) -> (Option<&'static str>, Option<&'static str>) {
-    let s = &p.mpv.state;
-    let audio = s.tracks.iter().find(|t| t.kind == "audio" && Some(t.id) == s.aid).and_then(|t| crate::flags::flag_for(&t.lang, &t.title));
-    (audio, p.sub_track().and_then(|t| crate::flags::flag_for(&t.lang, &t.title)))
-}
-
 const TB_ICON: f32 = 22.0;
 
-fn tracks_width(ui: &Ui, audio: &str, sub: Option<&str>, flags: (Option<&str>, Option<&str>)) -> f32 {
+fn tracks_width(ui: &Ui, audio: &str, sub: Option<&str>) -> f32 {
     let w = |t: &str| ui.painter().layout_no_wrap(t.to_owned(), semi(13.0), INK).size().x;
     let sub_w = w(sub.unwrap_or(tr("Aucun", "Off")));
-    let flag_w = |f: Option<&str>| if f.is_some() { 27.0 } else { 0.0 };
-    14.0 + TB_ICON + 7.0 + flag_w(flags.0) + w(audio) + 13.0 + 1.0 + 13.0 + TB_ICON + 7.0 + flag_w(flags.1) + sub_w + 16.0
+    14.0 + TB_ICON + 7.0 + w(audio) + 13.0 + 1.0 + 13.0 + TB_ICON + 7.0 + sub_w + 16.0
 }
 
 /// Bouton des pistes : haut-parleur + langue audio, sous-titres + leur langue, liseré d'accent.
-fn tracks_button(ui: &mut Ui, r: Rect, audio: &str, sub: Option<&str>, flags: (Option<&str>, Option<&str>)) -> Response {
+/// Sans drapeaux (ils sont dans le choix des pistes) : la barre reste sobre.
+fn tracks_button(ui: &mut Ui, r: Rect, audio: &str, sub: Option<&str>) -> Response {
     let resp = ui.interact(r, ui.id().with("tracks-button"), Sense::click());
     let k = ui.ctx().animate_bool_with_time(resp.id, resp.hovered(), 0.12);
     let cr = CornerRadius::same((r.height() / 2.0) as u8);
@@ -322,10 +314,6 @@ fn tracks_button(ui: &mut Ui, r: Rect, audio: &str, sub: Option<&str>, flags: (O
     let mut x = r.min.x + 14.0;
     icon(painter, pos2(x + TB_ICON / 2.0, cy), TB_ICON, Icon::Speaker, INK);
     x += TB_ICON + 7.0;
-    if let Some(f) = flags.0 {
-        crate::flags::draw(painter, Rect::from_min_size(pos2(x, cy - 7.0), vec2(21.0, 14.0)), f, 1.0);
-        x += 27.0;
-    }
     let g = painter.layout_no_wrap(audio.to_owned(), semi(13.0), INK);
     let w = g.size().x;
     painter.galley(pos2(x, cy - g.size().y / 2.0), g, INK);
@@ -338,10 +326,6 @@ fn tracks_button(ui: &mut Ui, r: Rect, audio: &str, sub: Option<&str>, flags: (O
     };
     icon(painter, pos2(x + TB_ICON / 2.0, cy), TB_ICON, ic, col);
     x += TB_ICON + 7.0;
-    if let Some(f) = flags.1 {
-        crate::flags::draw(painter, Rect::from_min_size(pos2(x, cy - 7.0), vec2(21.0, 14.0)), f, 1.0);
-        x += 27.0;
-    }
     let g = painter.layout_no_wrap(label, semi(13.0), col);
     painter.galley(pos2(x, cy - g.size().y / 2.0), g, col);
     resp
@@ -921,7 +905,7 @@ fn list_panel(ui: &mut Ui, p: &mut Player, max_height: f32) {
         ui.label(egui::RichText::new(why).font(med(15.0)).color(INK2));
         return;
     };
-    let current = idx.at(p.sub_clock(p.mpv.state.position));
+    let current = idx.at(p.sub_clock(p.mpv.position()));
     let row_h = 46.0;
     let height = (max_height - 34.0).clamp(80.0, 520.0);
     let id = Id::new("list-follow");
@@ -1134,7 +1118,8 @@ fn home(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actions: &mut 
     if p.folders_open {
         folders_sheet(ctx, p, plates, actions, screen);
     }
-    if std::env::var_os("BIOPLAY_FLAGS").is_some() {
+    static FLAGS: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    if *FLAGS.get_or_init(|| std::env::var_os("BIOPLAY_FLAGS").is_some()) {
         flag_gallery(ctx, screen);
     }
 }

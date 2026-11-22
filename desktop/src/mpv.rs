@@ -40,6 +40,8 @@ extern "C" {
     fn mpv_command_async(h: *mut mpv_handle, reply: u64, args: *mut *const c_char) -> c_int;
     fn mpv_command(h: *mut mpv_handle, args: *mut *const c_char) -> c_int;
     fn mpv_observe_property(h: *mut mpv_handle, reply: u64, name: *const c_char, format: c_int) -> c_int;
+    fn mpv_unobserve_property(h: *mut mpv_handle, reply: u64) -> c_int;
+    fn mpv_set_property_async(h: *mut mpv_handle, reply: u64, name: *const c_char, format: c_int, data: *mut c_void) -> c_int;
     fn mpv_wait_event(h: *mut mpv_handle, timeout: c_double) -> *mut Event;
     fn mpv_free(data: *mut c_void);
     fn mpv_wakeup(h: *mut mpv_handle);
@@ -130,6 +132,9 @@ pub enum Change {
     Property(&'static str),
 }
 
+/// Jamais suivies (voir `position`) : gardées dans la liste pour leur nom seulement.
+const POSITION_PROPS: [&str; 2] = ["time-pos", "demuxer-cache-time"];
+
 const OBSERVED: &[(&str, c_int)] = &[
     ("time-pos", FORMAT_DOUBLE),
     ("duration", FORMAT_DOUBLE),
@@ -175,6 +180,9 @@ pub struct Mpv {
     /// que la lecture n'a pas quitté cet intervalle, la cible reste la référence (sinon
     /// « sous-titre suivant » viserait de nouveau la même réplique).
     pub target: std::cell::Cell<Option<Target>>,
+    /// Dernière position lue chez mpv et son instant (la position n'est pas suivie).
+    anchor: (f64, std::time::Instant),
+    seeking: bool,
 }
 
 fn cs(s: &str) -> CString {
@@ -189,7 +197,7 @@ impl Mpv {
         if h.is_null() {
             return Err("mpv_create a échoué".into());
         }
-        let mut m = Self { h, state: State { speed: 1.0, scale: 1.0, ..Default::default() }, own_seeks: Default::default(), overlay_done: Default::default(), target: Default::default() };
+        let m = Self { h, state: State { speed: 1.0, scale: 1.0, ..Default::default() }, own_seeks: Default::default(), overlay_done: Default::default(), target: Default::default(), anchor: (0.0, std::time::Instant::now()), seeking: false };
         // mpv ouvre et dessine sa propre fenêtre en gpu-next : même image, même coût que mpv
         // (Dolby Vision et HDR compris). bioplay y ajoute son interface en superposition.
         for (k, v) in [
@@ -240,7 +248,9 @@ impl Mpv {
             m.set(k, v);
         }
         for (i, (name, f)) in OBSERVED.iter().enumerate() {
-            unsafe { mpv_observe_property(h, i as u64, cs(name).as_ptr(), *f) };
+            if !POSITION_PROPS.contains(name) {
+                unsafe { mpv_observe_property(h, i as u64, cs(name).as_ptr(), *f) };
+            }
         }
         Ok(m)
     }
@@ -249,8 +259,41 @@ impl Mpv {
         unsafe { mpv_set_option_string(self.h, cs(k).as_ptr(), cs(v).as_ptr()) };
     }
 
+    /// Sans attendre mpv (il copie la valeur tout de suite) : appelé à chaque image pour le verre
+    /// et la marge des sous-titres, il ne doit pas bloquer l'interface pendant un saut.
     pub fn set(&self, k: &str, v: &str) {
-        unsafe { mpv_set_property_string(self.h, cs(k).as_ptr(), cs(v).as_ptr()) };
+        let v = cs(v);
+        let mut ptr = v.as_ptr();
+        unsafe { mpv_set_property_async(self.h, 0, cs(k).as_ptr(), FORMAT_STRING, &mut ptr as *mut *const c_char as *mut c_void) };
+    }
+
+    // --- Position sans suivi continu ---------------------------------------------------------
+    //
+    // `time-pos` change à chaque image : le suivre réveillerait bioplay des dizaines de fois par
+    // seconde. Il n'est jamais suivi ; la position est déduite de la dernière lue et de l'horloge,
+    // relue chez mpv à chaque reprise après un saut, pause, changement de vitesse ou de fichier.
+
+    pub fn is_seeking(&self) -> bool {
+        self.seeking
+    }
+
+    /// Relit la position chez mpv (appel bref, hors saut en cours).
+    pub fn refresh_position(&mut self) {
+        if let Some(v) = self.get("time-pos").and_then(|v| v.parse::<f64>().ok()) {
+            self.state.position = v;
+            self.anchor = (v, std::time::Instant::now());
+        }
+    }
+
+    /// Position actuelle : suivie, ou déduite de la dernière lue et du temps écoulé.
+    pub fn position(&self) -> f64 {
+        let s = &self.state;
+        let (p, at) = self.anchor;
+        if s.paused || s.idle || self.seeking {
+            return p;
+        }
+        let max = if s.duration > 0.0 { s.duration } else { f64::MAX };
+        (p + at.elapsed().as_secs_f64() * s.speed).clamp(0.0, max)
     }
 
     pub fn set_f64(&self, k: &str, mut v: f64) {
@@ -326,7 +369,7 @@ impl Mpv {
     /// Position d'où partir pour un saut relatif : la cible du saut en cours s'il y en a un
     /// (sinon des appuis rapprochés viseraient tous le même instant), sinon la position.
     pub fn pos(&self) -> f64 {
-        let p = self.state.position;
+        let p = self.position();
         match self.target.get() {
             Some(t) if !t.done || t.sent.elapsed() < std::time::Duration::from_secs(1) => t.at,
             Some(t) if p >= t.at.min(t.landing) - 0.1 && p <= t.at.max(t.landing) + 0.1 => t.at,
@@ -377,8 +420,17 @@ impl Mpv {
             }
             EVENT_FILE_LOADED => out.push(Change::Loaded),
             EVENT_END_FILE => out.push(Change::Ended),
-            EVENT_SEEK => out.push(Change::Seeking),
+            EVENT_SEEK => {
+                // Position d'avant le saut figée (sert à annoncer l'écart d'un saut venu de mpv).
+                if !self.seeking {
+                    self.anchor = (self.position(), std::time::Instant::now());
+                }
+                self.seeking = true;
+                out.push(Change::Seeking)
+            }
             EVENT_PLAYBACK_RESTART => {
+                self.seeking = false;
+                self.refresh_position();
                 if let Some(t) = self.target.get() {
                     self.target.set(Some(Target { done: true, ..t }));
                 }
@@ -398,6 +450,9 @@ impl Mpv {
                 let p = unsafe { &*(e.data as *const EventProperty) };
                 if let Some(&(name, _)) = OBSERVED.get(e.reply_userdata as usize) {
                     self.apply(name, p);
+                    if matches!(name, "pause" | "speed" | "path" | "duration") {
+                        self.refresh_position();
+                    }
                     out.push(Change::Property(name));
                 }
             }
@@ -414,7 +469,10 @@ impl Mpv {
                 .then(|| unsafe { CStr::from_ptr(*(p.data as *const *const c_char)).to_string_lossy().into_owned() })
         };
         match name {
-            "time-pos" => s.position = double().unwrap_or(0.0),
+            "time-pos" => {
+                s.position = double().unwrap_or(0.0);
+                self.anchor = (s.position, std::time::Instant::now());
+            }
             "duration" => s.duration = double().unwrap_or(0.0),
             "demuxer-cache-time" => s.cached = double().unwrap_or(0.0),
             "speed" => s.speed = double().unwrap_or(1.0),

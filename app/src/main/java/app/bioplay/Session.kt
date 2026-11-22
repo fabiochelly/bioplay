@@ -227,14 +227,15 @@ class Session(private val context: Context) {
     }
 
     /**
-     * Début d'une réplique : sur une image clé s'il y en a une entre 2 s avant et 0,15 s après
-     * (immédiat ; arriver un peu avant ne fait rien perdre), sinon saut précis.
+     * Début d'une réplique : sur une image clé s'il y en a une entre 3 s avant et 0,15 s après
+     * (immédiat ; arriver un peu avant ne fait rien perdre), sinon saut précis (200 à 700 ms).
+     * Répliques concernées : The Rookie 86 %, Moana 84 %, One Piece 71 %.
      */
     fun seekLine(t: Double) {
         val k = keyframes
         var i = k.binarySearch(t + 0.15).let { if (it >= 0) it else -it - 2 }
         while (i >= 0 && k[i] > t + 0.15) i--
-        val key = k.getOrNull(i)?.takeIf { it >= t - 2.0 }
+        val key = k.getOrNull(i)?.takeIf { it >= t - 3.0 }
         if (key != null) mpv.seekKeyframe(key) else mpv.seek(t)
         aim = t
         landing = key ?: t

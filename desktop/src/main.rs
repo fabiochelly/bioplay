@@ -80,10 +80,10 @@ struct App {
     next_frame: Option<Instant>,
     dirty: bool,
     last_frame: Instant,
-    /// Horloge et barre telles qu'affichées (secondes, pixels) : redessin seulement s'il change.
-    shown: [f64; 4],
     /// Image en attente : `overlay_done` au moment où mpv n'avait pas encore lu le tampon.
     overlay_wait: Option<u64>,
+    /// Prochain changement de l'horloge ou de la barre (réveil prévu).
+    change_at: Option<Instant>,
     /// Mesure : envoi du dernier saut, et durées appui → reprise de l'image.
     seek_clock: Option<Instant>,
     seek_times: Vec<f64>,
@@ -303,7 +303,7 @@ impl App {
             mpv::Change::Seeking => {
                 let own = self.player.mpv.own_seeks.replace(0) > 0;
                 if !own && self.seek_from.is_none() {
-                    self.seek_from = Some(self.player.mpv.state.position);
+                    self.seek_from = Some(self.player.mpv.position());
                 }
             }
             // Saut venu d'un raccourci mpv (flèches haut/bas…) : annoncé dans une bulle.
@@ -312,9 +312,9 @@ impl App {
                     self.seek_times.push(t.elapsed().as_secs_f64() * 1000.0);
                 }
                 if let Some(before) = self.seek_from.take() {
-                    let d = self.player.mpv.state.position - before;
+                    let d = self.player.mpv.position() - before;
                     if d.abs() >= 0.9 && self.player.loaded_at.is_some_and(|t| t.elapsed() > Duration::from_secs(1)) {
-                        self.player.say_seek(d, self.player.mpv.state.position, player::delta(d));
+                        self.player.say_seek(d, self.player.mpv.position(), player::delta(d));
                         self.dirty = true;
                     }
                 }
@@ -326,23 +326,6 @@ impl App {
     fn on_property(&mut self, name: &'static str) {
         match name {
             "mouse-pos" => return self.mouse_moved(),
-            // L'horloge et la barre ne bougent que si l'interface est visible.
-            // Et seulement quand ce qu'elles affichent change : la seconde de l'horloge, ou un
-            // pixel de la barre (lecture ou cache). Tiroir ouvert (liste des sous-titres) : 30/s.
-            "time-pos" | "demuxer-cache-time" => {
-                if self.visible {
-                    let s = &self.player.mpv.state;
-                    let dur = s.duration.max(0.001);
-                    let px = s.osd_w.max(1.0) / dur;
-                    let shown = [s.position.floor(), (dur - s.position).floor(), (s.position * px).floor(), (s.cached * px).floor()];
-                    let panel = self.player.panel.is_some() && self.last_frame.elapsed() > Duration::from_millis(33);
-                    if shown != self.shown || panel {
-                        self.shown = shown;
-                        self.dirty = true;
-                    }
-                }
-                return;
-            }
             "track-list" => self.index_external(),
             _ => {}
         }
@@ -471,8 +454,39 @@ impl App {
         }
     }
 
+    /// Prochain instant où l'horloge (seconde écoulée ou restante) ou la barre (un pixel) change,
+    /// commandes visibles et lecture en cours. La position n'est plus suivie image par image
+    /// (des dizaines de réveils par seconde) : elle est déduite de l'horloge. Tiroir ouvert
+    /// (liste des sous-titres qui suit la lecture) : 30 images par seconde.
+    fn next_display_change(&self) -> Option<Instant> {
+        let s = &self.player.mpv.state;
+        if !self.visible || !self.player.has_file() || s.paused || s.speed <= 0.0 {
+            return None;
+        }
+        if self.player.panel.is_some() {
+            return Some(self.last_frame + Duration::from_millis(33));
+        }
+        let pos = self.player.mpv.position();
+        let dur = s.duration.max(0.001);
+        let px = s.osd_w.max(1.0) / dur;
+        let sec = pos.floor() + 1.0 - pos;
+        let rem = (dur - pos).fract();
+        let pixel = ((pos * px).floor() + 1.0) / px - pos;
+        let dt = sec.min(if rem > 0.001 { rem } else { 1.0 }).min(pixel).max(0.004) / s.speed;
+        Some(self.last_frame.max(Instant::now() - Duration::from_secs(1)) + Duration::from_secs_f64(dt).min(Duration::from_secs(1)))
+    }
+
     fn frame(&mut self) {
         self.frames += 1;
+        // Position déduite (non suivie) mise à jour pour l'affichage ; cache relu, commandes
+        // visibles seulement (une lecture brève par image, hors saut).
+        let pos = self.player.mpv.position();
+        self.player.mpv.state.position = pos;
+        if self.visible && self.player.has_file() && !self.player.mpv.is_seeking() {
+            if let Some(c) = self.player.mpv.get("demuxer-cache-time").and_then(|v| v.parse::<f64>().ok()) {
+                self.player.mpv.state.cached = c;
+            }
+        }
         let s = &self.player.mpv.state;
         let (w, h, scale) = (s.osd_w as f32, s.osd_h as f32, s.scale as f32);
         if w < 1.0 || h < 1.0 {
@@ -634,12 +648,22 @@ impl App {
             let now = Instant::now();
             // Réveils : prochaine image prévue, masquage de l'interface après inactivité.
             let hide_at = self.player.activity + if self.player.over_ui { ui::HIDE_AFTER_HOVER } else { ui::HIDE_AFTER } + Duration::from_millis(100);
-            let mut wake = now + Duration::from_secs(1);
+            // Rien de prévu : on dort jusqu'au prochain événement (mpv, fichier choisi, bibliothèque),
+            // sans réveil périodique. En lecture, seulement la note de la position toutes les 15 s.
+            let mut wake = now + Duration::from_secs(3600);
+            if self.player.has_file() && !self.player.mpv.state.paused {
+                wake = wake.min(self.last_save + Duration::from_secs(15));
+            }
             if let Some(t) = self.next_frame {
                 wake = wake.min(t);
             }
             if self.visible && hide_at > now {
                 wake = wake.min(hide_at);
+            }
+            // Horloge et barre : réveil à l'instant exact où l'une change (seconde, pixel).
+            self.change_at = self.next_display_change();
+            if let Some(t) = self.change_at {
+                wake = wake.min(t);
             }
             if let Some(l) = limit {
                 wake = wake.min(now + l);
@@ -654,6 +678,10 @@ impl App {
             }
             while let Ok(m) = self.rx.try_recv() {
                 self.on_message(m);
+            }
+            if self.change_at.is_some_and(|t| t <= Instant::now()) {
+                self.change_at = None;
+                self.dirty = true;
             }
             if self.overlay_wait.is_some_and(|d| self.player.mpv.overlay_done.get() > d) {
                 self.overlay_wait = None;
@@ -734,8 +762,8 @@ fn main() {
         frames: 0,
         dirty: true,
         last_frame: Instant::now(),
-        shown: [0.0; 4],
         overlay_wait: None,
+        change_at: None,
         seek_clock: None,
         seek_times: Vec::new(),
         visible: false,
@@ -848,7 +876,9 @@ fn bench_play(app: &mut App) {
                     }
                 }
             }
-            app.step(Some(key.saturating_duration_since(Instant::now()).max(Duration::from_millis(1))));
+            // Sans sauts à envoyer : la boucle dort jusqu'à la fin de la phase (comme en vrai).
+            let until = if phase.contains("saut") || phase.contains("maintenue") { key } else { start + Duration::from_secs_f64(secs) };
+            app.step(Some(until.saturating_duration_since(Instant::now()).max(Duration::from_millis(1))));
         }
         let el = start.elapsed().as_secs_f64();
         let (c1, m1) = cpu_ms();
@@ -859,7 +889,7 @@ fn bench_play(app: &mut App) {
             (app.overlay.sends - s0) as f64 / el,
             (c1 - c0) / el / 10.0,
             (m1 - m0) / el / 10.0,
-            app.player.mpv.state.position,
+            app.player.mpv.position(),
         );
         if !app.seek_times.is_empty() {
             let mut v = app.seek_times.clone();

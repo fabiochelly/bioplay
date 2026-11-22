@@ -139,7 +139,8 @@ impl Overlay {
         let t0 = std::time::Instant::now();
         let drawn = self.render(prims, Some(marks), textures, rsize, ppp / r as f32, home, thumbs);
         let t1 = std::time::Instant::now();
-        let dbg = std::env::var_os("BIOPLAY_DEBUG_DAMAGE").is_some();
+        static DBG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let dbg = *DBG.get_or_init(|| std::env::var_os("BIOPLAY_DEBUG_DAMAGE").is_some());
         match drawn {
             Drawn::Empty => self.hide(mpv),
             Drawn::Same => {}

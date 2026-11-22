@@ -81,6 +81,9 @@ pub struct Player {
 
 /// Durée d'un message, de son fondu d'entrée et de son fondu de sortie, en secondes.
 pub const MESSAGE_LIFE: f32 = 1.05;
+
+/// Avance tolérée (s) sur le début d'une réplique pour sauter sur une image clé.
+const LINE_EARLY: f64 = 3.0;
 pub const MESSAGE_IN: f32 = 0.08;
 pub const MESSAGE_OUT: f32 = 0.25;
 
@@ -229,7 +232,7 @@ impl Player {
 
     /// Texte de l'aperçu : la réplique la plus proche du film, sinon une phrase d'exemple.
     pub fn preview_text(&self) -> String {
-        let pos = self.mpv.state.position;
+        let pos = self.mpv.position();
         self.cue_at(pos)
             .or_else(|| self.cue_after(-1, pos))
             .or_else(|| self.cue_after(1, pos))
@@ -245,13 +248,13 @@ impl Player {
         (ms < c.end).then(|| clone_cue(c))
     }
 
-    /// Début d'une réplique : sur une image clé s'il y en a une entre 2 s avant et 0,15 s après
-    /// (saut immédiat ; arriver un peu avant ne fait rien perdre), sinon saut précis.
-    /// Sur The Rookie : 76 % des répliques.
+    /// Début d'une réplique : sur une image clé s'il y en a une entre 3 s avant et 0,15 s après
+    /// (saut immédiat ; arriver un peu avant ne fait rien perdre), sinon saut précis (200 à 700 ms).
+    /// Répliques concernées : The Rookie 86 %, Moana 84 %, One Piece 71 % (2 s : 76, 74, 60 %).
     pub fn seek_line(&self, t: f64) {
         let k = &self.keyframes;
         let i = k.partition_point(|&x| x <= t + 0.15);
-        match i.checked_sub(1).map(|j| k[j]).filter(|&x| x >= t - 2.0) {
+        match i.checked_sub(1).map(|j| k[j]).filter(|&x| x >= t - LINE_EARLY) {
             Some(key) => self.mpv.seek_keyframe(key, t),
             None => self.mpv.seek(t, true),
         }
@@ -352,7 +355,7 @@ impl Player {
         let s = &self.mpv.state;
         let path = s.path.clone();
         let name = Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| s.title.clone());
-        let (pos, dur) = (s.position, s.duration);
+        let (pos, dur) = (self.mpv.position(), s.duration);
         self.recents.retain(|r| r.path != path);
         self.recents.insert(0, Recent { path, name, position: pos, duration: dur });
         // Gardée longtemps : c'est elle qui donne l'avancée de chaque miniature de l'accueil.
