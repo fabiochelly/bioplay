@@ -73,6 +73,9 @@ pub struct Plates {
     ppp: f32,
     alpha: f32,
     painter: egui::Painter,
+    /// Bibliothèque : plaques opaques (fond sombre uni, texte blanc net), sans verre ; le verre
+    /// n'a d'intérêt que sur la vidéo.
+    opaque: bool,
 }
 
 impl Plates {
@@ -80,6 +83,12 @@ impl Plates {
     /// sous le contenu. Sur les bandes noires (hors vidéo), la teinte seule fait le verre.
     fn add(&mut self, r: Rect, radius: f32, tint: f32) {
         let a = self.alpha;
+        if self.opaque {
+            let cr = CornerRadius::same(radius.min(r.height() / 2.0).min(127.0) as u8);
+            self.painter.rect_filled(r, cr, Color32::from_rgb(0x17, 0x1c, 0x27).gamma_multiply(a));
+            self.painter.rect_stroke(r, cr, Stroke::new(1.0, Color32::from_white_alpha((30.0 * a) as u8)), StrokeKind::Inside);
+            return;
+        }
         self.list.push(Plate {
             x: r.min.x * self.ppp,
             y: r.min.y * self.ppp,
@@ -98,7 +107,7 @@ impl Plates {
 
 pub fn draw(ctx: &egui::Context, p: &mut Player, ppp: f32) -> (Vec<Plate>, Vec<Action>) {
     let painter = ctx.layer_painter(egui::LayerId::new(Order::Background, Id::new("plates")));
-    let mut plates = Plates { list: Vec::new(), ppp, alpha: 1.0, painter };
+    let mut plates = Plates { list: Vec::new(), ppp, alpha: 1.0, painter, opaque: !p.has_file() };
     let mut actions = Vec::new();
     let screen = ctx.content_rect();
 
@@ -1309,7 +1318,11 @@ fn grid(ui: &mut Ui, p: &mut Player, shelf: &crate::library::Shelf, body: Rect, 
     let all = items(shelf);
     let rows = all.len().div_ceil(cols);
     // Un défilement par dossier : on retrouve sa place en remontant.
-    egui::ScrollArea::vertical().id_salt(("grid", &shelf.place)).auto_shrink([false, false]).show_rows(ui, row_h, rows, |ui, range| {
+    let mut area = egui::ScrollArea::vertical().id_salt(("grid", &shelf.place)).auto_shrink([false, false]);
+    if let Some(y) = p.test_scroll {
+        area = area.vertical_scroll_offset(y);
+    }
+    area.show_rows(ui, row_h, rows, |ui, range| {
         for row in range {
             let (line, _) = ui.allocate_exact_size(vec2(body.width(), row_h), Sense::hover());
             for c in 0..cols {
@@ -1350,7 +1363,11 @@ fn list(ui: &mut Ui, p: &mut Player, shelf: &crate::library::Shelf, body: Rect, 
     let all = items(shelf);
     let width = (body.width() - SIDE * 2.0).min(980.0);
     let x0 = body.center().x - width / 2.0;
-    egui::ScrollArea::vertical().id_salt(("list", &shelf.place)).auto_shrink([false, false]).show_rows(ui, row_h, all.len(), |ui, range| {
+    let mut area = egui::ScrollArea::vertical().id_salt(("list", &shelf.place)).auto_shrink([false, false]);
+    if let Some(y) = p.test_scroll {
+        area = area.vertical_scroll_offset(y);
+    }
+    area.show_rows(ui, row_h, all.len(), |ui, range| {
         for i in range {
             let (line, _) = ui.allocate_exact_size(vec2(body.width(), row_h), Sense::hover());
             let row = Rect::from_min_size(pos2(x0, line.min.y + 3.0), vec2(width, row_h - 6.0));

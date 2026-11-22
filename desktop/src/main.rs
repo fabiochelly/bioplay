@@ -719,6 +719,9 @@ impl App {
     }
 
     fn run(&mut self) {
+        if std::env::var_os("BIOPLAY_SCROLLTEST").is_some() {
+            return scroll_test(self);
+        }
         while self.step(None) {}
     }
 
@@ -941,6 +944,56 @@ fn main() {
     app.run();
     app.player.save();
     app.overlay.hide(&app.player.mpv);
+}
+
+/// Mesure en vrai du défilement de l'accueil (`BIOPLAY_SCROLLTEST=1`) : la grille défile 4 s
+/// (molette simulée de l'intérieur, rien d'injecté chez le système) ; temps processeur du
+/// processus et de chaque fil (bioplay, mpv, pilote graphique) ; les fils éphémères du dessin
+/// par bandes sont comptés à part (processus moins fils vivants).
+fn scroll_test(app: &mut App) {
+    let t0 = Instant::now();
+    while t0.elapsed() < Duration::from_secs(3) {
+        if !app.step(Some(Duration::from_millis(50))) {
+            return;
+        }
+    }
+    println!("avant : {} images, {} envois, réponses {}", app.frames, app.overlay.sends, app.player.mpv.overlay_done.get());
+    app.events.push(Event::PointerMoved(pos2(720.0, 500.0)));
+    let (threads0, cpu0, frames0, sends0) = (threads_ms(), cpu_ms().0, app.frames, app.overlay.sends);
+    let start = Instant::now();
+    let mut next = start;
+    while start.elapsed() < Duration::from_secs(4) {
+        // Position imposée toutes les 16 ms, en aller-retour sur 1000 points (la grille ne bute
+        // pas sur ses bords), comme un défilement continu : demi-résolution, envoi à mpv.
+        if Instant::now() >= next {
+            let t = start.elapsed().as_secs_f32();
+            let phase = (t % 2.0) / 2.0;
+            app.player.test_scroll = Some(1000.0 * if phase < 0.5 { phase * 2.0 } else { 2.0 - phase * 2.0 });
+            app.last_wheel = Some(Instant::now());
+            app.dirty = true;
+            next += Duration::from_millis(16);
+        }
+        if !app.step(Some(next.saturating_duration_since(Instant::now()).max(Duration::from_millis(1)))) {
+            return;
+        }
+    }
+    let el = start.elapsed().as_secs_f64();
+    let total = cpu_ms().0 - cpu0;
+    let mut by: std::collections::HashMap<String, f64> = Default::default();
+    let mut live = 0.0;
+    for (tid, (name, ms)) in threads_ms() {
+        let d = ms - threads0.get(&tid).map_or(0.0, |t| t.1);
+        live += d;
+        *by.entry(name).or_default() += d;
+    }
+    let mut v: Vec<_> = by.into_iter().filter(|(_, ms)| *ms > 0.0).collect();
+    v.sort_by(|a, b| b.1.total_cmp(&a.1));
+    println!("défilement : processeur {:.0} % d'un cœur, {} images, {} envois en {el:.1} s", total / el / 10.0, app.frames - frames0, app.overlay.sends - sends0);
+    println!("  dessin par bandes (fils éphémères) {:.0} %", (total - live).max(0.0) / el / 10.0);
+    println!("  réponses de mpv aux envois : {} (attente : {:?})", app.player.mpv.overlay_done.get(), app.overlay_wait);
+    for (n, ms) in v.iter().take(10) {
+        println!("  {n} {:.1} %", ms / el / 10.0);
+    }
 }
 
 /// Temps processeur (ms) du processus entier et du fil principal, lus dans /proc.

@@ -68,6 +68,8 @@ pub struct Player {
     /// Fenêtre des dossiers surveillés ouverte (accueil).
     pub folders_open: bool,
     pub over_ui: bool,
+    /// Mesure : position de défilement imposée à la grille (`BIOPLAY_SCROLLTEST`).
+    pub test_scroll: Option<f32>,
     /// Dernières valeurs annoncées : un message seulement quand l'utilisateur change quelque chose.
     pub shown: HashMap<&'static str, f64>,
     pub loaded_at: Option<Instant>,
@@ -117,6 +119,7 @@ impl Player {
             recents,
             positions,
             over_ui: false,
+            test_scroll: None,
             shown: HashMap::new(),
             loaded_at: None,
             sub_scale: 1.0,

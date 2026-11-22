@@ -47,6 +47,8 @@ pub struct Overlay {
     seq: u64,
     /// Images envoyées à mpv (mesures).
     pub sends: u64,
+    /// Image en mouvement (demi-résolution) : moins de fils de dessin.
+    moving: bool,
     next: usize,
     shown: bool,
     last: Option<Last>,
@@ -74,6 +76,7 @@ impl Overlay {
             sent: [0; BUFFERS],
             seq: 0,
             sends: 0,
+            moving: false,
             next: 0,
             shown: false,
             last: None,
@@ -130,6 +133,7 @@ impl Overlay {
         // fois moins de pixels à dessiner et à envoyer) et agrandie par mpv sur la carte graphique ;
         // l'image nette suit dès l'arrêt. `prims` sont déjà découpés à cette échelle.
         let r = reduce.max(1);
+        self.moving = r > 1;
         let rsize = [size[0].div_ceil(r), size[1].div_ceil(r)];
         self.release(mpv);
         if self.sent[self.next] > mpv.overlay_done.get() {
@@ -335,7 +339,10 @@ impl Overlay {
         // Petite zone (une seconde de l'horloge, un bouton survolé) : peu de fils, car chaque fil
         // reparcourt les triangles et coûte du processeur pour rien (≈ un fil par 200 000 pixels).
         let zone_px = (zone[2] - zone[0]).max(0) as usize * (zone[3] - zone[1]).max(0) as usize;
-        let threads = (zone_px / 200_000 + 1).min(std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8));
+        // En mouvement (défilement, demi-résolution) : 2 fils au plus. Mesuré en vrai : 63 % d'un
+        // cœur au total contre 75 % avec 8 fils (chaque fil coûte, la latence reste faible).
+        let max_threads = if self.moving { 2 } else { 8 };
+        let threads = (zone_px / 200_000 + 1).min(std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, max_threads));
         let band_rows = bh.div_ceil(threads).max(16);
         std::thread::scope(|sc| {
             for (bi, band) in buf.chunks_mut(stride * band_rows).enumerate() {
