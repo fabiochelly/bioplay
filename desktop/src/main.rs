@@ -1192,7 +1192,6 @@ fn bench(app: &mut App, mode: &str) {
         s.osd_h = 1800.0;
         s.scale = 2.0;
     };
-    app.player.library.grid = mode != "list";
     if let Ok(path) = std::env::var("BIOPLAY_PLACE") {
         app.player.place.path = path;
     }

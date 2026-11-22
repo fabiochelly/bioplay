@@ -419,8 +419,6 @@ enum Icon {
     SubtitlesOff,
     Back,
     Open,
-    Grid,
-    Rows,
 }
 
 fn icon(painter: &egui::Painter, c: Pos2, size: f32, which: Icon, color: Color32) {
@@ -513,17 +511,6 @@ fn icon(painter: &egui::Painter, c: Pos2, size: f32, which: Icon, color: Color32
         }
         Icon::Back => {
             painter.add(Shape::line(vec![p(14.5, 6.0), p(8.5, 12.0), p(14.5, 18.0)], stroke));
-        }
-        Icon::Grid => {
-            for (x, y) in [(4.0, 4.0), (13.0, 4.0), (4.0, 13.0), (13.0, 13.0)] {
-                painter.rect_filled(Rect::from_min_max(p(x, y), p(x + 7.0, y + 7.0)), CornerRadius::same((1.5 * s) as u8), color);
-            }
-        }
-        Icon::Rows => {
-            for y in [4.5, 10.0, 15.5] {
-                painter.rect_filled(Rect::from_min_max(p(3.0, y), p(8.0, y + 4.0)), CornerRadius::same((1.0 * s) as u8), color);
-                painter.rect_filled(Rect::from_min_max(p(10.0, y + 1.0), p(21.0, y + 3.0)), CornerRadius::same((1.0 * s) as u8), color);
-            }
         }
         Icon::Close => {
             painter.line_segment([p(7.0, 7.0), p(17.0, 17.0)], stroke);
@@ -1117,11 +1104,7 @@ fn home(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actions: &mut 
             // Zone de défilement posée exactement sous la barre (et sous le fil d'Ariane).
             ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
                 ui.set_clip_rect(body);
-                if p.library.grid {
-                    grid(ui, p, &shelf, body, actions);
-                } else {
-                    list(ui, p, &shelf, body, actions);
-                }
+                grid(ui, p, &shelf, body, actions);
             });
         }
     });
@@ -1148,16 +1131,10 @@ fn nav_bar(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actions: &m
         if pill(ui, fr, Some(Icon::Folder), label, INK).clicked() {
             p.folders_open = !p.folders_open;
         }
-        // À droite : langue (drapeaux seuls), et juste avant, la bascule liste / miniatures.
+        // À droite : langue (drapeaux seuls).
         let flags = Rect::from_min_size(pos2(screen.max.x - SIDE - 92.0, y), vec2(92.0, NAV_H));
         plates.add(flags, NAV_H / 2.0, 0.42);
         flag_switch(ui, flags);
-        let view = Rect::from_min_size(pos2(flags.min.x - 10.0 - NAV_H, y), vec2(NAV_H, NAV_H));
-        plates.add(view, NAV_H / 2.0, 0.42);
-        let (i, tip) = if p.library.grid { (Icon::Rows, tr("Afficher en liste", "Show as list")) } else { (Icon::Grid, tr("Afficher en miniatures", "Show as thumbnails")) };
-        if icon_button(ui, view, i).on_hover_text(tip).clicked() {
-            p.library.toggle_view();
-        }
     });
 }
 
@@ -1299,6 +1276,10 @@ pub(crate) fn folder_art(rec: &mut Rec, r: Rect, hovered: bool) {
     rec.line_segment([pos2(x0 + cr.nw as f32, fy + 1.0), pos2(x0 + w - cr.ne as f32, fy + 1.0)], Stroke::new(1.5, Color32::from_white_alpha(170)));
 }
 
+/// Fond de l'accueil : uni, très sombre (moyenne de l'ancien dégradé). Peint dans les tuiles en
+/// cache autour de leurs miniatures : elles sont opaques et ne font que se recopier.
+pub const HOME_BG: Color32 = Color32::from_rgb(0x06, 0x09, 0x12);
+
 /// Formes d'une tuile de la bibliothèque, dessinées UNE fois dans une image en cache
 /// (`overlay::Sprite`) puis seulement recopiée tant que rien n'y change : un défilement ne
 /// redessine plus titres, pastilles ni dossiers.
@@ -1385,6 +1366,7 @@ fn grid(ui: &mut Ui, p: &mut Player, shelf: &crate::library::Shelf, body: Rect, 
                         let hovered = resp.hovered();
                         let count = dir_count(d);
                         let mut rec = Rec::new();
+                        rec.rect_filled(cell, CornerRadius::ZERO, HOME_BG);
                         folder_art(&mut rec, art, hovered);
                         rec.text(ui.ctx(), pos2(cell.min.x + 2.0, cell.min.y + th + 15.0), Align2::LEFT_CENTER, d.name.clone(), semi(13.5), INK);
                         rec.text(ui.ctx(), pos2(cell.min.x + 2.0, cell.min.y + th + 33.0), Align2::LEFT_CENTER, count.clone(), med(11.5), INK2);
@@ -1398,6 +1380,8 @@ fn grid(ui: &mut Ui, p: &mut Player, shelf: &crate::library::Shelf, body: Rect, 
                         let resp = ui.interact(cell, ui.id().with(("tile", &v.path)), Sense::click());
                         let hovered = resp.hovered();
                         let mut rec = Rec::new();
+                        // Sous la miniature : le fond, opaque (la miniature, elle, est posée à part).
+                        rec.rect_filled(Rect::from_min_max(pos2(cell.min.x, art.max.y), cell.max), CornerRadius::ZERO, HOME_BG);
                         let fill = thumbnail(ui, p, &mut rec, &v, art, hovered);
                         let title = v.title();
                         let g = title_galley(ui, title.clone(), w - 4.0, 13.5);
@@ -1406,73 +1390,6 @@ fn grid(ui: &mut Ui, p: &mut Player, shelf: &crate::library::Shelf, body: Rect, 
                         if resp.clicked() {
                             actions.push(Action::Play(v.path.clone()));
                         }
-                    }
-                }
-            }
-        }
-        ui.add_space(20.0);
-    });
-}
-
-fn list(ui: &mut Ui, p: &mut Player, shelf: &crate::library::Shelf, body: Rect, actions: &mut Vec<Action>) {
-    let row_h = 86.0;
-    let all = items(shelf);
-    let width = (body.width() - SIDE * 2.0).min(980.0);
-    let x0 = body.center().x - width / 2.0;
-    let mut area = egui::ScrollArea::vertical().id_salt(("list", &shelf.place)).auto_shrink([false, false]);
-    if let Some(y) = p.test_scroll {
-        area = area.vertical_scroll_offset(y);
-    }
-    area.show_rows(ui, row_h, all.len(), |ui, range| {
-        for i in range {
-            let (line, _) = ui.allocate_exact_size(vec2(body.width(), row_h), Sense::hover());
-            let row = Rect::from_min_size(pos2(x0, line.min.y + 3.0), vec2(width, row_h - 6.0));
-            let t = Rect::from_min_size(pos2(row.min.x + 6.0, row.min.y + 4.0), vec2(128.0, 72.0));
-            let tx = t.max.x + 16.0;
-            match all[i] {
-                Item::Dir(k) => {
-                    let d = &shelf.dirs[k];
-                    let resp = ui.interact(row, ui.id().with(("dirrow", &d.place)), Sense::click());
-                    let hovered = resp.hovered();
-                    let count = dir_count(d);
-                    let mut rec = Rec::new();
-                    if hovered {
-                        rec.rect_filled(row, CornerRadius::same(16), Color32::from_white_alpha(14));
-                    }
-                    folder_art(&mut rec, t, hovered);
-                    rec.text(ui.ctx(), pos2(tx, row.center().y - 10.0), Align2::LEFT_CENTER, d.name.clone(), semi(15.0), INK);
-                    rec.text(ui.ctx(), pos2(tx, row.center().y + 12.0), Align2::LEFT_CENTER, count.clone(), med(12.0), INK2);
-                    sprite(p, ui, row, ("dirrow", &d.name, &count, hovered), rec);
-                    if resp.clicked() {
-                        p.place = d.place.clone();
-                    }
-                }
-                Item::Video(k) => {
-                    let v = p.library.videos[k].clone();
-                    let resp = ui.interact(row, ui.id().with(("row", &v.path)), Sense::click());
-                    let hovered = resp.hovered();
-                    let mut rec = Rec::new();
-                    if hovered {
-                        rec.rect_filled(row, CornerRadius::same(16), Color32::from_white_alpha(14));
-                    }
-                    let fill = thumbnail(ui, p, &mut rec, &v, t, hovered);
-                    let title = v.title();
-                    let g = title_galley(ui, title.clone(), row.max.x - tx - 12.0, 15.0);
-                    let gh = g.size().y;
-                    let top = row.center().y - (gh + 20.0) / 2.0;
-                    rec.galley(pos2(tx, top), g, INK);
-                    let pos = position(p, &v.path);
-                    let detail = if v.duration <= 0.0 {
-                        String::new()
-                    } else if pos > 0.0 {
-                        format!("{} {}", tr("Reste", "Left"), clock(v.duration - pos))
-                    } else {
-                        clock(v.duration)
-                    };
-                    rec.text(ui.ctx(), pos2(tx, top + gh + 4.0), Align2::LEFT_TOP, detail.clone(), med(12.0), INK2);
-                    sprite(p, ui, row, ("row", &v.path, &title, &detail, fill, hovered), rec);
-                    if resp.clicked() {
-                        actions.push(Action::Play(v.path.clone()));
                     }
                 }
             }

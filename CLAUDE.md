@@ -16,8 +16,9 @@ Lecteur vidéo minimal (Android + bureau) construit sur libmpv, interface « ver
   + `script-binding main/…`. `./desktop/install.sh` installe dans `~/.local`. `--panel=list|tracks|…`
   ouvre un tiroir au démarrage ; toute autre option `--k=v` est passée à mpv.
 
-- Accueil (Android et bureau) : barre compacte (ouvrir, « Dossiers », liste/miniatures, drapeaux)
-  puis les vidéos des dossiers surveillés. Android : `Library.kt` (arbres SAF, miniatures WebP dans
+- Accueil (Android et bureau) : barre compacte (ouvrir, « Dossiers », drapeaux ; Android a aussi
+  la bascule liste/miniatures) puis les vidéos des dossiers surveillés, en miniatures sur le bureau,
+  sur un fond uni #060912. Android : `Library.kt` (arbres SAF, miniatures WebP dans
   `no_backup/thumbs`). Bureau : `library.rs` (dossiers dans `~/.local/state/bioplay/folders`,
   miniatures PNG tirées par ffmpeg dans `~/.cache/bioplay/thumbs`). Une seule incrustation mpv
   (mpv renvoie TOUTES ses incrustations au GPU à chaque changement : jamais une par miniature) ;
@@ -26,9 +27,9 @@ Lecteur vidéo minimal (Android + bureau) construit sur libmpv, interface « ver
   Accueil sans verre (boutons opaques, texte blanc net) ; le verre est pour la vidéo. Tuiles en
   cache (`overlay::Sprite`, `ui::Rec`) : titre, durée, avancée, liseré, dossier dessinés une fois
   par aspect puis recopiés (tronçons non transparents) ; seule la zone qui change est refaite,
-  le reste recopié de l'image précédente. Défilement : 71 → 44 % d'un cœur (mpv seul ≈ 21 %). Mesure en
+  le reste recopié de l'image précédente. Fond uni : miniatures (coins mélangés au fond) et tuiles opaques, simplement recopiées. Mesure en
   vrai du défilement : `BIOPLAY_SCROLLTEST=1 bioplay` (processeur par fil, position imposée à la
-  grille, indépendante de la souris). Mesure sans fenêtre : `BIOPLAY_BENCH=grid|list [BIOPLAY_PLACE=sous/dossier]
+  grille, indépendante de la souris). Mesure sans fenêtre : `BIOPLAY_BENCH=grid [BIOPLAY_PLACE=sous/dossier]
   [BIOPLAY_SNAPSHOT=f.png] bioplay [fichier]` (durées par étape, ou capture de l'interface) ;
   `BIOPLAY_BENCH=play bioplay --hwdec=auto-copy film.mkv` : vraie boucle, réveils, images, envois
   et CPU (processus, fils) commandes visibles / masquées / sauts. Redessin seulement de ce qui

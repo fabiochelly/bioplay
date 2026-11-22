@@ -109,7 +109,6 @@ pub struct Library {
     pub folders: Vec<PathBuf>,
     pub videos: Vec<Video>,
     pub scanning: bool,
-    pub grid: bool,
     tx: Sender<Event>,
     rx: Receiver<Event>,
     waker: Waker,
@@ -135,12 +134,10 @@ impl Library {
             .filter(|l| !l.trim().is_empty())
             .map(PathBuf::from)
             .collect();
-        let grid = std::fs::read_to_string(view_file()).map(|s| s.trim() != "list").unwrap_or(true);
         let mut lib = Self {
             folders,
             videos: read_list(),
             scanning: false,
-            grid,
             tx,
             rx,
             waker,
@@ -162,11 +159,6 @@ impl Library {
             *g = on;
             cv.notify_all();
         }
-    }
-
-    pub fn toggle_view(&mut self) {
-        self.grid = !self.grid;
-        write(&view_file(), if self.grid { "grid" } else { "list" });
     }
 
     pub fn add_folder(&mut self, f: PathBuf) {
@@ -586,10 +578,6 @@ fn cache_dir() -> PathBuf {
 
 fn folders_file() -> PathBuf {
     state_dir().join("folders")
-}
-
-fn view_file() -> PathBuf {
-    state_dir().join("view")
 }
 
 fn thumbs_dir() -> PathBuf {

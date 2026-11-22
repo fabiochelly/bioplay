@@ -53,13 +53,16 @@ pub struct Overlay {
     shown: bool,
     last: Option<Last>,
     /// Fond de l'accueil, calculé une fois par taille (pleine et demi-résolution), BGRA.
-    backdrop: Vec<(usize, usize, Vec<u8>)>,
+    backdrop: Vec<(usize, usize, usize, Vec<u8>)>,
     /// Miniatures de l'accueil mises à la taille d'affichage (coins arrondis compris), BGRA
     /// prémultiplié : posées dans l'image par simple copie de lignes, gardées tant qu'elles servent.
     scaled: HashMap<(String, usize, usize, usize), Vec<u8>>,
     /// Tuiles déjà dessinées, par empreinte et échelle.
     sprites: HashMap<u64, SpriteImg>,
 }
+
+/// Fond de l'accueil, BGRA (le même que `ui::HOME_BG`).
+pub const HOME_BG_BGRA: [u8; 4] = [0x12, 0x09, 0x06, 0xff];
 
 /// Une tuile de l'accueil (titre, durée, avancée, liseré ; ou dossier) : ses formes sont
 /// dessinées UNE fois dans une image en cache, puis seulement recopiée à sa place — seuls les
@@ -88,7 +91,8 @@ fn phase(i: usize, t: &mut Option<std::time::Instant>) {
 struct SpriteImg {
     w: usize,
     px: Vec<u8>,
-    spans: Vec<Vec<(u16, u16)>>,
+    /// Tronçons (début, fin, opaque) : opaques recopiés d'un bloc, les autres mélangés.
+    spans: Vec<Vec<(u16, u16, bool)>>,
 }
 
 /// Une miniature à poser (points de l'interface), découpée par `clip`.
@@ -173,23 +177,34 @@ impl Overlay {
                 }
             }
         }
+        // Le texte peint sur le fond opaque donne parfois 254 au lieu de 255 (arrondis du
+        // mélange) : compté opaque, ce qui permet de recopier ces lignes d'un bloc.
+        for p in px.chunks_exact_mut(4) {
+            if p[3] >= 250 {
+                p[3] = 255;
+            }
+        }
         let spans = px
             .chunks_exact(w * 4)
             .map(|row| {
-                let mut out = Vec::new();
-                let mut start = None;
+                // Tronçons de pixels de même nature : opaques (alpha 255) ou à mélanger.
+                let mut out: Vec<(u16, u16, bool)> = Vec::new();
+                let mut run: Option<(usize, bool)> = None;
                 for (x, p) in row.chunks_exact(4).enumerate() {
-                    match (p[3] != 0, start) {
-                        (true, None) => start = Some(x),
-                        (false, Some(s0)) => {
-                            out.push((s0 as u16, x as u16));
-                            start = None;
+                    let kind = match p[3] {
+                        0 => None,
+                        255 => Some(true),
+                        _ => Some(false),
+                    };
+                    if run.map(|r| Some(r.1)) != Some(kind) {
+                        if let Some((s0, o)) = run.take() {
+                            out.push((s0 as u16, x as u16, o));
                         }
-                        _ => {}
+                        run = kind.map(|o| (x, o));
                     }
                 }
-                if let Some(s0) = start {
-                    out.push((s0 as u16, w as u16));
+                if let Some((s0, o)) = run {
+                    out.push((s0 as u16, w as u16, o));
                 }
                 out
             })
@@ -440,13 +455,15 @@ impl Overlay {
             Some((prev, d)) => (d, Some(prev)),
             _ => (full, None),
         };
+        // Bande de la barre du haut (jusqu'au haut de la grille, 78 points) : léger reflet bleuté.
+        let nav_band = (78.0 * ppp).round() as usize;
         if backdrop {
-            self.backdrop(w as usize, h as usize);
+            self.backdrop(w as usize, h as usize, nav_band);
         }
         let mut buf = std::mem::take(&mut self.buffers[self.next]);
         buf.resize(stride * bh, 0);
         let prev_buf: Option<&[u8]> = prev.map(|i| self.buffers[i].as_slice());
-        let back: Option<&[u8]> = if backdrop { self.backdrop.iter().find(|b| (b.0, b.1) == (w as usize, h as usize)).map(|b| b.2.as_slice()) } else { None };
+        let back: Option<&[u8]> = if backdrop { self.backdrop.iter().find(|b| (b.0, b.1, b.2) == (w as usize, h as usize, nav_band)).map(|b| b.3.as_slice()) } else { None };
         let (textures, scaled, sprite_imgs) = (&self.textures, &self.scaled, &self.sprites);
         // Dessin par bandes horizontales, une par cœur : chaque bande fait tout pour ses lignes.
         // Petite zone (une seconde de l'horloge, un bouton survolé) : peu de fils, car chaque fil
@@ -505,29 +522,12 @@ impl Overlay {
                         }
                         let src = &scaled[k];
                         let sw = r[2] as usize;
-                        let radius = k.3 as i32;
                         let n = (z[2] - z[0]) as usize * 4;
                         for y in z[1]..z[3] {
                             let so = ((y - r[1]) as usize * sw + (z[0] - r[0]) as usize) * 4;
                             let d0 = (y - b0) as usize * stride + z[0] as usize * 4;
-                            let (s_row, d_row) = (&src[so..so + n], &mut band[d0..d0 + n]);
-                            let ly = y - r[1];
-                            if ly >= radius && ly < r[3] - radius && z[0] - r[0] >= radius && r[0] + r[2] - z[2] >= radius {
-                                d_row.copy_from_slice(s_row);
-                                continue;
-                            }
-                            for (sp, dp) in s_row.chunks_exact(4).zip(d_row.chunks_exact_mut(4)) {
-                                match sp[3] {
-                                    255 => dp.copy_from_slice(sp),
-                                    0 => {}
-                                    a => {
-                                        let k = 255 - a as u32;
-                                        for i in 0..4 {
-                                            dp[i] = (sp[i] as u32 + (dp[i] as u32 * k + 127) / 255).min(255) as u8;
-                                        }
-                                    }
-                                }
-                            }
+                            // Opaque, coins compris (mélangés au fond à la mise à l'échelle).
+                            band[d0..d0 + n].copy_from_slice(&src[so..so + n]);
                         }
                     }
                     phase(1, &mut clock);
@@ -542,9 +542,19 @@ impl Overlay {
                             let ly = (y - o[1]) as usize;
                             let d_row = (y - b0) as usize * stride;
                             let s_row = ly * img.w * 4;
-                            for &(a, b) in &img.spans[ly] {
+                            for &(a, b, opaque) in &img.spans[ly] {
                                 let xs = (o[0] + a as i32).max(z[0]);
                                 let xe = (o[0] + b as i32).min(z[2]);
+                                if xs >= xe {
+                                    continue;
+                                }
+                                if opaque {
+                                    let so = s_row + (xs - o[0]) as usize * 4;
+                                    let d = d_row + xs as usize * 4;
+                                    let n = (xe - xs) as usize * 4;
+                                    band[d..d + n].copy_from_slice(&img.px[so..so + n]);
+                                    continue;
+                                }
                                 for x in xs..xe {
                                     let so = s_row + (x - o[0]) as usize * 4;
                                     let d = d_row + x as usize * 4;
@@ -636,61 +646,39 @@ impl Overlay {
 
     /// Fond de l'accueil : trois lumières en dégradés radiaux, avec un tramage léger qui supprime
     /// les marches des dégradés sombres.
-    fn backdrop(&mut self, w: usize, h: usize) -> &[u8] {
-        if !self.backdrop.iter().any(|b| (b.0, b.1) == (w, h)) {
+    fn backdrop(&mut self, w: usize, h: usize, band: usize) -> &[u8] {
+        if !self.backdrop.iter().any(|b| (b.0, b.1, b.2) == (w, h, band)) {
+            // Fond uni, très sombre (#060912, moyenne de l'ancien dégradé) : tuiles et miniatures
+            // l'incluent, entièrement opaques, et ne font que se recopier. Dans la bande de la
+            // barre du haut seulement (jamais redessinée pendant un défilement, jamais couverte par
+            // les tuiles), un reflet bleuté très léger, plus vif au centre, qui se fond exactement
+            // dans le fond uni au bas de la bande ; tramé contre les marches.
             let mut px = vec![0u8; w * h * 4];
-            let aspect = w as f32 / h as f32;
-            // Très sombre : un noir bleuté, une lueur bleu nuit douce en haut, une autre plus
-            // discrète en bas à droite, les bords assombris.
-            let glows = [
-                (0.50f32, -0.10f32, 0.95f32, [0.050f32, 0.085, 0.170], 0.85f32),
-                (0.88, 1.05, 0.70, [0.045, 0.040, 0.120], 0.55),
-            ];
-            // Calculé par bandes, une par cœur (une fois par taille d'écran).
-            let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
-            let band = h.div_ceil(threads).max(1);
-            std::thread::scope(|sc| {
-                for (bi, chunk) in px.chunks_mut(w * 4 * band).enumerate() {
-                    sc.spawn(move || {
-                        for (ry, line) in chunk.chunks_exact_mut(w * 4).enumerate() {
-                            let y = bi * band + ry;
-                            let v = y as f32 / h as f32;
-                            for x in 0..w {
-                                let u = x as f32 / w as f32;
-                                let mut c = [0.012f32, 0.016, 0.026];
-                                for (cx, cy, r, col, k) in glows {
-                                    let dx = (u - cx) * aspect;
-                                    let dy = v - cy;
-                                    let e = (-(dx * dx + dy * dy) / (r * r) * 2.2).exp() * k;
-                                    for i in 0..3 {
-                                        c[i] += col[i] * e;
-                                    }
-                                }
-                                // Vignette : les bords un peu plus sombres.
-                                let (du, dv) = ((u - 0.5) * aspect, v - 0.5);
-                                let vig = 1.0 - 0.35 * ((du * du + dv * dv) * 1.1).min(1.0);
-                                for ch in &mut c {
-                                    *ch *= vig;
-                                }
-                                // Tramage : bruit de ±0,75 niveau, déterministe.
-                                let n = ((x as u32).wrapping_mul(0x9E37_79B1) ^ (y as u32).wrapping_mul(0x85EB_CA77)).wrapping_mul(0xC2B2_AE3D) >> 24;
-                                let d = (n as f32 / 255.0 - 0.5) * 1.5;
-                                let o = x * 4;
-                                line[o] = (c[2] * 255.0 + d).clamp(0.0, 255.0) as u8;
-                                line[o + 1] = (c[1] * 255.0 + d).clamp(0.0, 255.0) as u8;
-                                line[o + 2] = (c[0] * 255.0 + d).clamp(0.0, 255.0) as u8;
-                                line[o + 3] = 255;
-                            }
-                        }
-                    });
+            for p in px.chunks_exact_mut(4) {
+                p.copy_from_slice(&HOME_BG_BGRA);
+            }
+            let glow = [0x16 as f32, 0x0f as f32, 0x0a as f32]; // BGR, haut de la bande, au centre
+            for y in 0..band.min(h) {
+                let t = 1.0 - y as f32 / band.max(1) as f32;
+                let fade = t * t;
+                for x in 0..w {
+                    let u = (x as f32 / w as f32 - 0.5) * 2.0;
+                    let k = fade * (1.0 - 0.45 * u * u);
+                    let n = ((x as u32).wrapping_mul(0x9E37_79B1) ^ (y as u32).wrapping_mul(0x85EB_CA77)).wrapping_mul(0xC2B2_AE3D) >> 24;
+                    let d = (n as f32 / 255.0 - 0.5) * 1.2 * k.min(1.0);
+                    let o = (y * w + x) * 4;
+                    for i in 0..3 {
+                        let bg = HOME_BG_BGRA[i] as f32;
+                        px[o + i] = (bg + (glow[i] - bg) * k + d).round().clamp(0.0, 255.0) as u8;
+                    }
                 }
-            });
+            }
             if self.backdrop.len() >= 2 {
                 self.backdrop.remove(0);
             }
-            self.backdrop.push((w, h, px));
+            self.backdrop.push((w, h, band, px));
         }
-        &self.backdrop.iter().find(|b| (b.0, b.1) == (w, h)).unwrap().2
+        &self.backdrop.iter().find(|b| (b.0, b.1, b.2) == (w, h, band)).unwrap().3
     }
 }
 
@@ -879,11 +867,13 @@ fn scale_rounded(img: &egui::ColorImage, w: usize, h: usize, radius: f32) -> Vec
             let dx = (radius - cx).max(cx - (w as f32 - radius)).max(0.0);
             let dy = (radius - cy).max(cy - (h as f32 - radius)).max(0.0);
             let cover = if dx > 0.0 && dy > 0.0 { (radius - (dx * dx + dy * dy).sqrt() + 0.5).clamp(0.0, 1.0) } else { 1.0 };
+            // Coins mélangés une fois au fond (uni) : miniature entièrement opaque.
             let o = (y * w + x) * 4;
-            out[o] = (mix(2) * cover) as u8;
-            out[o + 1] = (mix(1) * cover) as u8;
-            out[o + 2] = (mix(0) * cover) as u8;
-            out[o + 3] = (255.0 * cover) as u8;
+            let bg = |i: usize| HOME_BG_BGRA[i] as f32 * (1.0 - cover);
+            out[o] = (mix(2) * cover + bg(0)) as u8;
+            out[o + 1] = (mix(1) * cover + bg(1)) as u8;
+            out[o + 2] = (mix(0) * cover + bg(2)) as u8;
+            out[o + 3] = 255;
         }
     }
     out
@@ -1101,7 +1091,7 @@ mod scale_bench {
         eprintln!("mise à l'échelle : {:.2} ms", t.elapsed().as_secs_f64() * 100.0);
         let t = std::time::Instant::now();
         let mut o = super::Overlay::new().unwrap();
-        o.backdrop(2880, 1800);
+        o.backdrop(2880, 1800, 156);
         eprintln!("fond : {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
     }
 }
