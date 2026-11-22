@@ -3,6 +3,7 @@
 //! verre (shader mpv qui floute la vidéo sous les plaques). Interface masquée : aucun coût.
 
 mod flags;
+mod hypr;
 mod i18n;
 mod library;
 mod libwin;
@@ -57,6 +58,8 @@ const SUB_MARGIN: i32 = 46;
 
 enum Message {
     Indexed { path: String, external: Option<String>, tracks: Vec<bioplay_core::Track> },
+    /// Retour à la bibliothèque demandé par celle-ci (mesures).
+    Home,
     Keyframes { path: String, keyframes: Vec<f64> },
     Picked(String),
 }
@@ -106,6 +109,12 @@ struct App {
     /// Vidéo ouverte de l'extérieur (« Ouvrir avec ») : fermer sa fenêtre quitte bioplay ;
     /// sinon on revient à la bibliothèque.
     outside: bool,
+    /// Sous Hyprland : la fenêtre de mpv est gardée d'une vidéo à l'autre (`hypr.rs`).
+    /// `kept` : elle ne se ferme plus à l'arrêt ; `aside` : elle attend, mise de côté ;
+    /// `bring` : à ramener dès la première image de la vidéo qui s'ouvre.
+    kept: bool,
+    aside: bool,
+    bring: bool,
     last_save: Instant,
     seek_from: Option<f64>,
     indexing: Vec<String>,
@@ -125,6 +134,8 @@ impl App {
             self.player.external.clear();
             self.player.panel = None;
             self.player.mpv.command(&["loadfile", path, "replace"]);
+            // Fenêtre gardée de la vidéo précédente : ramenée à la première image.
+            self.bring = self.aside;
         }
         self.redraw("ouverture d'un fichier");
     }
@@ -155,8 +166,14 @@ impl App {
     fn home(&mut self) {
         self.player.save();
         self.player.panel = None;
-        // Bibliothèque d'abord (déjà là dessous, ou affichée maintenant), puis la vidéo se ferme.
+        // Bibliothèque d'abord (déjà là dessous, ou affichée maintenant), puis la vidéo s'arrête :
+        // sa fenêtre est mise de côté (Hyprland) pour la suivante, sinon elle se ferme.
         libwin::show();
+        if self.kept {
+            hypr::set_video_aside();
+            self.aside = true;
+        }
+        self.bring = false;
         self.player.mpv.command(&["stop"]);
         self.outside = false;
         self.redraw("retour à l'accueil");
@@ -307,6 +324,11 @@ impl App {
             mpv::Change::Binding(name, state) => self.binding(&name, &state),
             mpv::Change::Loaded => {
                 self.player.loaded_at = Some(Instant::now());
+                // Première vidéo : sa fenêtre restera ouverte à l'arrêt (gardée pour la suivante).
+                if !self.kept && hypr::available() {
+                    self.player.mpv.set("force-window", "yes");
+                    self.kept = true;
+                }
                 self.player.keyframes.clear();
                 self.player.mpv.target.set(None);
                 self.player.apply_subs();
@@ -326,6 +348,10 @@ impl App {
             // Saut venu d'un raccourci mpv (flèches haut/bas…) : annoncé dans une bulle.
             // (Une image retenue pendant un saut précis part d'elle-même à la reprise.)
             mpv::Change::Restarted => {
+                if std::mem::take(&mut self.bring) {
+                    hypr::bring_video();
+                    self.aside = false;
+                }
                 if std::env::var_os("BIOPLAY_DEBUG_OPEN").is_some() {
                     eprintln!("image {:.4}", stamp());
                 }
@@ -441,6 +467,7 @@ impl App {
                 }
             }
             Message::Picked(path) => self.open(&path),
+            Message::Home => self.home(),
         }
         self.redraw("message (index, fichier choisi, dossier)");
     }
@@ -905,6 +932,9 @@ fn player_main(args: Vec<String>, tx: std::sync::mpsc::Sender<Message>, rx: std:
         hover_section: false,
         panel_section: false,
         outside: !files.is_empty(),
+        kept: false,
+        aside: false,
+        bring: false,
         last_save: Instant::now(),
         seek_from: None,
         indexing: Vec::new(),

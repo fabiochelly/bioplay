@@ -99,6 +99,24 @@ fn tests(ui: &LibraryWindow) -> Vec<slint::Timer> {
         });
         timers.push(t);
     }
+    // `BIOPLAY_AUTOPLAY_TWICE=1` (avec AUTOPLAY) : retour à la bibliothèque à 5 s, seconde
+    // ouverture à 7 s (fenêtre de mpv gardée).
+    if let (Ok(path), true) = (std::env::var("BIOPLAY_AUTOPLAY"), std::env::var_os("BIOPLAY_AUTOPLAY_TWICE").is_some()) {
+        let home = slint::Timer::default();
+        home.start(slint::TimerMode::SingleShot, std::time::Duration::from_secs(5), || {
+            with(|s| {
+                let _ = s.link.tx.send(Message::Home);
+                s.link.wake.wake();
+            });
+        });
+        timers.push(home);
+        let again = slint::Timer::default();
+        again.start(slint::TimerMode::SingleShot, std::time::Duration::from_secs(7), move || {
+            eprintln!("clic {:.4}", crate::stamp());
+            with(|s| s.play(path.clone()));
+        });
+        timers.push(again);
+    }
     if std::env::var_os("BIOPLAY_SCROLLTEST").is_some() {
         let weak = ui.as_weak();
         let start = std::time::Instant::now();

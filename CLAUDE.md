@@ -24,6 +24,10 @@ Lecteur vidéo minimal (Android + bureau) construit sur libmpv, interface « ver
     venait de l'extérieur). Raccourcis via `define-section` + `script-binding main/…`.
   - Hyprland (`~/.config/hypr/hyprland.lua`) : classes `bioplay` (bibliothèque) et `bioplay-video`
     (mpv) sans animation ; la vidéo s'ouvre agrandie par-dessus la bibliothèque, restée en place.
+    Après la première vidéo, la fenêtre de mpv est gardée : mise de côté au retour
+    (`special:bioplay`, par bioplay lui-même, `hypr.rs`), ramenée à la première image de la
+    suivante (≈ 150 ms au lieu de ≈ 230). Aucune règle n'y envoie de fenêtre. `BIOPLAY_NOKEEP=1`
+    désactive ; mesure : `BIOPLAY_AUTOPLAY=f BIOPLAY_AUTOPLAY_TWICE=1 BIOPLAY_DEBUG_OPEN=1`.
   `./desktop/install.sh` installe dans `~/.local`. `--panel=list|tracks|…` ouvre un tiroir ; toute
   autre option `--k=v` est passée à mpv.
 
