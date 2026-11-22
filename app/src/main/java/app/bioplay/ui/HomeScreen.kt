@@ -115,8 +115,8 @@ fun HomeScreen(
         }
     }
     val focusOn = { k: Any -> if (k == focusKey) Modifier.focusRequester(itemFocus) else Modifier }
-    Box(Modifier.fillMaxSize().background(Color(0xFF05070C))) {
-        Backdrop()
+    // Fond sobre : noir vers un bleu nuit très sombre, sans lumières.
+    Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Black, Color(0xFF0A1322))))) {
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.displayCutout)) {
             NavBar(library, onOpen, navFocus, onFolders = { folders = true })
             val videos = library.videos
@@ -222,16 +222,6 @@ private fun FolderListRow(d: Dir, modifier: Modifier, onClick: () -> Unit) {
             BasicText(d.count(), style = text(12, color = Ink.secondary), modifier = Modifier.padding(top = 3.dp))
         }
     }
-}
-
-/** Lumières de fond floues : c'est sur elles que le verre prend son relief. */
-@Composable
-private fun Backdrop() = Canvas(Modifier.fillMaxSize()) {
-    fun glow(x: Float, y: Float, r: Float, c: Color) =
-        drawCircle(Brush.radialGradient(listOf(c, Color.Transparent), Offset(size.width * x, size.height * y), size.maxDimension * r), size.maxDimension * r, Offset(size.width * x, size.height * y))
-    glow(0.18f, 0.1f, 0.45f, Color(0x553A7BFF))
-    glow(0.85f, 0.9f, 0.5f, Color(0x44A04BFF))
-    glow(0.7f, 0.05f, 0.3f, Color(0x2828E0D0))
 }
 
 @Composable

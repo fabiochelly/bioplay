@@ -58,7 +58,6 @@ object Ink {
     val faint = Color(0x66F7F8FA)
     /** Accent : un bleu glacier lumineux, lisible sur toute image. */
     val accent = Color(0xFF8FD8FF)
-    val accentDeep = Color(0xFF4FB2F0)
 }
 
 lateinit var Inter: FontFamily

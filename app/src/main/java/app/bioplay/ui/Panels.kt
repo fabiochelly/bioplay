@@ -314,7 +314,7 @@ fun GlassSlider(value: Double, min: Double, max: Double, step: Double, marks: Li
         val top = (size.height - h) / 2
         val f = ((value - min) / (max - min)).toFloat().coerceIn(0f, 1f)
         drawRoundRect(Color.White.copy(alpha = 0.16f), Offset(0f, top), Size(size.width, h), CornerRadius(h / 2))
-        drawRoundRect(Brush.horizontalGradient(listOf(Ink.accentDeep, Ink.accent)), Offset(0f, top), Size(size.width * f, h), CornerRadius(h / 2))
+        if (f > 0f) drawRoundRect(Ink.accent, Offset(0f, top), Size(maxOf(size.width * f, h), h), CornerRadius(h / 2))
         marks.forEach {
             val x = ((it - min) / (max - min)).toFloat() * size.width
             drawCircle(Color.White.copy(alpha = 0.55f), 2.dp.toPx(), Offset(x, size.height / 2))

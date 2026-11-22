@@ -589,11 +589,9 @@ private fun TracksButton(session: Session, onClick: () -> Unit) {
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Icon(Icons.speaker, size = 20.dp)
-        audio?.let { flagFor(it.lang, it.title) }?.let { LangFlag(it, Modifier.padding(start = 8.dp).width(21.dp).height(14.dp)) }
         BasicText(audio?.let(::shortName) ?: "—", style = text(13, FontWeight.SemiBold), modifier = Modifier.padding(start = 7.dp))
         Box(Modifier.padding(horizontal = 12.dp).width(1.dp).height(20.dp).background(Color.White.copy(alpha = 0.22f)))
         Icon(if (sub != null) Icons.subtitles else Icons.subtitlesOff, size = 20.dp, tint = if (sub != null) Ink.accent else Ink.secondary)
-        sub?.let { flagFor(it.lang, it.title) }?.let { LangFlag(it, Modifier.padding(start = 8.dp).width(21.dp).height(14.dp)) }
         BasicText(
             sub?.let(::shortName) ?: t("Aucun", "Off"),
             style = text(13, FontWeight.SemiBold, if (sub != null) Ink.accent else Ink.secondary),
@@ -657,13 +655,9 @@ private fun SeekBar(session: Session, modifier: Modifier, onPoke: () -> Unit) {
         val r = CornerRadius(h / 2)
         drawRoundRect(Color.White.copy(alpha = 0.22f), Offset(0f, top), Size(size.width, h), r)
         if (cache > f) drawRoundRect(Color.White.copy(alpha = 0.18f), Offset(0f, top), Size(size.width * cache, h), r)
-        drawRoundRect(
-            Brush.horizontalGradient(listOf(Ink.accentDeep, Ink.accent, Color.White), endX = size.width * f.coerceAtLeast(0.01f)),
-            Offset(0f, top), Size(size.width * f, h), r,
-        )
-        val x = size.width * f
-        if (drag != null) drawCircle(Ink.accent.copy(alpha = 0.25f), h * 2.2f, Offset(x, size.height / 2))
-        drawCircle(Color.White, h * 1.15f, Offset(x, size.height / 2))
+        // Partie lue à plat, du bleu des contours de boutons ; le curseur seulement pendant le glissé.
+        if (f > 0f) drawRoundRect(Ink.accent, Offset(0f, top), Size(maxOf(size.width * f, h), h), r)
+        if (drag != null) drawCircle(Color.White, h * 1.3f, Offset(size.width * f, size.height / 2))
     }
 }
 
