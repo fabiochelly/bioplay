@@ -25,6 +25,9 @@ class Session(private val context: Context) {
         Thread({ android.os.Process.setThreadPriority(android.os.Process.THREAD_PRIORITY_BACKGROUND); r.run() }, "subindex")
     }
 
+    /** Ouverture des fichiers réseau (connexion), à part de l'indexation. */
+    private val opener = Executors.newSingleThreadExecutor { r -> Thread(r, "open") }
+
     var uri by mutableStateOf<Uri?>(null); private set
     var title by mutableStateOf(""); private set
     /** Identité du fichier pour la reprise : nom et taille, stables quel que soit le lien. */
@@ -60,14 +63,34 @@ class Session(private val context: Context) {
 
     fun open(target: Uri) {
         save()
+        if (Smb.isSmb(target)) {
+            // Partage réseau : connexion et ouverture hors du fil principal.
+            uri = target
+            title = Smb.label(target)
+            say(t("Connexion…", "Connecting…"))
+            val gen = ++generation
+            opener.execute {
+                val size = Smb.size(context, target)
+                val fd = Smb.open(context, target)?.detachFd()
+                mpv.post {
+                    if (gen == generation) start(target, title, size, fd?.let { "fdclose://$it" })
+                    else fd?.let { android.os.ParcelFileDescriptor.adoptFd(it).close() }
+                }
+            }
+            return
+        }
+        start(target, displayName(target), fileSize(target), mpvUrl(target))
+    }
+
+    private fun start(target: Uri, name: String, size: Long, url: String?) {
         uri = target
-        title = displayName(target)
-        key = "$title|${fileSize(target)}"
+        title = name
+        key = "$title|$size"
         embedded = emptyMap()
         external.clear()
         resetZoom()
         content = Content.decode(prefs.getString("crop3:$key", null)) ?: Content.FULL
-        val url = mpvUrl(target) ?: return say(t("Fichier illisible", "Unreadable file"))
+        if (url == null) return say(t("Fichier illisible", "Unreadable file"))
         val resume = prefs.getFloat("pos:$key", 0f).toDouble()
         mpv.load(url, resume)
         if (resume > 5) say("${t("Reprise à", "Resuming at")} ${clock(resume)}")
@@ -75,9 +98,7 @@ class Session(private val context: Context) {
         val gen = ++generation
         indexing = true
         worker.execute {
-            val found = runCatching {
-                context.contentResolver.openFileDescriptor(target, "r")?.detachFd()?.let { SubIndex.parse(Core.index(it)) }
-            }.getOrNull().orEmpty()
+            val found = runCatching { readFd(target)?.let { SubIndex.parse(Core.index(it)) } }.getOrNull().orEmpty()
             mpv.post {
                 if (gen == generation) {
                     embedded = found.associateBy { it.number }
@@ -87,15 +108,18 @@ class Session(private val context: Context) {
         }
     }
 
+    /** Descripteur de lecture (détaché : celui qui le reçoit le ferme). */
+    private fun readFd(u: Uri): Int? =
+        if (Smb.isSmb(u)) Smb.open(context, u)?.detachFd()
+        else context.contentResolver.openFileDescriptor(u, "r")?.detachFd()
+
     fun addSubtitle(target: Uri) {
         val url = mpvUrl(target) ?: return say(t("Sous-titre illisible", "Unreadable subtitle"))
         val name = displayName(target)
         mpv.addSub(url, name.substringBeforeLast('.'))
         say("${t("Sous-titres", "Subtitles")} : $name")
         worker.execute {
-            val found = runCatching {
-                context.contentResolver.openFileDescriptor(target, "r")?.detachFd()?.let { SubIndex.parse(Core.index(it)) }
-            }.getOrNull()?.firstOrNull()
+            val found = runCatching { readFd(target)?.let { SubIndex.parse(Core.index(it)) } }.getOrNull()?.firstOrNull()
             if (found != null) mpv.post { external[url] = found }
         }
     }
@@ -271,6 +295,7 @@ class Session(private val context: Context) {
     fun close() {
         save()
         worker.shutdownNow()
+        opener.shutdownNow()
         mpv.destroy()
     }
 }

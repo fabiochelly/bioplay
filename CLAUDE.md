@@ -21,6 +21,14 @@ Lecteur vidéo minimal (Android + bureau) construit sur libmpv, interface « ver
   compose, le CPU ne dessine que le texte. Relecture en arrière-plan à chaque lancement, rien
   pendant la lecture.
 
+- Partages réseau (Android, `Smb.kt`, smbj) : adresses `smb://hôte[:port]/partage/chemin`, compte par
+  hôte dans les préférences. Le fichier est remis à mpv / l'index / les miniatures comme un
+  descripteur ordinaire (`openProxyFileDescriptor`, lecture anticipée adaptative). L'index MKV passe
+  par les Cues quand elles couvrent les sous-titres (sinon parcours complet). Essai sans interface
+  (debug) : `am start -n app.bioplay/.MainActivity --es smbtest "hôte:port|user|pass|smb://…"`.
+- TV (Google TV) : lanceur leanback + bannière, tout se pilote aux flèches (`focusRing`), OK =
+  pause, ←/→ = 10 s, Retour masque les commandes ; sans sélecteur de fichiers, « Partage réseau ».
+
 - `shared/flags.txt` : drapeaux des langues (formes simples + codes + mots de titre), lus par
   `desktop/src/flags.rs` et `app/.../ui/Flags.kt`. Ajouter un drapeau = l'ajouter ici seulement.
   `BIOPLAY_FLAGS=1 bioplay` affiche la galerie sur l'accueil.

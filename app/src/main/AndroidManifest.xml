@@ -3,11 +3,26 @@
 
     <!-- Luminosité du système, réglée d'un glissé vertical à gauche de l'écran. -->
     <uses-permission android:name="android.permission.WRITE_SETTINGS" />
+    <!-- Partages réseau (disque de la box, NAS). -->
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
+
+    <!-- Aussi pour les TV (Google TV) : ni écran tactile ni capteurs obligatoires. -->
+    <uses-feature android:name="android.hardware.touchscreen" android:required="false" />
+    <uses-feature android:name="android.software.leanback" android:required="false" />
+    <uses-feature android:name="android.hardware.sensor.accelerometer" android:required="false" />
+
+    <!-- Savoir si le sélecteur de fichiers du système existe (absent des TV). -->
+    <queries>
+        <intent><action android:name="android.intent.action.OPEN_DOCUMENT" /><data android:mimeType="video/*" /></intent>
+        <intent><action android:name="android.intent.action.OPEN_DOCUMENT_TREE" /></intent>
+    </queries>
 
     <application
         android:label="bioplay"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher"
+        android:banner="@drawable/banner"
         android:theme="@style/Theme.Bioplay"
         android:hardwareAccelerated="true"
         android:supportsRtl="true">
@@ -22,6 +37,7 @@
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
+                <category android:name="android.intent.category.LEANBACK_LAUNCHER" />
             </intent-filter>
             <!-- « Ouvrir avec » depuis le gestionnaire de fichiers ou une autre app. -->
             <intent-filter>

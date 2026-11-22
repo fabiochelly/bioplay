@@ -69,4 +69,7 @@ dependencies {
     implementation("androidx.activity:activity-compose:1.13.0")
     // Lecteur : mpv 0.42 + FFmpeg compilés pour Android.
     implementation("dev.jdtech.mpv:libmpv:1.1.0")
+    // Partages réseau (SMB 2/3, disque de la box) ; liste des partages par DCE/RPC.
+    implementation("com.hierynomus:smbj:0.14.0")
+    implementation("com.rapid7.client:dcerpc:0.12.13")
 }

@@ -48,6 +48,8 @@ object Icons {
         line("M3.5 18.5V6a1 1 0 0 1 1-1h4.6l2 2.2h7.4a1 1 0 0 1 1 1V10")
         line("M3.5 18.5l2.8-7.6a1 1 0 0 1 .94-.65H21a.8.8 0 0 1 .75 1.07L19.3 17.85a1 1 0 0 1-.94.65z")
     }.build()
+    /** Réseau : trois postes reliés. */
+    val network = icon("network", "M10 3h4a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-1v2h6a1 1 0 0 1 1 1v3h1a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1h-4a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1h1v-2h-10v2h1a1 1 0 0 1 1 1v4a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1v-4a1 1 0 0 1 1-1h1v-3a1 1 0 0 1 1-1h6V9h-1a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z")
     val grid = icon("grid", "M4 4h7v7H4zm9 0h7v7h-7zM4 13h7v7H4zm9 0h7v7h-7z")
     val rows = icon("rows", "M3 5h5v4H3zm7 .5h11v3H10zM3 10h5v4H3zm7 .5h11v3H10zM3 15h5v4H3zm7 .5h11v3H10z")
     val close = icon("close", "M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z")

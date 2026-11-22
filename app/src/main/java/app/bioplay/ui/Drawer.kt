@@ -26,6 +26,16 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun GlassDrawer(onDismiss: () -> Unit, width: Dp, content: @Composable ColumnScope.() -> Unit) {
     val screenH = LocalConfiguration.current.screenHeightDp.dp
+    // Télécommande : le focus va au choix en cours dès l'ouverture.
+    val first = remember { androidx.compose.ui.focus.FocusRequester() }
+    val keys = androidx.compose.ui.platform.LocalInputModeManager.current.inputMode == androidx.compose.ui.input.InputMode.Keyboard
+    androidx.compose.runtime.LaunchedEffect(Unit) {
+        if (keys) {
+            kotlinx.coroutines.delay(60)
+            runCatching { first.requestFocus() }
+        }
+    }
+    androidx.compose.runtime.CompositionLocalProvider(LocalDrawerFocus provides first) {
     Box(Modifier.fillMaxSize()) {
         Box(Modifier.fillMaxSize().clickable(remember { MutableInteractionSource() }, indication = null, onClick = onDismiss))
         Column(
@@ -36,6 +46,7 @@ fun GlassDrawer(onDismiss: () -> Unit, width: Dp, content: @Composable ColumnSco
                 .padding(horizontal = 20.dp, vertical = 16.dp),
             content = content,
         )
+    }
     }
 }
 

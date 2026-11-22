@@ -68,7 +68,7 @@ private fun Header(title: String, trailing: String? = null) {
 @Composable
 private fun Choice(selected: Boolean, onClick: () -> Unit, title: String, detail: String? = null, modifier: Modifier = Modifier, flag: String? = null) {
     Row(
-        modifier.fillMaxWidth().padding(vertical = 2.dp).clip16()
+        modifier.fillMaxWidth().padding(vertical = 2.dp).initialFocus(selected).focusRing(Row16).clip16()
             .background(if (selected) Ink.accent.copy(alpha = 0.16f) else Color.Transparent)
             .then(if (selected) Modifier.border(1.dp, Ink.accent.copy(alpha = 0.45f), Row16) else Modifier)
             .clickable(onClick = onClick)
@@ -92,6 +92,8 @@ fun Chip(label: String, selected: Boolean, compact: Boolean = false, onClick: ()
         label,
         style = text(if (compact) 12 else 14, FontWeight.SemiBold, if (selected) Color(0xFF06131C) else Ink.primary),
         modifier = Modifier
+            .initialFocus(selected)
+            .focusRing(Capsule)
             .clip(Capsule)
             .background(if (selected) Ink.accent else Color.White.copy(alpha = 0.10f))
             .border(1.dp, Color.White.copy(alpha = if (selected) 0f else 0.16f), Capsule)

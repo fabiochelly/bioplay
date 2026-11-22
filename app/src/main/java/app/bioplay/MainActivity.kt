@@ -51,6 +51,12 @@ class MainActivity : ComponentActivity() {
         uri?.let { session.addSubtitle(it) }
     }
 
+    /** Sélecteurs de fichiers du système : absents sur la plupart des TV. */
+    private val canPickFile by lazy {
+        Intent(Intent.ACTION_OPEN_DOCUMENT).addCategory(Intent.CATEGORY_OPENABLE).setType("video/*").resolveActivity(packageManager) != null
+    }
+    private val canPickFolder by lazy { Intent(Intent.ACTION_OPEN_DOCUMENT_TREE).resolveActivity(packageManager) != null }
+
     private val audio by lazy { getSystemService(AudioManager::class.java) }
     private val focus by lazy {
         AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
@@ -102,8 +108,8 @@ class MainActivity : ComponentActivity() {
                 key(homeVersion) {
                     HomeScreen(
                         library, gridState, listState,
-                        onOpen = { pickVideo.launch(arrayOf("video/*", "application/x-matroska")) },
-                        onAddFolder = { pickFolder.launch(null) },
+                        onOpen = if (canPickFile) ({ pickVideo.launch(arrayOf("video/*", "application/x-matroska")) }) else null,
+                        onAddFolder = if (canPickFolder) ({ pickFolder.launch(null) }) else null,
                         onPlay = { v -> fromOutside = false; play(Uri.parse(v.uri)) },
                     )
                 }
@@ -119,6 +125,16 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handle(intent: Intent?) {
+        // Essai d'un partage réseau sans interface (versions de développement seulement) :
+        // am start -n app.bioplay/.MainActivity --es smbtest "hôte:port|utilisateur|mot de passe|smb://hôte:port/partage/dossier"
+        if (BuildConfig.DEBUG) intent?.getStringExtra("smbtest")?.split('|')?.takeIf { it.size == 4 }?.let { (host, user, pass, folder) ->
+            Thread {
+                val err = Smb.connect(this, host, Smb.Login(user, pass))
+                android.util.Log.i("bioplay", "smbtest connect=${err ?: "ok"} shares=${runCatching { Smb.shares(this, host) }.getOrElse { it.toString() }}")
+                runOnUiThread { library.addFolder(Uri.parse(folder)) }
+            }.start()
+            return
+        }
         val uri = intent?.data ?: return
         if (intent.action != Intent.ACTION_VIEW) return
         fromOutside = true

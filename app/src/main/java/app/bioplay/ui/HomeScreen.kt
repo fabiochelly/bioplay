@@ -45,6 +45,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
+import androidx.compose.ui.focus.focusRequester
 import androidx.compose.ui.geometry.CornerRadius
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Size
@@ -76,21 +77,27 @@ fun HomeScreen(
     library: Library,
     gridState: LazyGridState,
     listState: LazyListState,
-    onOpen: () -> Unit,
-    onAddFolder: () -> Unit,
+    onOpen: (() -> Unit)?,
+    onAddFolder: (() -> Unit)?,
     onPlay: (Video) -> Unit,
 ) {
     var folders by remember { mutableStateOf(false) }
-    BackHandler(folders) { folders = false }
+    var network by remember { mutableStateOf(false) }
+    BackHandler(folders || network) { if (network) network = false else folders = false }
+    // Ajouter un dossier : sélecteur du système s'il existe (téléphone), sinon partage réseau (TV).
+    val addFolder = onAddFolder ?: { network = true }
+    val keys = androidx.compose.ui.platform.LocalInputModeManager.current.inputMode == androidx.compose.ui.input.InputMode.Keyboard
+    val navFocus = remember { androidx.compose.ui.focus.FocusRequester() }
+    androidx.compose.runtime.LaunchedEffect(keys) { if (keys) runCatching { navFocus.requestFocus() } }
     Box(Modifier.fillMaxSize().background(Color(0xFF05070C))) {
         Backdrop()
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.displayCutout)) {
-            NavBar(library, onOpen, onFolders = { folders = true })
+            NavBar(library, onOpen, navFocus, onFolders = { folders = true })
             val videos = library.videos
             when {
                 library.folders.isEmpty() -> Empty(
                     t("Choisissez les dossiers où sont vos vidéos.", "Choose the folders holding your videos."),
-                    t("Ajouter un dossier", "Add a folder"), onAddFolder,
+                    t("Ajouter un dossier", "Add a folder"), addFolder,
                 )
                 videos.isEmpty() -> Empty(
                     if (library.scanning) t("Recherche des vidéos…", "Looking for videos…")
@@ -113,7 +120,8 @@ fun HomeScreen(
                 }
             }
         }
-        if (folders) FoldersSheet(library, onAddFolder, onDismiss = { folders = false })
+        if (folders) FoldersSheet(library, onAddFolder, onNetwork = { folders = false; network = true }, onDismiss = { folders = false })
+        if (network) NetworkSheet(library, onDone = { network = false }, onDismiss = { network = false })
     }
 }
 
@@ -128,13 +136,15 @@ private fun Backdrop() = Canvas(Modifier.fillMaxSize()) {
 }
 
 @Composable
-private fun NavBar(library: Library, onOpen: () -> Unit, onFolders: () -> Unit) {
+private fun NavBar(library: Library, onOpen: (() -> Unit)?, focus: androidx.compose.ui.focus.FocusRequester, onFolders: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(horizontal = 16.dp, vertical = 12.dp), verticalAlignment = Alignment.CenterVertically) {
         Row(Modifier.weight(1f), verticalAlignment = Alignment.CenterVertically) {
-            GlassButton(onOpen, size = 44.dp) { Icon(Icons.open, size = 22.dp) }
-            Spacer(Modifier.width(10.dp))
+            if (onOpen != null) {
+                GlassButton(onOpen, size = 44.dp) { Icon(Icons.open, size = 22.dp) }
+                Spacer(Modifier.width(10.dp))
+            }
             // Le seul bouton à libellé ; il rétrécit (points de suspension) sur un écran étroit.
-            GlassButton(onFolders, Modifier.weight(1f, fill = false), shape = Capsule, size = 44.dp) {
+            GlassButton(onFolders, Modifier.weight(1f, fill = false).focusRequester(focus), shape = Capsule, size = 44.dp) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.folder, size = 19.dp)
                     BasicText(t("Dossiers", "Folders"), Modifier.padding(start = 8.dp).weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis, style = text(14, FontWeight.SemiBold))
@@ -160,7 +170,7 @@ private fun FlagSwitch() {
         for ((code, en) in listOf("fr" to false, "en" to true)) {
             val on = Lang.en == en
             Box(
-                Modifier.fillMaxHeight().padding(vertical = 4.dp).clip(Capsule)
+                Modifier.fillMaxHeight().padding(vertical = 4.dp).focusRing(Capsule).clip(Capsule)
                     .background(if (on) Ink.accent.copy(alpha = 0.22f) else Color.Transparent)
                     .clickable { if (!on) Lang.toggle(context) }
                     .padding(horizontal = 9.dp),
@@ -229,7 +239,7 @@ private fun Video.title() = name.substringBeforeLast('.').replace('.', ' ').repl
 
 @Composable
 private fun GridTile(library: Library, v: Video, onClick: () -> Unit) {
-    Column(Modifier.clip(Tile).clickable(onClick = onClick)) {
+    Column(Modifier.focusRing(Tile).clip(Tile).clickable(onClick = onClick)) {
         Thumb(library, v, Modifier.fillMaxWidth().aspectRatio(16f / 9f))
         BasicText(
             v.title(), maxLines = 2, overflow = TextOverflow.Ellipsis, style = text(13, FontWeight.SemiBold),
@@ -241,7 +251,7 @@ private fun GridTile(library: Library, v: Video, onClick: () -> Unit) {
 @Composable
 private fun ListRow(library: Library, v: Video, onClick: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().clip(Tile).clickable(onClick = onClick).padding(horizontal = 6.dp, vertical = 6.dp),
+        Modifier.fillMaxWidth().focusRing(Tile).clip(Tile).clickable(onClick = onClick).padding(horizontal = 6.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Thumb(library, v, Modifier.width(112.dp).aspectRatio(16f / 9f))
@@ -261,7 +271,7 @@ private fun ListRow(library: Library, v: Video, onClick: () -> Unit) {
 // --- Dossiers surveillés -------------------------------------------------------------------------
 
 @Composable
-private fun FoldersSheet(library: Library, onAdd: () -> Unit, onDismiss: () -> Unit) {
+private fun FoldersSheet(library: Library, onAdd: (() -> Unit)?, onNetwork: () -> Unit, onDismiss: () -> Unit) {
     Box(Modifier.fillMaxSize().background(Color.Black.copy(alpha = 0.35f)).clickable(remember { MutableInteractionSource() }, indication = null, onClick = onDismiss)) {
         Column(
             Modifier.align(Alignment.Center).padding(16.dp).widthIn(max = 520.dp).fillMaxWidth()
@@ -281,10 +291,18 @@ private fun FoldersSheet(library: Library, onAdd: () -> Unit, onDismiss: () -> U
                 items(library.folders, key = { it.uri }) { f -> FolderRow(f, library.videos.count { it.folder == f.uri }) { library.removeFolder(f) } }
             }
             Spacer(Modifier.height(10.dp))
-            GlassButton(onAdd, shape = Capsule, size = 46.dp, modifier = Modifier.align(Alignment.CenterHorizontally)) {
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Icon(Icons.add, size = 19.dp)
-                    BasicText(t("Ajouter un dossier", "Add a folder"), style = text(14, FontWeight.SemiBold), modifier = Modifier.padding(start = 8.dp, end = 4.dp))
+            Row(Modifier.align(Alignment.CenterHorizontally), horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                if (onAdd != null) GlassButton(onAdd, shape = Capsule, size = 46.dp) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.add, size = 19.dp)
+                        BasicText(t("Ajouter un dossier", "Add a folder"), style = text(14, FontWeight.SemiBold), modifier = Modifier.padding(start = 8.dp, end = 4.dp))
+                    }
+                }
+                GlassButton(onNetwork, shape = Capsule, size = 46.dp) {
+                    Row(verticalAlignment = Alignment.CenterVertically) {
+                        Icon(Icons.network, size = 19.dp)
+                        BasicText(t("Partage réseau", "Network share"), style = text(14, FontWeight.SemiBold), modifier = Modifier.padding(start = 8.dp, end = 4.dp))
+                    }
                 }
             }
         }
@@ -294,7 +312,7 @@ private fun FoldersSheet(library: Library, onAdd: () -> Unit, onDismiss: () -> U
 @Composable
 private fun FolderRow(f: Folder, count: Int, onRemove: () -> Unit) {
     Row(Modifier.fillMaxWidth().padding(vertical = 4.dp), verticalAlignment = Alignment.CenterVertically) {
-        Icon(Icons.folder, size = 20.dp, tint = Ink.accent)
+        Icon(if (f.network) Icons.network else Icons.folder, size = 20.dp, tint = Ink.accent)
         Column(Modifier.weight(1f).padding(start = 12.dp)) {
             BasicText(f.name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = text(15, FontWeight.SemiBold))
             BasicText("${f.place} · $count ${t("vidéos", "videos")}", maxLines = 1, overflow = TextOverflow.Ellipsis, style = text(12, color = Ink.secondary))

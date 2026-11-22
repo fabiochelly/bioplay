@@ -1,5 +1,18 @@
 package app.bioplay.ui
 
+import androidx.compose.foundation.focusable
+import androidx.compose.ui.focus.FocusRequester
+import androidx.compose.ui.focus.focusRequester
+import androidx.compose.ui.input.InputMode
+import androidx.compose.ui.input.key.Key
+import androidx.compose.ui.input.key.KeyEvent
+import androidx.compose.ui.input.key.KeyEventType
+import androidx.compose.ui.input.key.key
+import androidx.compose.ui.input.key.onKeyEvent
+import androidx.compose.ui.input.key.onPreviewKeyEvent
+import androidx.compose.ui.input.key.type
+import androidx.compose.ui.platform.LocalInputModeManager
+
 import android.os.Build
 import android.view.HapticFeedbackConstants
 import android.view.Surface
@@ -167,8 +180,47 @@ fun PlayerScreen(session: Session, onBack: () -> Unit, onAddSubtitle: () -> Unit
         }
     }
 
+    // Télécommande (ou clavier) : le focus part de l'écran entier, puis va aux commandes.
+    val keys = LocalInputModeManager.current.inputMode == InputMode.Keyboard
+    val rootFocus = remember { FocusRequester() }
+    val playFocus = remember { FocusRequester() }
+    LaunchedEffect(controls, panel, keys) {
+        if (panel != null) return@LaunchedEffect
+        delay(40)
+        runCatching { if (controls && keys) playFocus.requestFocus() else rootFocus.requestFocus() }
+    }
+    fun seekBy(d: Double) {
+        val max = if (mpv.duration > 0) mpv.duration else Double.MAX_VALUE
+        val target = (mpv.now() + d).coerceIn(0.0, max)
+        mpv.seek(target)
+        session.say("${if (d > 0) "+" else "−"}${delta(abs(d))}  ·  ${clock(target)}")
+    }
+    fun onKey(e: KeyEvent): Boolean {
+        if (e.type != KeyEventType.KeyDown) return false
+        poke++
+        when (e.key) {
+            Key.MediaPlayPause -> { mpv.togglePause(); return true }
+            Key.MediaPlay -> { mpv.pauseTo(false); return true }
+            Key.MediaPause -> { mpv.pauseTo(true); return true }
+            Key.MediaFastForward -> { seekBy(60.0); return true }
+            Key.MediaRewind -> { seekBy(-60.0); return true }
+            Key.MediaNext -> { session.stepSub(1); return true }
+            Key.MediaPrevious -> { session.stepSub(-1); return true }
+            Key.Menu -> { panel = if (panel == null) Panel.TRACKS else null; return true }
+        }
+        if (panel != null || controls) return false
+        // Commandes masquées : OK met en pause, ←/→ sautent de 10 s, ↑/↓ montrent les commandes.
+        return when (e.key) {
+            Key.DirectionCenter, Key.Enter, Key.NumPadEnter, Key.Spacebar -> { mpv.togglePause(); controls = true; true }
+            Key.DirectionLeft -> { seekBy(-10.0); true }
+            Key.DirectionRight -> { seekBy(10.0); true }
+            Key.DirectionUp, Key.DirectionDown -> { controls = true; true }
+            else -> false
+        }
+    }
+
     CompositionLocalProvider(LocalPlates provides plates) {
-    Box(Modifier.fillMaxSize().background(Color.Black)) {
+    Box(Modifier.fillMaxSize().background(Color.Black).onPreviewKeyEvent(::onKey).focusRequester(rootFocus).focusable()) {
         // Mode direct : la surface a le format exact de la vidéo (le décodeur y dessine tel quel).
         // Par défaut, la partie utile de l'image (sans ses bandes noires incrustées) remplit
         // l'écran sans être rognée : seules restent les bandes dues au format de l'écran.
@@ -227,7 +279,7 @@ fun PlayerScreen(session: Session, onBack: () -> Unit, onAddSubtitle: () -> Unit
         )
 
         AnimatedVisibility(controls && panel == null, enter = fadeIn(tween(160)), exit = fadeOut(tween(260))) {
-            Controls(session, onBack, onPanel = { panel = it; poke++ }, onPoke = { poke++ })
+            Controls(session, onBack, playFocus, onPanel = { panel = it; poke++ }, onPoke = { poke++ })
         }
 
         scrub?.let { ScrubOsd(it, session, Modifier.align(Alignment.Center)) }
@@ -255,6 +307,8 @@ fun PlayerScreen(session: Session, onBack: () -> Unit, onAddSubtitle: () -> Unit
     }
     }
     BackHandler(panel != null) { panel = null }
+    // À la télécommande, Retour masque d'abord les commandes.
+    BackHandler(panel == null && controls && keys) { controls = false }
     // Tiroir ouvert : la lecture s'arrête, tout va à l'interface ; elle reprend à la fermeture
     // si elle tournait avant.
     var resumeAfterPanel by remember { mutableStateOf(false) }
@@ -437,7 +491,7 @@ private fun Message(session: Session, modifier: Modifier) {
 }
 
 @Composable
-private fun Controls(session: Session, onBack: () -> Unit, onPanel: (Panel) -> Unit, onPoke: () -> Unit) {
+private fun Controls(session: Session, onBack: () -> Unit, playFocus: FocusRequester, onPanel: (Panel) -> Unit, onPoke: () -> Unit) {
     val mpv = session.mpv
     Box(Modifier.fillMaxSize()) {
         // Voiles en haut et en bas : le verre reste lisible même sur une image claire.
@@ -473,7 +527,7 @@ private fun Controls(session: Session, onBack: () -> Unit, onPanel: (Panel) -> U
             }
             Row(Modifier.padding(top = 4.dp).fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 GlassButton({ session.stepSub(-1); onPoke() }, plain = true, size = 50.dp) { Icon(Icons.prevLine, size = 24.dp) }
-                GlassButton({ mpv.togglePause(); onPoke() }, plain = true, size = 58.dp) {
+                GlassButton({ mpv.togglePause(); onPoke() }, Modifier.focusRequester(playFocus), plain = true, size = 58.dp) {
                     Icon(if (mpv.paused) Icons.play else Icons.pause, size = 32.dp)
                 }
                 GlassButton({ session.stepSub(1); onPoke() }, plain = true, size = 50.dp) { Icon(Icons.nextLine, size = 24.dp) }
@@ -516,6 +570,7 @@ private fun TracksButton(session: Session, onClick: () -> Unit) {
     val scale by animateFloatAsState(if (pressed) 0.95f else 1f, spring(dampingRatio = 0.55f, stiffness = 900f), label = "press")
     Row(
         Modifier
+            .focusRing(Capsule)
             .graphicsLayer { scaleX = scale; scaleY = scale }
             .clip(Capsule)
             .background(Color.White.copy(alpha = if (pressed) 0.16f else 0.07f))
@@ -553,7 +608,19 @@ private fun SeekBar(session: Session, modifier: Modifier, onPoke: () -> Unit) {
     var drag by remember { mutableStateOf<Float?>(null) }
     val thick by animateDpAsState(if (drag != null) 9.dp else 5.dp, label = "seek")
     Canvas(
-        modifier.height(36.dp).pointerInput(session) {
+        modifier.height(36.dp)
+            // Télécommande : barre sélectionnée, ←/→ avancent ou reculent de 10 s.
+            .focusRing(RoundedCornerShape(12.dp))
+            .onKeyEvent { e ->
+                if (e.type != KeyEventType.KeyDown) return@onKeyEvent false
+                val d = when (e.key) { Key.DirectionLeft -> -10.0; Key.DirectionRight -> 10.0; else -> return@onKeyEvent false }
+                val max = if (mpv.duration > 0) mpv.duration else Double.MAX_VALUE
+                mpv.seek((mpv.now() + d).coerceIn(0.0, max), exact = false)
+                onPoke()
+                true
+            }
+            .focusable()
+            .pointerInput(session) {
             awaitEachGesture {
                 val down = awaitFirstDown()
                 down.consume()
@@ -594,3 +661,6 @@ private fun SeekBar(session: Session, modifier: Modifier, onPoke: () -> Unit) {
 
 /** Pourcentage arrondi, utile aux panneaux. */
 fun pct(v: Double) = (v * 100).roundToInt()
+
+/** « 10 s », « 1 min ». */
+private fun delta(d: Double): String = if (d >= 60) "${(d / 60).roundToInt()} min" else "${d.roundToInt()} s"

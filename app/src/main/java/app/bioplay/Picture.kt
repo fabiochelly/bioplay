@@ -29,8 +29,9 @@ object Picture {
 
     fun measure(context: Context, uri: Uri, durationS: Double): Content? = runCatching {
         val r = MediaMetadataRetriever()
+        var pfd: android.os.ParcelFileDescriptor? = null
         try {
-            r.setDataSource(context, uri)
+            pfd = setSource(r, context, uri)
             val found = mutableListOf<Content>()
             for (f in listOf(0.12, 0.27, 0.42, 0.57, 0.72, 0.87)) {
                 val bmp = r.getScaledFrameAtTime((durationS * f * 1e6).toLong(), MediaMetadataRetriever.OPTION_CLOSEST_SYNC, W, H) ?: continue
@@ -52,8 +53,20 @@ object Picture {
             c
         } finally {
             r.release()
+            runCatching { pfd?.close() }
         }
     }.getOrNull()
+
+    /** Source du lecteur d'images : fichier local, ou descripteur pour un partage réseau. */
+    fun setSource(r: MediaMetadataRetriever, context: Context, uri: Uri): android.os.ParcelFileDescriptor? {
+        if (Smb.isSmb(uri)) {
+            val pfd = Smb.open(context, uri) ?: error("smb")
+            r.setDataSource(pfd.fileDescriptor)
+            return pfd
+        }
+        r.setDataSource(context, uri)
+        return null
+    }
 
     /** Valeur sur laquelle le plus d'images s'accordent (à 1,5 % près). */
     private fun vote(values: List<Float>, low: Boolean): Float {

@@ -29,11 +29,22 @@ data class Video(val uri: String, val name: String, val size: Long, val modified
 
 /** Un dossier surveillé (arbre SAF dont l'accès est conservé). */
 class Folder(val uri: String) {
-    private val id = runCatching { DocumentsContract.getTreeDocumentId(Uri.parse(uri)) }.getOrDefault("")
-    val path: String = id.substringAfter(':', "")
-    val name: String get() = path.substringAfterLast('/').ifEmpty { if (id.startsWith("primary")) t("Stockage interne", "Internal storage") else id.substringBefore(':') }
-    val place: String get() = (if (id.startsWith("primary")) t("Stockage interne", "Internal storage") else t("Carte SD", "SD card")) +
-        if (path.isEmpty()) "" else "/" + path
+    val network = Smb.isSmb(uri)
+    private val parsed = Uri.parse(uri)
+    private val id = if (network) "" else runCatching { DocumentsContract.getTreeDocumentId(parsed) }.getOrDefault("")
+    val path: String = if (network) parsed.pathSegments.joinToString("/") else id.substringAfter(':', "")
+    val name: String get() = path.substringAfterLast('/').ifEmpty {
+        when {
+            network -> parsed.encodedAuthority.orEmpty()
+            id.startsWith("primary") -> t("Stockage interne", "Internal storage")
+            else -> id.substringBefore(':')
+        }
+    }
+    val place: String get() = when {
+        network -> "${t("Réseau", "Network")} · ${parsed.encodedAuthority}/$path"
+        else -> (if (id.startsWith("primary")) t("Stockage interne", "Internal storage") else t("Carte SD", "SD card")) +
+            if (path.isEmpty()) "" else "/" + path
+    }
 }
 
 /**
@@ -86,7 +97,7 @@ class Library(private val context: Context) {
     }
 
     fun addFolder(tree: Uri) {
-        runCatching { context.contentResolver.takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+        if (!Smb.isSmb(tree)) runCatching { context.contentResolver.takePersistableUriPermission(tree, Intent.FLAG_GRANT_READ_URI_PERMISSION) }
         if (folders.any { it.uri == tree.toString() }) return
         folders = folders + Folder(tree.toString())
         saveFolders()
@@ -96,7 +107,7 @@ class Library(private val context: Context) {
     fun removeFolder(f: Folder) {
         folders = folders.filter { it.uri != f.uri }
         saveFolders()
-        runCatching { context.contentResolver.releasePersistableUriPermission(Uri.parse(f.uri), Intent.FLAG_GRANT_READ_URI_PERMISSION) }
+        if (!f.network) runCatching { context.contentResolver.releasePersistableUriPermission(Uri.parse(f.uri), Intent.FLAG_GRANT_READ_URI_PERMISSION) }
         videos = videos.filter { it.folder != f.uri }
         refresh()
     }
@@ -121,7 +132,7 @@ class Library(private val context: Context) {
             val found = mutableListOf<Video>()
             var complete = true
             for (root in roots) {
-                val list = runCatching { scan(Uri.parse(root)) }.getOrNull()
+                val list = runCatching { if (Smb.isSmb(root)) scanSmb(Uri.parse(root)) else scan(Uri.parse(root)) }.getOrNull()
                 if (list == null) {
                     // Dossier momentanément illisible (carte retirée) : on garde ce qu'on en savait.
                     complete = false
@@ -169,6 +180,29 @@ class Library(private val context: Context) {
                     } else if (isVideo(name, mime)) {
                         out += Video(DocumentsContract.buildDocumentUriUsingTree(tree, id).toString(), name, c.getLong(3), c.getLong(4), tree.toString())
                     }
+                }
+            }
+        }
+        return out
+    }
+
+    /** Vidéos d'un dossier réseau, sous-dossiers compris (dossiers cachés exclus). */
+    private fun scanSmb(root: Uri): List<Video> {
+        val out = mutableListOf<Video>()
+        val pending = ArrayDeque<Pair<Uri, Int>>()
+        pending += root to 0
+        var first = true
+        while (pending.isNotEmpty()) {
+            val (dir, depth) = pending.removeFirst()
+            val entries = if (first) Smb.list(context, dir) else runCatching { Smb.list(context, dir) }.getOrNull() ?: continue
+            first = false
+            for (e in entries) {
+                if (e.name.startsWith('.')) continue
+                val u = dir.buildUpon().appendPath(e.name).build()
+                if (e.dir) {
+                    if (depth < 8) pending += u to depth + 1
+                } else if (isVideo(e.name, "")) {
+                    out += Video(u.toString(), e.name, e.size, e.modified, root.toString())
                 }
             }
         }
@@ -225,8 +259,9 @@ class Library(private val context: Context) {
     /** Une image représentative : vers 15 % du film, plus loin si elle est presque noire. */
     private fun frame(uri: Uri): Pair<Bitmap?, Double> {
         val r = MediaMetadataRetriever()
+        var pfd: android.os.ParcelFileDescriptor? = null
         try {
-            r.setDataSource(context, uri)
+            pfd = Picture.setSource(r, context, uri)
             val dur = (r.extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLongOrNull() ?: 0L) / 1000.0
             var best: Bitmap? = null
             for (f in listOf(0.15, 0.32, 0.5)) {
@@ -238,6 +273,7 @@ class Library(private val context: Context) {
             return best?.let(::trimBars) to dur
         } finally {
             r.release()
+            runCatching { pfd?.close() }
         }
     }
 
