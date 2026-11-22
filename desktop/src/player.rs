@@ -52,6 +52,11 @@ pub struct Player {
     pub scrub: Option<Scrub>,
     pub activity: Instant,
     pub recents: Vec<Recent>,
+    pub library: crate::library::Library,
+    /// Miniatures de l'accueil à poser cette image (incrustations mpv sous l'interface).
+    pub thumbs: Vec<crate::overlay::Thumb>,
+    /// Fenêtre des dossiers surveillés ouverte (accueil).
+    pub folders_open: bool,
     pub over_ui: bool,
     /// Dernières valeurs annoncées : un message seulement quand l'utilisateur change quelque chose.
     pub shown: HashMap<&'static str, f64>,
@@ -78,7 +83,11 @@ pub fn message_alpha(age: f32) -> f32 {
 
 impl Player {
     pub fn new(mpv: Mpv) -> Self {
+        let library = crate::library::Library::new(mpv.waker());
         Self {
+            library,
+            folders_open: false,
+            thumbs: Vec::new(),
             mpv,
             embedded: HashMap::new(),
             external: HashMap::new(),
@@ -278,12 +287,8 @@ impl Player {
         let (pos, dur) = (s.position, s.duration);
         self.recents.retain(|r| r.path != path);
         self.recents.insert(0, Recent { path, name, position: pos, duration: dur });
-        self.recents.truncate(8);
-        save_recents(&self.recents);
-    }
-
-    pub fn forget(&mut self, path: &str) {
-        self.recents.retain(|r| r.path != path);
+        // Gardée longtemps : c'est elle qui donne l'avancée de chaque miniature de l'accueil.
+        self.recents.truncate(5000);
         save_recents(&self.recents);
     }
 }

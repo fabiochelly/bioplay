@@ -4,6 +4,7 @@
 
 mod flags;
 mod i18n;
+mod library;
 mod mpv;
 mod overlay;
 mod player;
@@ -19,7 +20,7 @@ use i18n::tr;
 use player::{Panel, Player};
 
 const GLASS_SHADER: &str = include_str!("../shaders/glass.glsl");
-const VIDEO_EXT: &[&str] = &["mkv", "mp4", "m4v", "avi", "webm", "mov", "ts", "m2ts", "wmv", "flv", "mpg", "mpeg", "ogv", "3gp"];
+use library::VIDEO_EXT;
 const SUBTITLE_EXT: &[&str] = &["srt", "ass", "ssa", "vtt", "sub", "sup"];
 
 /// Raccourcis propres à bioplay. Tout le reste (input.conf, raccourcis par défaut) reste à mpv.
@@ -51,6 +52,7 @@ const SUB_MARGIN: i32 = 46;
 enum Message {
     Indexed { path: String, external: Option<String>, tracks: Vec<bioplay_core::Track> },
     Picked(String),
+    Folder(PathBuf),
 }
 
 struct App {
@@ -93,6 +95,9 @@ impl App {
             self.player.embedded.clear();
             self.player.external.clear();
             self.player.panel = None;
+            self.player.folders_open = false;
+            // Miniatures libérées : la mémoire va au film.
+            self.player.library.forget_images();
             self.player.mpv.command(&["loadfile", path, "replace"]);
         }
         self.dirty = true;
@@ -121,6 +126,16 @@ impl App {
                 .pick_file();
             if let Some(f) = f {
                 let _ = tx.send(Message::Picked(f.to_string_lossy().into_owned()));
+                waker.wake();
+            }
+        });
+    }
+
+    fn pick_folder(&self) {
+        let (tx, waker) = (self.tx.clone(), self.waker);
+        std::thread::spawn(move || {
+            if let Some(f) = rfd::FileDialog::new().set_title(tr("Ajouter un dossier", "Add a folder")).pick_folder() {
+                let _ = tx.send(Message::Folder(f));
                 waker.wake();
             }
         });
@@ -355,6 +370,7 @@ impl App {
                 }
             }
             Message::Picked(path) => self.open(&path),
+            Message::Folder(f) => self.player.library.add_folder(f),
         }
         self.dirty = true;
     }
@@ -417,6 +433,9 @@ impl App {
         let prims = self.ctx.tessellate(std::mem::take(&mut out.shapes), out.pixels_per_point);
         let home = !self.player.has_file();
         self.overlay.present(&self.player.mpv, &prims, &mut out.textures_delta, [w as u32, h as u32], out.pixels_per_point, home);
+        if home {
+            self.overlay.show_thumbs(&self.player.mpv, &self.player.thumbs, out.pixels_per_point);
+        }
         self.visible = !prims.is_empty();
         self.last_frame = Instant::now();
 
@@ -506,8 +525,8 @@ impl App {
         for a in actions {
             match a {
                 ui::Action::Open => self.pick(),
+                ui::Action::AddFolder => self.pick_folder(),
                 ui::Action::Play(path) => self.open(&path),
-                ui::Action::Forget(path) => self.player.forget(&path),
             }
         }
     }
@@ -533,6 +552,11 @@ impl App {
             }
             while let Ok(m) = self.rx.try_recv() {
                 self.on_message(m);
+            }
+            // Bibliothèque : relecture et miniatures en pause pendant la lecture.
+            self.player.library.set_hold(self.player.has_file());
+            if self.player.library.poll() && !self.player.has_file() {
+                self.dirty = true;
             }
             let now = Instant::now();
             if self.next_frame.is_some_and(|t| t <= now) || (self.visible && hide_at <= now) {

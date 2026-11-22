@@ -41,8 +41,13 @@ object Icons {
         addPath(PathParser().parsePathString(lines).toNodes(), fill = SolidColor(Color.White))
     }.build()
     val subtitlesOff = icon("subtitles-off", "M20 4H6.83l8 8H20v2h-3.17l4.93 4.93c.15-.28.24-.59.24-.93V6c0-1.1-.9-2-2-2zM1.04 3.87l1.2 1.2C2.09 5.35 2 5.66 2 6v12c0 1.1.9 2 2 2h13.17l2.96 2.96 1.41-1.41L2.45 2.45 1.04 3.87zM8 12v2H4v-2h4zm6 4.83V18H4v-2h9.17l.83.83z")
-    /** Ouvrir : une feuille au coin plié, un triangle de lecture dedans. */
-    val open = icon("open", "M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6zM6 20V4h7v5h5v11H6z", "M10 11.2v6.6l5.2-3.3z")
+    /** Ouvrir : le dossier ouvert habituel (fond du dossier, rabat avant incliné), au trait. */
+    val open = ImageVector.Builder("open", 24.dp, 24.dp, 24f, 24f).apply {
+        val line = { d: String -> addPath(PathParser().parsePathString(d).toNodes(), fill = null, stroke = SolidColor(Color.White), strokeLineWidth = 2f,
+            strokeLineCap = androidx.compose.ui.graphics.StrokeCap.Round, strokeLineJoin = androidx.compose.ui.graphics.StrokeJoin.Round) }
+        line("M3.5 18.5V6a1 1 0 0 1 1-1h4.6l2 2.2h7.4a1 1 0 0 1 1 1V10")
+        line("M3.5 18.5l2.8-7.6a1 1 0 0 1 .94-.65H21a.8.8 0 0 1 .75 1.07L19.3 17.85a1 1 0 0 1-.94.65z")
+    }.build()
     val grid = icon("grid", "M4 4h7v7H4zm9 0h7v7h-7zM4 13h7v7H4zm9 0h7v7h-7z")
     val rows = icon("rows", "M3 5h5v4H3zm7 .5h11v3H10zM3 10h5v4H3zm7 .5h11v3H10zM3 15h5v4H3zm7 .5h11v3H10z")
     val close = icon("close", "M19 6.41L17.59 5 12 10.59 6.41 5 5 6.41 10.59 12 5 17.59 6.41 19 12 13.41 17.59 19 19 17.59 13.41 12z")

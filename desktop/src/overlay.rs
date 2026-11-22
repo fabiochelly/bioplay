@@ -46,11 +46,46 @@ pub struct Overlay {
     last: Option<Last>,
     /// Fond de l'accueil, calculé une fois par taille d'écran (BGRA).
     backdrop: Option<(usize, usize, Vec<u8>)>,
+    /// Accueil affiché : fond en incrustation 0, miniatures au-dessus, interface en 63.
+    home: bool,
+    backdrop_shown: bool,
+    thumbs: Thumbs,
 }
+
+/// Une miniature à poser (points de l'interface), découpée par `clip`.
+pub struct Thumb {
+    pub key: String,
+    pub rect: Rect,
+    pub clip: Rect,
+    pub radius: f32,
+    pub image: std::sync::Arc<egui::ColorImage>,
+}
+
+/// Miniatures confiées à mpv, chacune dans sa propre incrustation (1 à 62) : la carte
+/// graphique les compose, le défilement ne fait que les déplacer. Mises à l'échelle une fois
+/// (coins arrondis compris) et gardées tant qu'elles servent.
+#[derive(Default)]
+struct Thumbs {
+    scaled: HashMap<(String, usize, usize, usize), Vec<u8>>,
+    shown: HashMap<usize, ((String, usize, usize, usize), [i32; 5])>,
+}
+
+const UI_HOME: &str = "63";
+const THUMB_IDS: usize = 62;
 
 impl Overlay {
     pub fn new() -> Result<Self, String> {
-        Ok(Self { textures: HashMap::new(), buffers: Default::default(), next: 0, shown: false, last: None, backdrop: None })
+        Ok(Self {
+            textures: HashMap::new(),
+            buffers: Default::default(),
+            next: 0,
+            shown: false,
+            last: None,
+            backdrop: None,
+            home: false,
+            backdrop_shown: false,
+            thumbs: Thumbs::default(),
+        })
     }
 
     fn update_textures(&mut self, delta: &egui::TexturesDelta) {
@@ -87,17 +122,99 @@ impl Overlay {
         textures: &mut egui::TexturesDelta,
         size: [u32; 2],
         ppp: f32,
-        backdrop: bool,
+        home: bool,
     ) {
-        match self.render(prims, textures, size, ppp, backdrop) {
+        if home != self.home {
+            // Changement d'écran : l'interface change d'incrustation, le fond part ou arrive.
+            self.hide(mpv);
+            if !home {
+                self.leave_home(mpv);
+            }
+            self.home = home;
+        }
+        if home {
+            self.show_backdrop(mpv, size);
+        }
+        let id = self.ui_id();
+        match self.render(prims, textures, size, ppp, false) {
             Drawn::Empty => self.hide(mpv),
             Drawn::Same => {}
             Drawn::New { x, y, w, h } => {
                 let buf = &self.buffers[self.last.as_ref().map_or(0, |l| l.buffer)];
                 let addr = format!("&{}", buf.as_ptr() as usize);
-                mpv.command_sync(&["overlay-add", "0", &x.to_string(), &y.to_string(), &addr, "0", "bgra", &w.to_string(), &h.to_string(), &(w * 4).to_string()]);
+                mpv.command_sync(&["overlay-add", id, &x.to_string(), &y.to_string(), &addr, "0", "bgra", &w.to_string(), &h.to_string(), &(w * 4).to_string()]);
                 self.shown = true;
             }
+        }
+    }
+
+    fn ui_id(&self) -> &'static str {
+        if self.home { UI_HOME } else { "0" }
+    }
+
+    /// Fond de l'accueil, posé une fois par taille d'écran sous tout le reste.
+    fn show_backdrop(&mut self, mpv: &Mpv, size: [u32; 2]) {
+        let (w, h) = (size[0].max(1) as usize, size[1].max(1) as usize);
+        if self.backdrop_shown && self.backdrop.as_ref().is_some_and(|b| (b.0, b.1) == (w, h)) {
+            return;
+        }
+        let addr = format!("&{}", self.backdrop(w, h).as_ptr() as usize);
+        mpv.command_sync(&["overlay-add", "0", "0", "0", &addr, "0", "bgra", &w.to_string(), &h.to_string(), &(w * 4).to_string()]);
+        self.backdrop_shown = true;
+    }
+
+    /// Sortie de l'accueil : fond et miniatures retirés, leur mémoire rendue.
+    fn leave_home(&mut self, mpv: &Mpv) {
+        self.show_thumbs(mpv, &[], 1.0);
+        self.thumbs.scaled.clear();
+        if self.backdrop_shown {
+            mpv.command_sync(&["overlay-remove", "0"]);
+            self.backdrop_shown = false;
+        }
+        self.backdrop = None;
+    }
+
+    /// Pose les miniatures visibles ; une incrustation n'est renvoyée à mpv que si elle a bougé.
+    pub fn show_thumbs(&mut self, mpv: &Mpv, list: &[Thumb], ppp: f32) {
+        let mut used = std::collections::HashSet::new();
+        let mut next_shown = HashMap::new();
+        for (i, t) in list.iter().take(THUMB_IDS).enumerate() {
+            let id = i + 1;
+            let x = (t.rect.min.x * ppp).round() as i32;
+            let y = (t.rect.min.y * ppp).round() as i32;
+            let w = ((t.rect.max.x * ppp).round() as i32 - x).max(1) as usize;
+            let h = ((t.rect.max.y * ppp).round() as i32 - y).max(1) as usize;
+            let r = (t.radius * ppp).round() as usize;
+            let key = (t.key.clone(), w, h, r);
+            let cx0 = x.max((t.clip.min.x * ppp).round() as i32);
+            let cy0 = y.max((t.clip.min.y * ppp).round() as i32);
+            let cx1 = (x + w as i32).min((t.clip.max.x * ppp).round() as i32);
+            let cy1 = (y + h as i32).min((t.clip.max.y * ppp).round() as i32);
+            if cx0 >= cx1 || cy0 >= cy1 {
+                continue;
+            }
+            let buf = self.thumbs.scaled.entry(key.clone()).or_insert_with(|| scale_rounded(&t.image, w, h, r as f32));
+            let offset = ((cy0 - y) as usize * w + (cx0 - x) as usize) * 4;
+            let params = [cx0, cy0, cx1 - cx0, cy1 - cy0, offset as i32];
+            used.insert(key.clone());
+            if self.thumbs.shown.get(&id) != Some(&(key.clone(), params)) {
+                let addr = format!("&{}", buf.as_ptr() as usize + offset);
+                mpv.command_sync(&[
+                    "overlay-add", &id.to_string(), &cx0.to_string(), &cy0.to_string(), &addr, "0", "bgra",
+                    &(cx1 - cx0).to_string(), &(cy1 - cy0).to_string(), &(w * 4).to_string(),
+                ]);
+            }
+            next_shown.insert(id, (key, params));
+        }
+        for id in self.thumbs.shown.keys() {
+            if !next_shown.contains_key(id) {
+                mpv.command_sync(&["overlay-remove", &id.to_string()]);
+            }
+        }
+        self.thumbs.shown = next_shown;
+        // Images mises à l'échelle gardées pour un aller-retour de défilement, pas au-delà.
+        if self.thumbs.scaled.len() > 160 {
+            self.thumbs.scaled.retain(|k, _| used.contains(k));
         }
     }
 
@@ -250,13 +367,12 @@ impl Overlay {
     /// Retire la superposition et rend la mémoire des tampons.
     pub fn hide(&mut self, mpv: &Mpv) {
         if self.shown {
-            mpv.command_sync(&["overlay-remove", "0"]);
+            mpv.command_sync(&["overlay-remove", self.ui_id()]);
             self.shown = false;
             self.last = None;
             for b in &mut self.buffers {
                 *b = Vec::new();
             }
-            self.backdrop = None;
         }
     }
 
@@ -408,6 +524,45 @@ impl Canvas<'_> {
     }
 }
 
+/// Miniature mise à la taille voulue (bilinéaire), coins arrondis adoucis, en BGRA prémultiplié.
+fn scale_rounded(img: &egui::ColorImage, w: usize, h: usize, radius: f32) -> Vec<u8> {
+    let [iw, ih] = img.size;
+    let mut out = vec![0u8; w * h * 4];
+    if iw == 0 || ih == 0 {
+        return out;
+    }
+    // Recadrage au rapport de la vignette (centre gardé).
+    let (ta, ra) = (iw as f32 / ih as f32, w as f32 / h as f32);
+    let (sw, sh) = if ta > ra { (ih as f32 * ra, ih as f32) } else { (iw as f32, iw as f32 / ra) };
+    let (sx0, sy0) = ((iw as f32 - sw) / 2.0, (ih as f32 - sh) / 2.0);
+    let px = |x: usize, y: usize| img.pixels[y.min(ih - 1) * iw + x.min(iw - 1)];
+    for y in 0..h {
+        let fy = (sy0 + (y as f32 + 0.5) * sh / h as f32 - 0.5).max(0.0);
+        let (y0, ty) = (fy as usize, fy.fract());
+        for x in 0..w {
+            let fx = (sx0 + (x as f32 + 0.5) * sw / w as f32 - 0.5).max(0.0);
+            let (x0, tx) = (fx as usize, fx.fract());
+            let (a, b, c, d) = (px(x0, y0), px(x0 + 1, y0), px(x0, y0 + 1), px(x0 + 1, y0 + 1));
+            let mix = |k: usize| {
+                let top = a[k] as f32 + (b[k] as f32 - a[k] as f32) * tx;
+                let bot = c[k] as f32 + (d[k] as f32 - c[k] as f32) * tx;
+                top + (bot - top) * ty
+            };
+            // Couverture du coin arrondi (distance au centre de l'arc, bord adouci d'un pixel).
+            let (cx, cy) = (x as f32 + 0.5, y as f32 + 0.5);
+            let dx = (radius - cx).max(cx - (w as f32 - radius)).max(0.0);
+            let dy = (radius - cy).max(cy - (h as f32 - radius)).max(0.0);
+            let cover = if dx > 0.0 && dy > 0.0 { (radius - (dx * dx + dy * dy).sqrt() + 0.5).clamp(0.0, 1.0) } else { 1.0 };
+            let o = (y * w + x) * 4;
+            out[o] = (mix(2) * cover) as u8;
+            out[o + 1] = (mix(1) * cover) as u8;
+            out[o + 2] = (mix(0) * cover) as u8;
+            out[o + 3] = (255.0 * cover) as u8;
+        }
+    }
+    out
+}
+
 /// Lecture bilinéaire, bords répétés.
 fn sample(t: &Texture, x: f32, y: f32) -> [f32; 4] {
     let (xf, yf) = (x.floor(), y.floor());
@@ -476,5 +631,48 @@ mod tests {
                 assert_eq!(pa, fa, "rendu partiel différent du rendu complet (bouton {lit})");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod bench {
+    use super::*;
+
+    /// Coût d'une image complète de l'accueil en miniatures (hors images, posées par mpv) (plein écran 2560×1440, 15 vignettes).
+    /// `cargo test --release -- --ignored --nocapture grid_cost`
+    #[test]
+    #[ignore]
+    fn grid_cost() {
+        let ctx = egui::Context::default();
+        crate::ui::fonts(&ctx);
+        let ppp = 1.6;
+        ctx.set_pixels_per_point(ppp);
+        let img = egui::ColorImage::from_rgb([320, 180], &vec![120u8; 320 * 180 * 3]);
+        let tex = ctx.load_texture("t", img, egui::TextureOptions::LINEAR);
+        let mut o = Overlay::new().unwrap();
+        let size = [2560, 1440];
+        let mut times = Vec::new();
+        for k in 0..8 {
+            let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1600.0, 900.0))), ..Default::default() };
+            let out = ctx.run_ui(raw, |ui| {
+                let p = ui.painter();
+                for i in 0..15 {
+                    let r = Rect::from_min_size(egui::pos2(28.0 + (i % 5) as f32 * 310.0, 90.0 + (i / 5) as f32 * 250.0 + k as f32 * 7.0), egui::vec2(294.0, 165.0));
+                    // Les images sont posées par mpv : ici le liseré, le rail d'avancée et la durée.
+                    let _ = &tex;
+                    p.rect_stroke(r, 12.0, egui::Stroke::new(1.0, Color32::from_white_alpha(34)), egui::StrokeKind::Inside);
+                    let rail = Rect::from_min_size(egui::pos2(r.min.x + 9.0, r.max.y - 11.0), egui::vec2(r.width() - 18.0, 4.0));
+                    p.rect_filled(rail, 2.0, Color32::from_white_alpha(52));
+                    p.text(r.right_top() + egui::vec2(-10.0, 9.0), egui::Align2::RIGHT_TOP, "1:42:10", egui::FontId::proportional(11.0), Color32::WHITE);
+                    p.text(r.left_bottom() + egui::vec2(2.0, 8.0), egui::Align2::LEFT_TOP, "Un titre de film assez long", egui::FontId::proportional(13.5), Color32::WHITE);
+                }
+            });
+            let prims = ctx.tessellate(out.shapes, out.pixels_per_point);
+            let mut t = out.textures_delta;
+            let s = std::time::Instant::now();
+            o.render(&prims, &mut t, size, ppp, false);
+            times.push(s.elapsed().as_secs_f64() * 1000.0);
+        }
+        eprintln!("rendu par image (ms) : {times:.1?}");
     }
 }

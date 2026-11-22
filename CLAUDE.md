@@ -13,6 +13,14 @@ Lecteur vidéo minimal (Android + bureau) construit sur libmpv, interface « ver
   + `script-binding main/…`. `./desktop/install.sh` installe dans `~/.local`. `--panel=list|tracks|…`
   ouvre un tiroir au démarrage ; toute autre option `--k=v` est passée à mpv.
 
+- Accueil (Android et bureau) : barre compacte (ouvrir, « Dossiers », liste/miniatures, drapeaux)
+  puis les vidéos des dossiers surveillés. Android : `Library.kt` (arbres SAF, miniatures WebP dans
+  `no_backup/thumbs`). Bureau : `library.rs` (dossiers dans `~/.local/state/bioplay/folders`,
+  miniatures PNG tirées par ffmpeg dans `~/.cache/bioplay/thumbs`) ; les miniatures sont des
+  incrustations mpv 1–62 entre le fond (0) et l'interface (63 à l'accueil) : la carte graphique les
+  compose, le CPU ne dessine que le texte. Relecture en arrière-plan à chaque lancement, rien
+  pendant la lecture.
+
 - `shared/flags.txt` : drapeaux des langues (formes simples + codes + mots de titre), lus par
   `desktop/src/flags.rs` et `app/.../ui/Flags.kt`. Ajouter un drapeau = l'ajouter ici seulement.
   `BIOPLAY_FLAGS=1 bioplay` affiche la galerie sur l'accueil.

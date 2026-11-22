@@ -137,7 +137,7 @@ private fun NavBar(library: Library, onOpen: () -> Unit, onFolders: () -> Unit) 
             GlassButton(onFolders, Modifier.weight(1f, fill = false), shape = Capsule, size = 44.dp) {
                 Row(verticalAlignment = Alignment.CenterVertically) {
                     Icon(Icons.folder, size = 19.dp)
-                    BasicText(t("Dossiers surveillés", "Watched folders"), Modifier.padding(start = 8.dp).weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis, style = text(14, FontWeight.SemiBold))
+                    BasicText(t("Dossiers", "Folders"), Modifier.padding(start = 8.dp).weight(1f, fill = false), maxLines = 1, overflow = TextOverflow.Ellipsis, style = text(14, FontWeight.SemiBold))
                     if (library.folders.isNotEmpty()) BasicText("${library.folders.size}", style = text(13, FontWeight.SemiBold, Ink.accent), modifier = Modifier.padding(start = 8.dp))
                 }
             }
@@ -212,15 +212,16 @@ private fun Thumb(library: Library, v: Video, modifier: Modifier) {
     }
 }
 
-/** Avancée de la lecture, en bas de la miniature (rien si elle n'a pas commencé). */
+/** Avancée de la lecture sur chaque miniature : un rail discret, rempli jusqu'à la position. */
 @Composable
 private fun BoxScope.Progress(library: Library, v: Video) {
-    val pos = library.position(v)
-    if (pos <= 0 || v.duration <= 0) return
-    val f = (pos / v.duration).toFloat().coerceIn(0f, 1f)
-    Canvas(Modifier.align(Alignment.BottomCenter).fillMaxWidth().height(4.dp)) {
-        drawRect(Color.Black.copy(alpha = 0.5f))
-        drawRoundRect(Ink.accent, size = Size(size.width * f, size.height), cornerRadius = CornerRadius(size.height / 2))
+    if (v.duration <= 0) return
+    val f = (library.position(v) / v.duration).toFloat().coerceIn(0f, 1f)
+    Canvas(Modifier.align(Alignment.BottomCenter).fillMaxWidth().padding(horizontal = 8.dp, vertical = 7.dp).height(4.dp)) {
+        val r = CornerRadius(size.height / 2)
+        drawRoundRect(Color.Black.copy(alpha = 0.45f), cornerRadius = r)
+        drawRoundRect(Color.White.copy(alpha = 0.22f), cornerRadius = r)
+        if (f > 0f) drawRoundRect(Ink.accent, size = Size(maxOf(size.height, size.width * f), size.height), cornerRadius = r)
     }
 }
 
