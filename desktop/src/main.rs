@@ -51,6 +51,9 @@ const PREVIEW_LIFE: Duration = Duration::from_millis(1600);
 /// Numéro de l'incrustation mpv qui porte l'aperçu.
 const PREVIEW_OVERLAY: &str = "7";
 
+/// Durée du mouvement après un cran de molette (défilement animé d'egui compris).
+const WHEEL_MOTION: Duration = Duration::from_millis(350);
+
 /// Marge basse des sous-titres (unités mpv : pixels rapportés à une image de 720 lignes).
 const SUB_MARGIN: i32 = 46;
 
@@ -78,6 +81,10 @@ struct App {
     preview_on: bool,
     /// La lecture tournait à l'ouverture du tiroir : elle reprend à sa fermeture.
     resume_after_panel: bool,
+    /// Dernier cran de molette : l'interface est dessinée en résolution réduite pendant le mouvement.
+    last_wheel: Option<Instant>,
+    /// Mesure : durées (ms) de chaque image — interface, triangles, rendu + envoi à mpv.
+    profile: Option<Vec<[f64; 3]>>,
     visible: bool,
     shader_opts: String,
     hover_section: bool,
@@ -137,6 +144,14 @@ impl App {
         });
     }
 
+    /// Retour à la bibliothèque : position gardée, lecture arrêtée, mpv revient à l'accueil.
+    fn home(&mut self) {
+        self.player.save();
+        self.player.panel = None;
+        self.player.mpv.command(&["stop"]);
+        self.dirty = true;
+    }
+
     fn pick_folder(&self) {
         let (tx, waker) = (self.tx.clone(), self.waker);
         std::thread::spawn(move || {
@@ -180,13 +195,16 @@ impl App {
                     self.events.push(button(false));
                 }
                 "mouse-left" if down || up => self.events.push(button(down)),
-                "wheel-up" | "wheel-down" if down => self.events.push(Event::MouseWheel {
+                "wheel-up" | "wheel-down" if down => {
+                    self.last_wheel = Some(Instant::now());
+                    self.events.push(Event::MouseWheel {
                     unit: egui::MouseWheelUnit::Line,
                     delta: vec2(0.0, if name == "wheel-up" { 1.0 } else { -1.0 }),
                     modifiers: Default::default(),
                     phase: egui::TouchPhase::Move,
                     source: egui::MouseWheelSource::Wheel,
-                }),
+                    })
+                }
                 _ => {}
             }
             if name == "mouse-left" && down {
@@ -436,6 +454,7 @@ impl App {
             ..Default::default()
         };
         raw.viewports.entry(egui::ViewportId::ROOT).or_default().native_pixels_per_point = Some(scale);
+        let t0 = Instant::now();
         let mut plates = Vec::new();
         let mut actions = Vec::new();
         let player = &mut self.player;
@@ -444,9 +463,21 @@ impl App {
             plates = p;
             actions = a;
         });
-        let prims = self.ctx.tessellate(std::mem::take(&mut out.shapes), out.pixels_per_point);
+        let t1 = Instant::now();
+        // Défilement en cours : demi-résolution, puis une image nette juste après l'arrêt.
+        let moving = self.last_wheel.is_some_and(|t| t.elapsed() < WHEEL_MOTION);
+        let reduce = if moving { 2 } else { 1 };
+        if !moving {
+            self.last_wheel = None;
+        }
+        let prims = self.ctx.tessellate(std::mem::take(&mut out.shapes), out.pixels_per_point / reduce as f32);
+        let t2 = Instant::now();
         let home = !self.player.has_file();
-        self.overlay.present(&self.player.mpv, &prims, &mut out.textures_delta, [w as u32, h as u32], out.pixels_per_point, home, &self.player.thumbs);
+        self.overlay.present(&self.player.mpv, &prims, &mut out.textures_delta, [w as u32, h as u32], out.pixels_per_point, home, &self.player.thumbs, reduce);
+        if let Some(p) = &mut self.profile {
+            let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1000.0;
+            p.push([ms(t0, t1), ms(t1, t2), ms(t2, Instant::now())]);
+        }
         self.visible = !prims.is_empty();
         self.last_frame = Instant::now();
 
@@ -521,6 +552,11 @@ impl App {
             .map(|v| v.repaint_delay)
             .filter(|d| *d < Duration::from_secs(3600))
             .map(|d| Instant::now() + d.max(Duration::from_millis(8)));
+        // Image nette à la fin du mouvement.
+        if let Some(t) = self.last_wheel {
+            let end = t + WHEEL_MOTION;
+            self.next_frame = Some(self.next_frame.map_or(end, |n| n.min(end)));
+        }
 
         // Réglage de taille ou de hauteur : une réplique reste à l'écran le temps de juger,
         // même entre deux sous-titres ou sous un tiroir (là où les vrais sont masqués).
@@ -541,6 +577,7 @@ impl App {
         for a in actions {
             match a {
                 ui::Action::Open => self.pick(),
+                ui::Action::Home => self.home(),
                 ui::Action::AddFolder => self.pick_folder(),
                 ui::Action::Play(path) => self.open(&path),
             }
@@ -652,6 +689,8 @@ fn main() {
         sub_margin: SUB_MARGIN,
         preview_on: false,
         resume_after_panel: false,
+        profile: None,
+        last_wheel: None,
     };
     for (i, f) in files.iter().enumerate() {
         if i == 0 {
@@ -659,6 +698,10 @@ fn main() {
         } else {
             app.player.mpv.command(&["loadfile", f, "append"]);
         }
+    }
+    if let Ok(mode) = std::env::var("BIOPLAY_BENCH") {
+        bench(&mut app, &mode);
+        return;
     }
     app.player.panel = match panel.as_deref() {
         Some("list") => Some(Panel::List),
@@ -670,4 +713,58 @@ fn main() {
     app.run();
     app.player.save();
     app.overlay.hide(&app.player.mpv);
+}
+
+/// Mesure du défilement de l'accueil, sans fenêtre : `BIOPLAY_BENCH=grid|list bioplay`.
+/// Écran simulé de 2880×1800 (échelle 2), vraie bibliothèque, un cran de molette toutes les
+/// 6 images. Affiche les durées par étape (médiane, 90e centile, maximum).
+fn bench(app: &mut App, mode: &str) {
+    app.player.library.set_hold(true);
+    // Écran simulé, réimposé à chaque image (mpv sans fenêtre le remet à zéro).
+    let screen = |app: &mut App| {
+        let s = &mut app.player.mpv.state;
+        s.osd_w = 2880.0;
+        s.osd_h = 1800.0;
+        s.scale = 2.0;
+    };
+    app.player.library.grid = mode != "list";
+    if let Ok(path) = std::env::var("BIOPLAY_PLACE") {
+        app.player.place.path = path;
+    }
+    app.events.push(Event::PointerMoved(pos2(720.0, 500.0)));
+    for _ in 0..20 {
+        // Laisse mpv charger un éventuel fichier (vérification des commandes de lecture).
+        for c in app.player.mpv.wait(0.05) {
+            app.on_change(c);
+        }
+        screen(app);
+        app.frame();
+    }
+    if let Some(f) = std::env::var_os("BIOPLAY_SNAPSHOT") {
+        app.overlay.snapshot(Path::new(&f));
+        return;
+    }
+    app.profile = Some(Vec::new());
+    for i in 0..360 {
+        if i % 6 == 0 {
+            app.last_wheel = Some(Instant::now());
+            app.events.push(Event::MouseWheel {
+                unit: egui::MouseWheelUnit::Line,
+                delta: vec2(0.0, if i < 180 { -1.0 } else { 1.0 }),
+                modifiers: Default::default(),
+                phase: egui::TouchPhase::Move,
+                source: egui::MouseWheelSource::Wheel,
+            });
+        }
+        screen(app);
+        app.frame();
+    }
+    let p = app.profile.take().unwrap_or_default();
+    println!("{} vidéos, mode {mode}, {} images", app.player.library.videos.len(), p.len());
+    for (k, name) in ["interface", "triangles", "rendu+envoi"].iter().enumerate() {
+        let mut v: Vec<f64> = p.iter().map(|x| x[k]).collect();
+        v.sort_by(|a, b| a.total_cmp(b));
+        let at = |q: f64| v[((v.len() - 1) as f64 * q) as usize];
+        println!("{name:>12} : médiane {:.1} ms, 90 % {:.1} ms, max {:.1} ms", at(0.5), at(0.9), at(1.0));
+    }
 }

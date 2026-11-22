@@ -44,8 +44,8 @@ pub struct Overlay {
     next: usize,
     shown: bool,
     last: Option<Last>,
-    /// Fond de l'accueil, calculé une fois par taille d'écran (BGRA).
-    backdrop: Option<(usize, usize, Vec<u8>)>,
+    /// Fond de l'accueil, calculé une fois par taille (pleine et demi-résolution), BGRA.
+    backdrop: Vec<(usize, usize, Vec<u8>)>,
     /// Miniatures de l'accueil mises à la taille d'affichage (coins arrondis compris), BGRA
     /// prémultiplié : posées dans l'image par simple copie de lignes, gardées tant qu'elles servent.
     scaled: HashMap<(String, usize, usize, usize), Vec<u8>>,
@@ -68,7 +68,7 @@ impl Overlay {
             next: 0,
             shown: false,
             last: None,
-            backdrop: None,
+            backdrop: Vec::new(),
             scaled: HashMap::new(),
         })
     }
@@ -111,18 +111,37 @@ impl Overlay {
         ppp: f32,
         home: bool,
         thumbs: &[Thumb],
+        reduce: u32,
     ) {
         if !home && !self.scaled.is_empty() {
             self.scaled = HashMap::new();
         }
-        match self.render(prims, textures, size, ppp, home, thumbs) {
+        // En mouvement (défilement), image dessinée en résolution réduite (`reduce` = 2 : quatre
+        // fois moins de pixels à dessiner et à envoyer) et agrandie par mpv sur la carte graphique ;
+        // l'image nette suit dès l'arrêt. `prims` sont déjà découpés à cette échelle.
+        let r = reduce.max(1);
+        let rsize = [size[0].div_ceil(r), size[1].div_ceil(r)];
+        let t0 = std::time::Instant::now();
+        let drawn = self.render(prims, textures, rsize, ppp / r as f32, home, thumbs);
+        let t1 = std::time::Instant::now();
+        let dbg = std::env::var_os("BIOPLAY_DEBUG_DAMAGE").is_some();
+        match drawn {
             Drawn::Empty => self.hide(mpv),
             Drawn::Same => {}
             Drawn::New { x, y, w, h } => {
                 let buf = &self.buffers[self.last.as_ref().map_or(0, |l| l.buffer)];
                 let addr = format!("&{}", buf.as_ptr() as usize);
-                mpv.command_sync(&["overlay-add", "0", &x.to_string(), &y.to_string(), &addr, "0", "bgra", &w.to_string(), &h.to_string(), &(w * 4).to_string()]);
+                let (dx, dy, dw, dh) = (x * r as i32, y * r as i32, w * r as usize, h * r as usize);
+                // Sans attendre : mpv copie l'image en traitant la commande, et ce tampon ne sera
+                // réécrit que deux images plus tard (trois en rotation).
+                mpv.command(&[
+                    "overlay-add", "0", &dx.to_string(), &dy.to_string(), &addr, "0", "bgra",
+                    &w.to_string(), &h.to_string(), &(w * 4).to_string(), &dw.to_string(), &dh.to_string(),
+                ]);
                 self.shown = true;
+                if dbg {
+                    eprintln!("rendu {:.1} ms ({w}x{h}), envoi {:.1} ms", (t1 - t0).as_secs_f64() * 1e3, t1.elapsed().as_secs_f64() * 1e3);
+                }
             }
         }
     }
@@ -274,7 +293,7 @@ impl Overlay {
         let mut buf = std::mem::take(&mut self.buffers[self.next]);
         buf.resize(stride * bh, 0);
         let prev_buf: Option<&[u8]> = prev.map(|i| self.buffers[i].as_slice());
-        let back: Option<&[u8]> = if backdrop { self.backdrop.as_ref().map(|b| b.2.as_slice()) } else { None };
+        let back: Option<&[u8]> = if backdrop { self.backdrop.iter().find(|b| (b.0, b.1) == (w as usize, h as usize)).map(|b| b.2.as_slice()) } else { None };
         let (textures, scaled) = (&self.textures, &self.scaled);
         // Dessin par bandes horizontales, une par cœur : chaque bande fait tout pour ses lignes.
         let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 8);
@@ -368,6 +387,17 @@ impl Overlay {
         Drawn::New { x: x0, y: y0, w: bw, h: bh }
     }
 
+    /// Dernière image dessinée, en PNG (mesures et vérifications sans fenêtre).
+    pub fn snapshot(&self, path: &std::path::Path) {
+        let Some(l) = &self.last else { return };
+        let buf = &self.buffers[l.buffer];
+        let rgba: Vec<u8> = buf.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
+        let Ok(f) = std::fs::File::create(path) else { return };
+        let mut e = png::Encoder::new(std::io::BufWriter::new(f), l.area[2] as u32, l.area[3] as u32);
+        e.set_color(png::ColorType::Rgba);
+        let _ = e.write_header().and_then(|mut w| w.write_image_data(&rgba));
+    }
+
     /// Retire la superposition et rend la mémoire des tampons.
     pub fn hide(&mut self, mpv: &Mpv) {
         if self.shown {
@@ -383,7 +413,7 @@ impl Overlay {
     /// Fond de l'accueil : trois lumières en dégradés radiaux, avec un tramage léger qui supprime
     /// les marches des dégradés sombres.
     fn backdrop(&mut self, w: usize, h: usize) -> &[u8] {
-        if self.backdrop.as_ref().map(|b| (b.0, b.1)) != Some((w, h)) {
+        if !self.backdrop.iter().any(|b| (b.0, b.1) == (w, h)) {
             let mut px = vec![0u8; w * h * 4];
             let aspect = w as f32 / h as f32;
             let glows = [
@@ -424,9 +454,12 @@ impl Overlay {
                     });
                 }
             });
-            self.backdrop = Some((w, h, px));
+            if self.backdrop.len() >= 2 {
+                self.backdrop.remove(0);
+            }
+            self.backdrop.push((w, h, px));
         }
-        &self.backdrop.as_ref().unwrap().2
+        &self.backdrop.iter().find(|b| (b.0, b.1) == (w, h)).unwrap().2
     }
 }
 

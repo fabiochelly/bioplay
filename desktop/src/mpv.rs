@@ -187,6 +187,12 @@ impl Mpv {
         ] {
             m.option(k, v);
         }
+        // Mesure (BIOPLAY_BENCH) : aucune fenêtre, aucune configuration de l'utilisateur.
+        if std::env::var_os("BIOPLAY_BENCH").is_some() {
+            for (k, v) in [("vo", "null"), ("ao", "null"), ("force-window", "no"), ("config", "no")] {
+                m.option(k, v);
+            }
+        }
         if unsafe { mpv_initialize(h) } < 0 {
             return Err("mpv_initialize a échoué".into());
         }

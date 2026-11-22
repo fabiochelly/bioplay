@@ -53,6 +53,7 @@ fn med(size: f32) -> FontId {
 
 pub enum Action {
     Open,
+    Home,
     AddFolder,
     Play(String),
 }
@@ -119,7 +120,7 @@ pub fn draw(ctx: &egui::Context, p: &mut Player, ppp: f32) -> (Vec<Plate>, Vec<A
 
     if alpha > 0.0 {
         plates.alpha = alpha;
-        bar(ctx, p, &mut plates, screen, alpha);
+        bar(ctx, p, &mut plates, &mut actions, screen, alpha);
         if let Some(panel) = p.panel {
             drawer(ctx, p, &mut plates, screen, panel);
         }
@@ -183,7 +184,7 @@ fn surface(ctx: &egui::Context, p: &mut Player, screen: Rect) {
 
 // --- Barre du bas ---------------------------------------------------------------------------------
 
-fn bar(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, screen: Rect, alpha: f32) {
+fn bar(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actions: &mut Vec<Action>, screen: Rect, alpha: f32) {
     let w = (screen.width() - 48.0).min(1180.0);
     let h = 100.0;
     let rect = Rect::from_min_size(pos2(screen.center().x - w / 2.0, screen.max.y - h - 22.0), vec2(w, h));
@@ -208,6 +209,16 @@ fn bar(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, screen: Rect, a
         let row2 = Rect::from_min_max(pos2(inner.min.x - 6.0, inner.min.y + 32.0), pos2(inner.max.x + 6.0, inner.max.y));
         let cy = row2.center().y;
         let mut x = row2.min.x;
+        // Retour à la bibliothèque (la position est gardée).
+        if icon_button(ui, Rect::from_center_size(pos2(x + 20.0, cy), vec2(40.0, 40.0)), Icon::Back)
+            .on_hover_text(tr("Bibliothèque", "Library"))
+            .clicked()
+        {
+            actions.push(Action::Home);
+        }
+        x += 44.0;
+        painter.line_segment([pos2(x + 2.0, cy - 12.0), pos2(x + 2.0, cy + 12.0)], Stroke::new(1.0, Color32::from_white_alpha(46)));
+        x += 8.0;
         if icon_button(ui, Rect::from_center_size(pos2(x + 20.0, cy), vec2(40.0, 40.0)), Icon::PrevLine).clicked() {
             p.step_sub(-1);
         }
@@ -1101,21 +1112,26 @@ fn home(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actions: &mut 
             p.place = shelf.place.clone();
             let mut body = body;
             if let Some(up) = p.library.up(&shelf.place) {
-                // Dossier en cours : bouton pour remonter et son nom.
-                let b = Rect::from_min_size(pos2(body.min.x + SIDE, body.min.y), vec2(38.0, 38.0));
-                ui.painter().circle_filled(b.center(), 19.0, Color32::from_white_alpha(22));
-                ui.painter().circle_stroke(b.center(), 19.0, Stroke::new(1.0, Color32::from_white_alpha(50)));
+                // Dossier en cours : bouton pour remonter et son nom, au-dessus de la grille
+                // (la place est réservée : le défilement commence en dessous).
+                let (bar, _) = ui.allocate_exact_size(vec2(body.width(), 54.0), Sense::hover());
+                let b = Rect::from_min_size(pos2(bar.min.x + SIDE, bar.min.y + 2.0), vec2(40.0, 40.0));
+                plates.add(b, 20.0, 0.42);
                 if icon_button(ui, b, Icon::Back).on_hover_text(tr("Remonter (Échap)", "Up (Esc)")).clicked() {
                     p.place = up;
                 }
                 ui.painter().text(pos2(b.max.x + 12.0, b.center().y), Align2::LEFT_CENTER, &shelf.title, semi(18.0), INK);
-                body.min.y += 50.0;
+                body.min.y = bar.max.y;
             }
-            if p.library.grid {
-                grid(ui, p, &shelf, body, actions);
-            } else {
-                list(ui, p, &shelf, body, actions);
-            }
+            // Zone de défilement posée exactement sous la barre (et sous le fil d'Ariane).
+            ui.scope_builder(egui::UiBuilder::new().max_rect(body), |ui| {
+                ui.set_clip_rect(body);
+                if p.library.grid {
+                    grid(ui, p, &shelf, body, actions);
+                } else {
+                    list(ui, p, &shelf, body, actions);
+                }
+            });
         }
     });
     if p.folders_open {
