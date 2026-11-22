@@ -16,9 +16,10 @@ Lecteur vidéo minimal (Android + bureau) construit sur libmpv, interface « ver
 - Accueil (Android et bureau) : barre compacte (ouvrir, « Dossiers », liste/miniatures, drapeaux)
   puis les vidéos des dossiers surveillés. Android : `Library.kt` (arbres SAF, miniatures WebP dans
   `no_backup/thumbs`). Bureau : `library.rs` (dossiers dans `~/.local/state/bioplay/folders`,
-  miniatures PNG tirées par ffmpeg dans `~/.cache/bioplay/thumbs`) ; les miniatures sont des
-  incrustations mpv 1–62 entre le fond (0) et l'interface (63 à l'accueil) : la carte graphique les
-  compose, le CPU ne dessine que le texte. Relecture en arrière-plan à chaque lancement, rien
+  miniatures PNG tirées par ffmpeg dans `~/.cache/bioplay/thumbs`). Une seule incrustation mpv
+  (mpv renvoie TOUTES ses incrustations au GPU à chaque changement : jamais une par miniature) ;
+  fond, miniatures (mises à l'échelle une fois, copiées par lignes) et interface y sont composés
+  par bandes, une par cœur (~5 ms par image à 2880×1800). Relecture en arrière-plan à chaque lancement, rien
   pendant la lecture.
 
 - Partages réseau (Android, `Smb.kt`, smbj) : adresses `smb://hôte[:port]/partage/chemin`, compte par

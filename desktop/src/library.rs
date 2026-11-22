@@ -116,6 +116,10 @@ pub struct Library {
     hold: Arc<AtomicBool>,
     busy: Arc<AtomicBool>,
     again: bool,
+    /// Arborescence de l'endroit affiché, gardée tant que la liste ne change pas.
+    shelf_cache: Option<(Place, u64, Arc<Shelf>)>,
+    /// Change à chaque modification de la liste des vidéos.
+    version: u64,
     /// Miniatures lues du disque (None : illisible).
     images: HashMap<String, Option<Arc<egui::ColorImage>>>,
 }
@@ -142,6 +146,8 @@ impl Library {
             busy: Arc::new(AtomicBool::new(false)),
             again: false,
             images: HashMap::new(),
+            shelf_cache: None,
+            version: 0,
         };
         lib.refresh();
         lib
@@ -160,6 +166,7 @@ impl Library {
     pub fn add_folder(&mut self, f: PathBuf) {
         if !self.folders.contains(&f) {
             self.folders.push(f);
+            self.version += 1;
             self.save_folders();
             self.refresh();
         }
@@ -167,8 +174,10 @@ impl Library {
 
     pub fn remove_folder(&mut self, f: &Path) {
         self.folders.retain(|x| x != f);
+        self.version += 1;
         let key = f.to_string_lossy();
         self.videos.retain(|v| v.folder != key);
+        self.version += 1;
         self.save_folders();
         self.refresh();
     }
@@ -178,8 +187,16 @@ impl Library {
         self.folders.iter().map(|f| f.to_string_lossy().into_owned()).filter(|k| self.videos.iter().any(|v| &v.folder == k)).collect()
     }
 
-    pub fn shelf(&self, place: &Place) -> Shelf {
-        Tree { folders: &self.folders, videos: &self.videos }.shelf(place)
+    /// Contenu d'un endroit, recalculé seulement quand l'endroit ou la liste change.
+    pub fn shelf(&mut self, place: &Place) -> Arc<Shelf> {
+        if let Some((p, v, s)) = &self.shelf_cache {
+            if p == place && *v == self.version {
+                return s.clone();
+            }
+        }
+        let s = Arc::new(Tree { folders: &self.folders, videos: &self.videos }.shelf(place));
+        self.shelf_cache = Some((place.clone(), self.version, s.clone()));
+        s
     }
 
     pub fn up(&self, place: &Place) -> Option<Place> {
@@ -358,12 +375,14 @@ impl Library {
                     self.scanning = false;
                     if list != self.videos {
                         self.videos = list;
+                        self.version += 1;
                     }
                 }
                 Event::Thumb(id) => {
                     self.images.remove(&id);
                 }
                 Event::Durations(d) => {
+                    self.version += 1;
                     let map: HashMap<String, f64> = d.into_iter().collect();
                     for v in &mut self.videos {
                         if let Some(x) = map.get(&v.path) {

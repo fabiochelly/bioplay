@@ -1090,7 +1090,7 @@ fn home(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actions: &mut 
         ui.set_clip_rect(body);
         ui.set_min_size(body.size());
         ui.set_max_size(body.size());
-        let lib = &p.library;
+        let lib = &mut p.library;
         if lib.folders.is_empty() {
             empty(ui, body, tr("Choisissez les dossiers où sont vos vidéos.", "Choose the folders holding your videos."), true, actions);
         } else if lib.videos.is_empty() {
@@ -1100,7 +1100,7 @@ fn home(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actions: &mut 
             let shelf = lib.shelf(&p.place);
             p.place = shelf.place.clone();
             let mut body = body;
-            if let Some(up) = lib.up(&shelf.place) {
+            if let Some(up) = p.library.up(&shelf.place) {
                 // Dossier en cours : bouton pour remonter et son nom.
                 let b = Rect::from_min_size(pos2(body.min.x + SIDE, body.min.y), vec2(38.0, 38.0));
                 ui.painter().circle_filled(b.center(), 19.0, Color32::from_white_alpha(22));
