@@ -131,6 +131,7 @@ impl Overlay {
         // l'image nette suit dès l'arrêt. `prims` sont déjà découpés à cette échelle.
         let r = reduce.max(1);
         let rsize = [size[0].div_ceil(r), size[1].div_ceil(r)];
+        self.release(mpv);
         if self.sent[self.next] > mpv.overlay_done.get() {
             // mpv n'a pas encore lu ce tampon (cœur occupé : saut, ouverture…) : on attend.
             self.update_textures(textures);
@@ -438,14 +439,23 @@ impl Overlay {
     /// Retire la superposition et rend la mémoire des tampons.
     pub fn hide(&mut self, mpv: &Mpv) {
         if self.shown {
-            mpv.command_sync(&["overlay-remove", "0"]);
+            // Retrait sans attendre, dans la même file que les envois. Surtout pas de commande
+            // synchrone : mpv l'exécute tout de suite, AVANT les `overlay-add` encore en file, qui
+            // liraient ensuite des tampons libérés (plantage). Les tampons sont rendus plus tard,
+            // une fois tous les envois traités (`release`).
+            self.seq += 1;
+            mpv.command_reply(OVERLAY_TAG + self.seq, &["overlay-remove", "0"]);
             self.shown = false;
             self.last = None;
+        }
+    }
+
+    /// Rend la mémoire des tampons, quand rien n'est affiché et que mpv a tout traité.
+    pub fn release(&mut self, mpv: &Mpv) {
+        if !self.shown && mpv.overlay_done.get() >= self.seq && self.buffers.iter().any(|b| b.capacity() > 0) {
             for b in &mut self.buffers {
                 *b = Vec::new();
             }
-            // `overlay-remove` attendu : mpv a traité tous les envois précédents.
-            self.sent = [0; BUFFERS];
         }
     }
 

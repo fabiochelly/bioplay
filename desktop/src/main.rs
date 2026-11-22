@@ -683,6 +683,7 @@ impl App {
                 self.change_at = None;
                 self.dirty = true;
             }
+            self.overlay.release(&self.player.mpv);
             if self.overlay_wait.is_some_and(|d| self.player.mpv.overlay_done.get() > d) {
                 self.overlay_wait = None;
                 self.dirty = true;
