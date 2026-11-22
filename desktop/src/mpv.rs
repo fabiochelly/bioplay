@@ -257,6 +257,7 @@ impl Mpv {
     /// Sans attendre mpv (il copie la valeur tout de suite) : appelé à chaque image pour le verre
     /// et la marge des sous-titres, il ne doit pas bloquer l'interface pendant un saut.
     pub fn set(&self, k: &str, v: &str) {
+        crate::trace::count_with(|| format!("mpv set {k}"));
         let v = cs(v);
         let mut ptr = v.as_ptr();
         unsafe { mpv_set_property_async(self.h, 0, cs(k).as_ptr(), FORMAT_STRING, &mut ptr as *mut *const c_char as *mut c_void) };
@@ -294,10 +295,12 @@ impl Mpv {
     }
 
     pub fn set_f64(&self, k: &str, mut v: f64) {
+        crate::trace::count_with(|| format!("mpv set {k}"));
         unsafe { mpv_set_property(self.h, cs(k).as_ptr(), FORMAT_DOUBLE, &mut v as *mut f64 as *mut c_void) };
     }
 
     pub fn get(&self, k: &str) -> Option<String> {
+        crate::trace::count_with(|| format!("mpv get (synchrone) {k}"));
         unsafe {
             let p = mpv_get_property_string(self.h, cs(k).as_ptr());
             if p.is_null() {
@@ -311,6 +314,7 @@ impl Mpv {
 
     /// Commande asynchrone : ne bloque jamais l'interface.
     pub fn command(&self, args: &[&str]) {
+        crate::trace::count_with(|| format!("mpv commande {}", args.first().unwrap_or(&"")));
         let owned: Vec<CString> = args.iter().map(|a| cs(a)).collect();
         let mut ptrs: Vec<*const c_char> = owned.iter().map(|c| c.as_ptr()).collect();
         ptrs.push(ptr::null());
@@ -319,6 +323,7 @@ impl Mpv {
 
     /// Commande asynchrone dont la fin est signalée par `EVENT_COMMAND_REPLY` (`reply`).
     pub fn command_reply(&self, reply: u64, args: &[&str]) {
+        crate::trace::count_with(|| format!("mpv commande {}", args.first().unwrap_or(&"")));
         let owned: Vec<CString> = args.iter().map(|a| cs(a)).collect();
         let mut ptrs: Vec<*const c_char> = owned.iter().map(|c| c.as_ptr()).collect();
         ptrs.push(ptr::null());
@@ -327,6 +332,7 @@ impl Mpv {
 
     /// Commande synchrone (pour `quit` et l'écriture de la position).
     pub fn command_sync(&self, args: &[&str]) {
+        crate::trace::count_with(|| format!("mpv commande (synchrone) {}", args.first().unwrap_or(&"")));
         let owned: Vec<CString> = args.iter().map(|a| cs(a)).collect();
         let mut ptrs: Vec<*const c_char> = owned.iter().map(|c| c.as_ptr()).collect();
         ptrs.push(ptr::null());
@@ -404,6 +410,14 @@ impl Mpv {
     }
 
     fn handle(&mut self, e: &Event, out: &mut Vec<Change>) {
+        if crate::trace::on() && e.event_id != 0 {
+            let what = match e.event_id {
+                EVENT_PROPERTY_CHANGE => format!("mpv événement : propriété {}", OBSERVED.get(e.reply_userdata as usize).map_or("?", |p| p.0)),
+                EVENT_COMMAND_REPLY if e.reply_userdata >= OVERLAY_TAG => "mpv événement : réponse overlay-add/remove".into(),
+                id => format!("mpv événement : n° {id}"),
+            };
+            crate::trace::count(&what);
+        }
         match e.event_id {
             EVENT_SHUTDOWN => out.push(Change::Shutdown),
             EVENT_COMMAND_REPLY if e.reply_userdata >= OVERLAY_TAG => {

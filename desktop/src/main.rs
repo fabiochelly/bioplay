@@ -8,6 +8,7 @@ mod library;
 mod mpv;
 mod overlay;
 mod player;
+mod trace;
 mod ui;
 
 use std::path::{Path, PathBuf};
@@ -87,6 +88,10 @@ struct App {
     change_at: Option<Instant>,
     /// Horloge et barre telles que dessinées en dernier (`display_sig`).
     drawn_sig: [i64; 3],
+    /// Raisons des images demandées depuis la dernière (mesure).
+    why: Vec<String>,
+    /// Instant de masquage des commandes déjà traité (il change avec l'activité ou le survol).
+    hidden_for: Option<Instant>,
     /// Mesure : envoi du dernier saut, et durées appui → reprise de l'image.
     seek_clock: Option<Instant>,
     seek_times: Vec<f64>,
@@ -126,7 +131,7 @@ impl App {
             self.player.library.forget_images();
             self.player.mpv.command(&["loadfile", path, "replace"]);
         }
-        self.dirty = true;
+        self.redraw("ouverture d'un fichier");
     }
 
     /// Index des sous-titres lu dans un fil à part : la lecture démarre sans l'attendre.
@@ -169,7 +174,7 @@ impl App {
         self.player.save();
         self.player.panel = None;
         self.player.mpv.command(&["stop"]);
-        self.dirty = true;
+        self.redraw("retour à l'accueil");
     }
 
     fn pick_folder(&self) {
@@ -192,9 +197,24 @@ impl App {
         }
     }
 
+    /// Une image est à refaire, pour la raison `why` (comptée en mesure).
+    fn redraw(&mut self, why: &str) {
+        self.dirty = true;
+        if trace::on() {
+            self.why.push(why.to_owned());
+        }
+    }
+
+    fn redraw_with(&mut self, why: impl FnOnce() -> String) {
+        self.dirty = true;
+        if trace::on() {
+            self.why.push(why());
+        }
+    }
+
     fn poke(&mut self) {
         self.player.activity = Instant::now();
-        self.dirty = true;
+        self.redraw("activité (souris, clic)");
     }
 
     // --- Raccourcis et souris -------------------------------------------------------------------
@@ -230,7 +250,7 @@ impl App {
             if name == "mouse-left" && down {
                 self.player.activity = Instant::now();
             }
-            self.dirty = true;
+            self.redraw("souris (clic, molette)");
             return;
         }
         if !down {
@@ -269,7 +289,7 @@ impl App {
             _ => {}
         }
         // Le clavier n'affiche pas le contrôleur : seule la bulle confirme l'action.
-        self.dirty = true;
+        self.redraw("touche");
     }
 
     fn mouse_moved(&mut self) {
@@ -287,7 +307,7 @@ impl App {
             None => {
                 if self.pointer.take().is_some() {
                     self.events.push(Event::PointerGone);
-                    self.dirty = true;
+                    self.redraw("souris sortie");
                 }
             }
         }
@@ -309,7 +329,7 @@ impl App {
                     self.index(path, None);
                 }
                 self.player.save();
-                self.dirty = true;
+                self.redraw("fichier chargé");
             }
             mpv::Change::Seeking => {
                 let own = self.player.mpv.own_seeks.replace(0) > 0;
@@ -318,8 +338,8 @@ impl App {
                 }
             }
             // Saut venu d'un raccourci mpv (flèches haut/bas…) : annoncé dans une bulle.
+            // (Une image retenue pendant un saut précis part d'elle-même à la reprise.)
             mpv::Change::Restarted => {
-                self.dirty = true; // image retenue pendant le saut
                 if let Some(t) = self.seek_clock.take() {
                     self.seek_times.push(t.elapsed().as_secs_f64() * 1000.0);
                 }
@@ -327,7 +347,7 @@ impl App {
                     let d = self.player.mpv.position() - before;
                     if d.abs() >= 0.9 && self.player.loaded_at.is_some_and(|t| t.elapsed() > Duration::from_secs(1)) {
                         self.player.say_seek(d, self.player.mpv.position(), player::delta(d));
-                        self.dirty = true;
+                        self.redraw("bulle d'un saut venu de mpv");
                     }
                 }
             }
@@ -341,7 +361,7 @@ impl App {
             "track-list" => self.index_external(),
             _ => {}
         }
-        self.dirty = true;
+        self.redraw_with(|| format!("propriété mpv {name}"));
         let p = &mut self.player;
         let s = &p.mpv.state;
         let value = match name {
@@ -434,7 +454,7 @@ impl App {
             Message::Picked(path) => self.open(&path),
             Message::Folder(f) => self.player.library.add_folder(f),
         }
-        self.dirty = true;
+        self.redraw("message (index, fichier choisi, dossier)");
     }
 
     // --- Image de l'interface ---------------------------------------------------------------------
@@ -496,7 +516,9 @@ impl App {
             if f < 1e-4 { 1.0 } else { f }
         };
         let pixel = up(pos * px) / px;
-        let dt = up(pos).min(down(dur - pos)).min(pixel).max(0.004) / s.speed;
+        // + 3 ms : la position déduite et celle de mpv diffèrent de quelques millisecondes ; sans
+        // marge, le réveil tombe parfois juste avant le changement et ne sert à rien.
+        let dt = up(pos).min(down(dur - pos)).min(pixel).max(0.004) / s.speed + 0.003;
         Some(Instant::now() + Duration::from_secs_f64(dt).min(Duration::from_secs(1)))
     }
 
@@ -517,6 +539,17 @@ impl App {
 
     fn frame(&mut self) {
         self.frames += 1;
+        if trace::on() {
+            let mut why = std::mem::take(&mut self.why);
+            why.sort();
+            why.dedup();
+            if why.is_empty() {
+                trace::count("image : (sans cause notée)");
+            }
+            for w in why {
+                trace::count(&format!("image : {w}"));
+            }
+        }
         // Position déduite (non suivie) mise à jour pour l'affichage ; cache relu, commandes
         // visibles seulement (une lecture brève par image, hors saut).
         // Commandes visibles (≈ 4 images/s) : position et cache relus chez mpv, ce qui recale aussi
@@ -643,6 +676,11 @@ impl App {
             .map(|v| v.repaint_delay)
             .filter(|d| *d < Duration::from_secs(3600))
             .map(|d| Instant::now() + d.max(Duration::from_millis(16)));
+        if trace::on() && self.next_frame.is_some() {
+            for c in self.ctx.repaint_causes() {
+                trace::count(&format!("egui redemande une image : {c}"));
+            }
+        }
         // Image pas encore posée (mpv n'avait pas lu la précédente) : on la refait dès sa
         // réponse (qui réveille la boucle), sans tourner en attendant.
         if !presented {
@@ -694,22 +732,29 @@ impl App {
             // Rien de prévu : on dort jusqu'au prochain événement (mpv, fichier choisi, bibliothèque),
             // sans réveil périodique. En lecture, seulement la note de la position toutes les 15 s.
             let mut wake = now + Duration::from_secs(3600);
+            let mut cause = "rien de prévu";
+            let mut sooner = |w: &mut Instant, t: Instant, why: &'static str| {
+                if t < *w {
+                    *w = t;
+                    cause = why;
+                }
+            };
             if self.player.has_file() && !self.player.mpv.state.paused {
-                wake = wake.min(self.last_save + Duration::from_secs(15));
+                sooner(&mut wake, self.last_save + Duration::from_secs(15), "note de la position (15 s)");
             }
             if let Some(t) = self.next_frame {
-                wake = wake.min(t);
+                sooner(&mut wake, t, "demande d'egui");
             }
             if self.visible && hide_at > now {
-                wake = wake.min(hide_at);
+                sooner(&mut wake, hide_at, "masquage des commandes");
             }
             // Horloge et barre : réveil à l'instant exact où l'une change (seconde, pixel).
             self.change_at = self.next_display_change();
             if let Some(t) = self.change_at {
-                wake = wake.min(t);
+                sooner(&mut wake, t, "horloge ou barre");
             }
             if let Some(l) = limit {
-                wake = wake.min(now + l);
+                sooner(&mut wake, now + l, "mesure");
             }
             // Saut en cours (lecture) : l'interface attend la nouvelle image. Redessiner pendant
             // qu'un saut précis vide la file de mpv lui fait afficher du noir (clignotement).
@@ -718,42 +763,67 @@ impl App {
             // prévus (fondus, horloge) attendront.
             if let Some(t) = self.player.mpv.target.get().filter(|_| hold) {
                 wake = t.sent + Duration::from_millis(1500);
+                cause = "fin de retenue d'un saut";
                 if let Some(l) = limit {
                     wake = wake.min(now + l);
                 }
             }
             let timeout = if self.dirty && !hold { 0.0 } else { wake.saturating_duration_since(now).as_secs_f64() };
             self.wakeups += 1;
-            for c in self.player.mpv.wait(timeout) {
+            let changes = self.player.mpv.wait(timeout);
+            if trace::on() {
+                let early = Instant::now() + Duration::from_millis(2) < wake;
+                let what = if timeout == 0.0 {
+                    "réveil : image à faire".to_owned()
+                } else if !changes.is_empty() {
+                    "réveil : événement de mpv".to_owned()
+                } else if early {
+                    "réveil : réponse de mpv (envoi d'image, réglage)".to_owned()
+                } else {
+                    format!("réveil : minuterie ({cause})")
+                };
+                trace::count(&what);
+            }
+            for c in changes {
                 if matches!(c, mpv::Change::Shutdown) {
                     return false;
                 }
                 self.on_change(c);
             }
             while let Ok(m) = self.rx.try_recv() {
+                trace::count("message d'un autre fil (index, bibliothèque, sélecteur)");
                 self.on_message(m);
             }
             // Réveil prévu : redessin seulement si l'affichage change vraiment (une position
             // recalée peut avancer ou retarder l'instant prévu de quelques millisecondes).
-            if self.change_at.is_some_and(|t| t <= Instant::now()) {
+            // mpv rend la main un rien avant l'échéance demandée : 2 ms d'avance comptent comme
+            // l'échéance (sinon un second réveil, juste pour attendre le reste).
+            let due = Instant::now() + Duration::from_millis(2);
+            if self.change_at.is_some_and(|t| t <= due) {
                 self.change_at = None;
                 if self.player.panel.is_some() || self.display_sig() != self.drawn_sig {
-                    self.dirty = true;
+                    self.redraw("horloge ou barre (seconde, pixel)");
                 }
             }
             self.overlay.release(&self.player.mpv);
             if self.overlay_wait.is_some_and(|d| self.player.mpv.overlay_done.get() > d) {
                 self.overlay_wait = None;
-                self.dirty = true;
+                self.redraw("image en attente (mpv occupé)");
             }
             // Bibliothèque : relecture et miniatures en pause pendant la lecture.
             self.player.library.set_hold(self.player.has_file());
             if self.player.library.poll() && !self.player.has_file() {
-                self.dirty = true;
+                self.redraw("bibliothèque (nouvelles données)");
             }
-            let now = Instant::now();
-            if self.next_frame.is_some_and(|t| t <= now) || (self.visible && hide_at <= now) {
-                self.dirty = true;
+            let now = Instant::now() + Duration::from_millis(2);
+            if self.next_frame.is_some_and(|t| t <= now) {
+                self.redraw("demande d'egui (animation, bulle)");
+            }
+            // Une seule image pour lancer le masquage (le fondu se poursuit de lui-même), pas une
+            // par tour de boucle tant qu'une bulle garde l'interface visible.
+            if self.visible && hide_at <= now && self.hidden_for != Some(hide_at) {
+                self.hidden_for = Some(hide_at);
+                self.redraw("masquage des commandes");
             }
             if self.dirty && !self.seek_hold() {
                 self.dirty = false;
@@ -824,6 +894,8 @@ fn main() {
         overlay_wait: None,
         change_at: None,
         drawn_sig: [0; 3],
+        why: Vec::new(),
+        hidden_for: None,
         seek_clock: None,
         seek_times: Vec::new(),
         visible: false,
@@ -891,13 +963,23 @@ fn bench_play(app: &mut App) {
         s.osd_h = 1800.0;
         s.scale = 2.0;
     };
+    trace::enable();
     let t = Instant::now();
-    while app.player.mpv.state.duration <= 0.0 && t.elapsed() < Duration::from_secs(10) {
+    while app.player.mpv.state.duration <= 0.0 && t.elapsed() < Duration::from_secs(if app.player.has_file() { 10 } else { 2 }) {
         screen(app);
         app.step(Some(Duration::from_millis(20)));
     }
     let secs = std::env::var("BIOPLAY_SECS").ok().and_then(|v| v.parse().ok()).unwrap_or(10.0);
-    for phase in ["commandes visibles", "commandes masquées", "sauts → (2 par s)", "→ maintenue (30 par s)"] {
+    let phases: &[&str] = if app.player.mpv.state.duration > 0.0 {
+        &["commandes visibles", "commandes masquées", "pause, commandes masquées", "pause, commandes visibles", "sauts → (2 par s)", "→ maintenue (30 par s)"]
+    } else {
+        &["accueil au repos"]
+    };
+    for &phase in phases {
+        let pause = phase.starts_with("pause");
+        if app.player.mpv.state.duration > 0.0 && app.player.mpv.state.paused != pause {
+            app.player.mpv.set("pause", if pause { "yes" } else { "no" });
+        }
         // Commandes masquées : souris partie, inactivité ancienne.
         app.events.push(Event::PointerGone);
         app.pointer = None;
@@ -906,7 +988,7 @@ fn bench_play(app: &mut App) {
             screen(app);
             app.step(Some(Duration::from_millis(20)));
         }
-        if phase == "commandes visibles" {
+        if phase.ends_with("commandes visibles") {
             // Souris bougée au milieu de l'image : les commandes apparaissent.
             app.events.push(Event::PointerMoved(pos2(720.0, 450.0)));
             app.player.activity = Instant::now();
@@ -917,6 +999,8 @@ fn bench_play(app: &mut App) {
             }
         }
         let threads0 = threads_ms();
+        let switches0 = switches();
+        trace::take();
         app.seek_times.clear();
         app.seek_clock = None;
         let (w0, f0, s0, (c0, m0)) = (app.wakeups, app.frames, app.overlay.sends, cpu_ms());
@@ -925,8 +1009,8 @@ fn bench_play(app: &mut App) {
         while start.elapsed().as_secs_f64() < secs {
             screen(app);
             match phase {
-                "commandes visibles" => app.player.activity = Instant::now(),
-                "commandes masquées" => {}
+                "commandes visibles" | "pause, commandes visibles" => app.player.activity = Instant::now(),
+                "commandes masquées" | "pause, commandes masquées" | "accueil au repos" => {}
                 _ => {
                     let every = if phase.contains("30") { 33 } else { 500 };
                     if Instant::now() >= key {
@@ -960,6 +1044,23 @@ fn bench_play(app: &mut App) {
             v.sort_by(|a, b| a.total_cmp(b));
             println!("{:24}   saut appui → image : médiane {:.0} ms, 90 % {:.0} ms ({} sauts)", "", v[v.len() / 2], v[v.len() * 9 / 10], v.len());
         }
+        // Causes : chaque réveil, image, appel et événement de mpv, par seconde.
+        let mut c: Vec<(String, u64)> = trace::take().into_iter().collect();
+        c.sort_by(|a, b| b.1.cmp(&a.1).then(a.0.cmp(&b.0)));
+        for (what, n) in &c {
+            println!("{:28}{:8.2}/s  {what}", "", *n as f64 / el);
+        }
+        // Réveils de chaque fil, vus par le noyau (changements de contexte volontaires) : tout
+        // le processus, mpv compris, même ce que bioplay ne compte pas lui-même.
+        let mut by: std::collections::HashMap<String, f64> = Default::default();
+        for (tid, (name, n)) in switches() {
+            let before = switches0.get(&tid).map_or(0.0, |t| t.1);
+            *by.entry(name).or_default() += n - before;
+        }
+        let mut v: Vec<_> = by.into_iter().filter(|(_, n)| *n > 0.0).collect();
+        v.sort_by(|a, b| b.1.total_cmp(&a.1));
+        let list: Vec<String> = v.iter().map(|(n, k)| format!("{n} {:.1}", k / el)).collect();
+        println!("{:28}réveils des fils /s : {}", "", list.join(" · "));
         // Fils les plus coûteux (par nom), en % d'un cœur.
         let mut by: std::collections::HashMap<String, f64> = Default::default();
         for (tid, (name, ms)) in threads_ms() {
@@ -971,6 +1072,18 @@ fn bench_play(app: &mut App) {
         let top: Vec<String> = v.iter().take(6).map(|(n, ms)| format!("{n} {:.1} %", ms / el / 10.0)).collect();
         println!("{:24}   {}", "", top.join(" · "));
     }
+}
+
+/// Réveils de chaque fil (changements de contexte volontaires, /proc), avec son nom.
+fn switches() -> std::collections::HashMap<String, (String, f64)> {
+    let mut out = std::collections::HashMap::new();
+    for e in std::fs::read_dir("/proc/self/task").into_iter().flatten().flatten() {
+        let s = std::fs::read_to_string(e.path().join("status")).unwrap_or_default();
+        let name = s.lines().find_map(|l| l.strip_prefix("Name:")).unwrap_or("").trim().to_owned();
+        let n = s.lines().find_map(|l| l.strip_prefix("voluntary_ctxt_switches:")).and_then(|v| v.trim().parse::<f64>().ok()).unwrap_or(0.0);
+        out.insert(e.file_name().to_string_lossy().into_owned(), (name, n));
+    }
+    out
 }
 
 /// Temps processeur de chaque fil (ms), avec son nom.

@@ -137,7 +137,7 @@ pub fn draw(ctx: &egui::Context, p: &mut Player, ppp: f32) -> (Vec<Plate>, Vec<A
 // --- Surface vidéo : glissé par crans, clics transmis à mpv ------------------------------------
 
 fn surface(ctx: &egui::Context, p: &mut Player, screen: Rect) {
-    egui::Area::new(Id::new("surface")).order(Order::Background).fixed_pos(screen.min).show(ctx, |ui| {
+    egui::Area::new(Id::new("surface")).fade_in(false).order(Order::Background).fixed_pos(screen.min).show(ctx, |ui| {
         let r = ui.allocate_rect(screen, Sense::click_and_drag());
         if r.drag_started() {
             let y = r.interact_pointer_pos().map(|q| (q.y - screen.min.y) / screen.height()).unwrap_or(0.5);
@@ -193,7 +193,7 @@ fn bar(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actions: &mut V
     let rect = Rect::from_min_size(pos2(screen.center().x - w / 2.0, screen.max.y - h - 22.0), vec2(w, h));
     plates.add(rect, 30.0, 0.42);
     let mut over = false;
-    egui::Area::new(Id::new("bar")).order(Order::Middle).fixed_pos(rect.min).show(ctx, |ui| {
+    egui::Area::new(Id::new("bar")).fade_in(false).order(Order::Middle).fixed_pos(rect.min).show(ctx, |ui| {
         ui.set_opacity(alpha);
         let (_, bg) = ui.allocate_exact_size(rect.size(), Sense::hover());
         over = bg.hovered() || ui.rect_contains_pointer(rect);
@@ -656,7 +656,7 @@ fn drawer(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, screen: Rect
     let h: f32 = ctx.data(|d| d.get_temp::<f32>(id)).unwrap_or(200.0).min(avail);
     let rect = Rect::from_min_size(pos2(screen.center().x - w / 2.0, bottom - h), vec2(w, h));
     plates.add(rect, 28.0, 0.42);
-    let out = egui::Area::new(id).order(Order::Foreground).fixed_pos(rect.min).constrain(false).show(ctx, |ui| {
+    let out = egui::Area::new(id).fade_in(false).order(Order::Foreground).fixed_pos(rect.min).constrain(false).show(ctx, |ui| {
         ui.set_width(w);
         egui::Frame::NONE.inner_margin(22.0).show(ui, |ui| {
             ui.set_width(w - 44.0);
@@ -1038,7 +1038,7 @@ fn bubble(ctx: &egui::Context, plates: &mut Plates, screen: Rect, a: f32, dir: O
     plates.alpha = a;
     plates.add(rect, radius, 0.4);
     plates.alpha = 1.0;
-    egui::Area::new(Id::new("toast")).order(Order::Tooltip).fixed_pos(rect.min).interactable(false).show(ctx, |ui| {
+    egui::Area::new(Id::new("toast")).fade_in(false).order(Order::Tooltip).fixed_pos(rect.min).interactable(false).show(ctx, |ui| {
         ui.set_opacity(a);
         let painter = ui.painter();
         let left = rect.min.x + 20.0 + icon;
@@ -1073,12 +1073,12 @@ const SIDE: f32 = 28.0;
 /// Accueil : une barre compacte (ouvrir, dossiers, vue, langue) puis les vidéos des dossiers
 /// surveillés, en miniatures ou en liste, chacune avec son avancée de lecture.
 fn home(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actions: &mut Vec<Action>, screen: Rect) {
-    egui::Area::new(Id::new("home-bg")).order(Order::Background).fixed_pos(screen.min).show(ctx, |ui| {
+    egui::Area::new(Id::new("home-bg")).fade_in(false).order(Order::Background).fixed_pos(screen.min).show(ctx, |ui| {
         ui.allocate_rect(screen, Sense::hover());
     });
     nav_bar(ctx, p, plates, actions, screen);
     let body = Rect::from_min_max(pos2(screen.min.x, screen.min.y + NAV_Y + NAV_H + 14.0), screen.max);
-    egui::Area::new(Id::new("home-body")).order(Order::Middle).fixed_pos(body.min).show(ctx, |ui| {
+    egui::Area::new(Id::new("home-body")).fade_in(false).order(Order::Middle).fixed_pos(body.min).show(ctx, |ui| {
         ui.set_clip_rect(body);
         ui.set_min_size(body.size());
         ui.set_max_size(body.size());
@@ -1125,7 +1125,7 @@ fn home(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actions: &mut 
 }
 
 fn nav_bar(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actions: &mut Vec<Action>, screen: Rect) {
-    egui::Area::new(Id::new("home-nav")).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+    egui::Area::new(Id::new("home-nav")).fade_in(false).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
         let y = screen.min.y + NAV_Y;
         let open = Rect::from_min_size(pos2(screen.min.x + SIDE, y), vec2(NAV_H, NAV_H));
         plates.add(open, NAV_H / 2.0, 0.42);
@@ -1402,7 +1402,7 @@ fn list(ui: &mut Ui, p: &mut Player, shelf: &crate::library::Shelf, body: Rect, 
 
 fn folders_sheet(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actions: &mut Vec<Action>, screen: Rect) {
     // Un clic à côté ferme la fenêtre.
-    egui::Area::new(Id::new("folders-scrim")).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
+    egui::Area::new(Id::new("folders-scrim")).fade_in(false).order(Order::Foreground).fixed_pos(screen.min).show(ctx, |ui| {
         if ui.allocate_rect(screen, Sense::click()).clicked() {
             p.folders_open = false;
         }
@@ -1413,7 +1413,7 @@ fn folders_sheet(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actio
     let rect = Rect::from_min_size(pos2(screen.min.x + SIDE, screen.min.y + NAV_Y + NAV_H + 10.0), vec2(w, h));
     plates.add(rect, 26.0, 0.62);
     let mut remove = None;
-    let out = egui::Area::new(id).order(Order::Tooltip).fixed_pos(rect.min).show(ctx, |ui| {
+    let out = egui::Area::new(id).fade_in(false).order(Order::Tooltip).fixed_pos(rect.min).show(ctx, |ui| {
         ui.set_width(w);
         egui::Frame::NONE.inner_margin(20.0).show(ui, |ui| {
             ui.set_width(w - 40.0);
@@ -1460,7 +1460,7 @@ fn folders_sheet(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actio
 
 /// Galerie de contrôle (`BIOPLAY_FLAGS=1`) : tous les drapeaux, en grand et à la taille de la barre.
 fn flag_gallery(ctx: &egui::Context, screen: Rect) {
-    egui::Area::new(Id::new("flag-gallery")).order(Order::Tooltip).fixed_pos(pos2(screen.min.x + SIDE, screen.max.y - 260.0)).interactable(false).show(ctx, |ui| {
+    egui::Area::new(Id::new("flag-gallery")).fade_in(false).order(Order::Tooltip).fixed_pos(pos2(screen.min.x + SIDE, screen.max.y - 260.0)).interactable(false).show(ctx, |ui| {
         let flags = crate::flags::all();
         let per_row = 12;
         let rows = flags.len().div_ceil(per_row);
