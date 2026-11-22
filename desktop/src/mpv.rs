@@ -213,7 +213,9 @@ impl Mpv {
             ("keep-open", "yes"),
             ("terminal", "no"),
             ("msg-level", "all=warn"),
-            ("wayland-app-id", "bioplay"),
+            // Classe propre à la fenêtre vidéo : Hyprland l'ouvre agrandie par-dessus la
+            // bibliothèque (règle `bioplay-video`), sans partager la mosaïque.
+            ("wayland-app-id", "bioplay-video"),
             ("title", "${?media-title:${media-title} — }bioplay"),
             ("osc", "no"),
         ] {

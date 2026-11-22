@@ -155,9 +155,10 @@ impl App {
     fn home(&mut self) {
         self.player.save();
         self.player.panel = None;
+        // Bibliothèque d'abord (déjà là dessous, ou affichée maintenant), puis la vidéo se ferme.
+        libwin::show();
         self.player.mpv.command(&["stop"]);
         self.outside = false;
-        libwin::show();
         self.redraw("retour à l'accueil");
     }
 

@@ -20,6 +20,8 @@ Lecteur vidéo minimal (Android + bureau) construit sur libmpv, interface « ver
     CPU (`overlay.rs`) et posées par `overlay-add` ; le verre est `shaders/glass.glsl`. Bouton
     « Bibliothèque » ou fermeture de la fenêtre : retour à la bibliothèque (ou fin si la vidéo
     venait de l'extérieur). Raccourcis via `define-section` + `script-binding main/…`.
+  - Hyprland (`~/.config/hypr/hyprland.lua`) : classes `bioplay` (bibliothèque) et `bioplay-video`
+    (mpv) sans animation ; la vidéo s'ouvre agrandie par-dessus la bibliothèque, restée en place.
   `./desktop/install.sh` installe dans `~/.local`. `--panel=list|tracks|…` ouvre un tiroir ; toute
   autre option `--k=v` est passée à mpv.
 

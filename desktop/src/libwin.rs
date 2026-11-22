@@ -2,9 +2,9 @@
 //! floute le fond d'écran derrière. Rien ne s'y dessine sans raison : Slint ne redessine que ce
 //! qui change, et la grille ne crée que les rangées visibles (miniatures lues à ce moment).
 //!
-//! La vidéo s'ouvre dans la fenêtre de mpv, préparé dès le lancement (fil de lecture) : cliquer
-//! une vidéo l'envoie au lecteur et cache cette fenêtre ; revenir à la bibliothèque (bouton,
-//! fermeture de la vidéo) arrête la lecture, ferme la fenêtre de mpv et réaffiche celle-ci.
+//! La vidéo s'ouvre dans la fenêtre de mpv, préparé dès le lancement (fil de lecture), agrandie
+//! par-dessus celle-ci (règle Hyprland) : pas de bureau entrevu entre les deux. Revenir à la
+//! bibliothèque (bouton, fermeture de la vidéo) arrête la lecture et ferme la fenêtre de mpv.
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -265,10 +265,12 @@ impl State {
     fn play(&mut self, path: String) {
         let _ = self.link.tx.send(Message::Picked(path));
         self.link.wake.wake();
-        // Pendant la lecture : rien en fond, et la fenêtre de mpv prend la place.
+        // Pendant la lecture : rien en fond. La fenêtre reste affichée : celle de mpv s'ouvre
+        // agrandie par-dessus (règle Hyprland `bioplay-video`), sans laisser voir le bureau entre
+        // les deux, et la bibliothèque est déjà là quand la vidéo se ferme. Elle ne redessine
+        // rien tant que rien n'y change.
         self.lib.set_hold(true);
         self.ui.set_sheet(false);
-        let _ = self.ui.hide();
     }
 
     fn sizes(&self, w: f32) {
