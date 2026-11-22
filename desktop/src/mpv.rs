@@ -68,7 +68,15 @@ const EVENT_PROPERTY_CHANGE: c_int = 22;
 #[derive(Clone)]
 pub struct Waker(std::sync::Arc<std::sync::Mutex<usize>>);
 
+/// Titre de la fenêtre de mpv ; celui de la fenêtre préparée au lancement, en attente.
+pub const TITLE: &str = "${?media-title:${media-title} — }bioplay";
+pub const WAITING_TITLE: &str = "bioplay-attente";
+
 impl Waker {
+    fn set(&self, h: *mut mpv_handle) {
+        *self.0.lock().unwrap_or_else(|e| e.into_inner()) = h as usize;
+    }
+
     /// Réveil sans effet (captures de la bibliothèque, sans lecteur).
     pub fn none() -> Self {
         Waker(std::sync::Arc::new(std::sync::Mutex::new(0)))
@@ -194,12 +202,16 @@ fn cs(s: &str) -> CString {
 impl Mpv {
     /// Crée mpv avec la configuration de l'utilisateur (`~/.config/mpv/mpv.conf` et
     /// `input.conf`) : mêmes réglages, mêmes raccourcis que son mpv habituel.
-    pub fn new() -> Result<Self, String> {
+    /// `waker` : réveil partagé, rempli ici dès que mpv existe (la bibliothèque n'attend pas).
+    /// `preload` : fenêtre créée tout de suite, sous un titre d'attente (Hyprland la met de côté,
+    /// règle `bioplay-attente`) ; la première vidéo s'y ouvre sans rien créer.
+    pub fn new(waker: Waker, preload: bool) -> Result<Self, String> {
         let h = unsafe { mpv_create() };
         if h.is_null() {
             return Err("mpv_create a échoué".into());
         }
-        let m = Self { h, waker: Waker(std::sync::Arc::new(std::sync::Mutex::new(h as usize))), state: State { speed: 1.0, scale: 1.0, ..Default::default() }, own_seeks: Default::default(), overlay_done: Default::default(), target: Default::default(), anchor: (0.0, std::time::Instant::now()), seeking: false };
+        waker.set(h);
+        let m = Self { h, waker, state: State { speed: 1.0, scale: 1.0, ..Default::default() }, own_seeks: Default::default(), overlay_done: Default::default(), target: Default::default(), anchor: (0.0, std::time::Instant::now()), seeking: false };
         // mpv ouvre et dessine sa propre fenêtre en gpu-next : même image, même coût que mpv
         // (Dolby Vision et HDR compris). bioplay y ajoute son interface en superposition.
         for (k, v) in [
@@ -208,7 +220,7 @@ impl Mpv {
             ("input-vo-keyboard", "yes"),
             // Pas de fenêtre sans vidéo : mpv attend, prêt, et sa fenêtre n'apparaît qu'à
             // l'ouverture d'une vidéo (la bibliothèque a la sienne).
-            ("force-window", "no"),
+            ("force-window", if preload { "yes" } else { "no" }),
             ("idle", "yes"),
             ("keep-open", "yes"),
             ("terminal", "no"),
@@ -216,7 +228,7 @@ impl Mpv {
             // Classe propre à la fenêtre vidéo : Hyprland l'ouvre agrandie par-dessus la
             // bibliothèque (règle `bioplay-video`), sans partager la mosaïque.
             ("wayland-app-id", "bioplay-video"),
-            ("title", "${?media-title:${media-title} — }bioplay"),
+            ("title", if preload { WAITING_TITLE } else { TITLE }),
             ("osc", "no"),
         ] {
             m.option(k, v);

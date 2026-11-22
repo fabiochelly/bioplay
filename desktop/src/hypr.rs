@@ -1,9 +1,9 @@
-//! Hyprland : garder la fenêtre de mpv d'une vidéo à l'autre. Créée normalement à la première
-//! vidéo, elle est mise de côté au retour à la bibliothèque (bureau spécial `special:bioplay`,
-//! invisible) au lieu d'être fermée, puis ramenée, agrandie, à la première image de la vidéo
-//! suivante : ni nouvelle fenêtre ni initialisation de la carte graphique au clic.
-//! Aucune règle de fenêtre n'envoie de fenêtre sur ce bureau : si une commande échoue, la
-//! fenêtre reste simplement visible. Hors Hyprland : rien (mpv ferme sa fenêtre au retour).
+//! Hyprland : la fenêtre de mpv est créée au lancement (dans le fil du lecteur, sans retarder la
+//! bibliothèque) sous le titre `bioplay-attente` ; une règle étroite (classe ET titre initial)
+//! la met de côté sur le bureau spécial `special:bioplay`. Elle est ramenée, agrandie, à la
+//! première image d'une vidéo, et remise de côté au retour : ni fenêtre à créer ni carte
+//! graphique à initialiser au clic. Une fenêtre créée autrement (vidéo donnée au lancement)
+//! n'est jamais visée par la règle. Hors Hyprland : rien (mpv crée et ferme sa fenêtre).
 //! Commandes envoyées directement sur la prise de Hyprland (pas de `hyprctl` à lancer).
 
 use std::io::{Read, Write};
@@ -43,12 +43,27 @@ fn active_workspace() -> Option<i64> {
     v.get("id")?.as_i64()
 }
 
-/// Ramène la fenêtre vidéo sur le bureau courant, agrandie et active.
+/// Bureau où se trouve la fenêtre vidéo.
+fn video_workspace() -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(&request("j/clients")?).ok()?;
+    v.as_array()?
+        .iter()
+        .find(|c| c.get("class").and_then(|x| x.as_str()) == Some("bioplay-video"))
+        .and_then(|c| c.get("workspace")?.get("name")?.as_str().map(str::to_owned))
+}
+
+/// Ramène la fenêtre vidéo sur le bureau courant, agrandie et active ; vérifie qu'elle y est
+/// (une seconde tentative sinon) : une vidéo ne doit jamais rester cachée.
 pub fn bring_video() {
-    let Some(ws) = active_workspace() else { return };
-    dispatch(&format!("hl.dsp.window.move({{ workspace = \"{ws}\", follow = true, window = \"{WINDOW}\" }})"));
-    dispatch(&format!("hl.dsp.window.fullscreen({{ mode = \"maximized\", action = \"set\", window = \"{WINDOW}\" }})"));
-    dispatch(&format!("hl.dsp.focus({{ window = \"{WINDOW}\" }})"));
+    for _ in 0..2 {
+        let Some(ws) = active_workspace() else { return };
+        dispatch(&format!("hl.dsp.window.move({{ workspace = \"{ws}\", follow = true, window = \"{WINDOW}\" }})"));
+        dispatch(&format!("hl.dsp.window.fullscreen({{ mode = \"maximized\", action = \"set\", window = \"{WINDOW}\" }})"));
+        dispatch(&format!("hl.dsp.focus({{ window = \"{WINDOW}\" }})"));
+        if !video_workspace().is_some_and(|w| w.starts_with("special")) {
+            return;
+        }
+    }
 }
 
 /// Met la fenêtre vidéo de côté (bureau spécial, invisible).

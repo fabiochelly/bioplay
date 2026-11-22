@@ -115,6 +115,8 @@ struct App {
     kept: bool,
     aside: bool,
     bring: bool,
+    /// Fenêtre préparée encore sous son titre d'attente.
+    waiting_title: bool,
     last_save: Instant,
     seek_from: Option<f64>,
     indexing: Vec<String>,
@@ -325,6 +327,11 @@ impl App {
             mpv::Change::Loaded => {
                 self.player.loaded_at = Some(Instant::now());
                 // Première vidéo : sa fenêtre restera ouverte à l'arrêt (gardée pour la suivante).
+                // Fenêtre préparée au lancement : son vrai titre, maintenant qu'une vidéo l'occupe.
+                if self.waiting_title {
+                    self.player.mpv.set("title", mpv::TITLE);
+                    self.waiting_title = false;
+                }
                 if !self.kept && hypr::available() {
                     self.player.mpv.set("force-window", "yes");
                     self.kept = true;
@@ -854,26 +861,28 @@ fn main() {
     let (tx, rx) = channel();
     // Mesures : le lecteur seul, sans la fenêtre de la bibliothèque.
     if std::env::var_os("BIOPLAY_BENCH").is_some() {
-        player_main(args, tx, rx, None);
+        player_main(args, tx, rx, mpv::Waker::none());
         return;
     }
     let visible = !args.iter().any(|a| !a.starts_with("--"));
-    // mpv est préparé tout de suite, dans son fil (configuration, scripts, décodeurs) : ouvrir une
-    // vidéo depuis la bibliothèque ne coûte plus que sa fenêtre.
-    let (ready, waker) = std::sync::mpsc::sync_channel(1);
-    let player_tx = tx.clone();
+    // mpv démarre dans son propre fil, avec sa fenêtre (préparée, mise de côté) : la bibliothèque
+    // s'affiche sans l'attendre. Le réveil du lecteur est rempli par ce fil dès que mpv existe.
+    let wake = mpv::Waker::none();
+    let (player_tx, player_wake) = (tx.clone(), wake.clone());
     std::thread::Builder::new()
         .name("lecteur".into())
-        .spawn(move || player_main(args, player_tx, rx, Some(ready)))
+        .spawn(move || player_main(args, player_tx, rx, player_wake))
         .expect("fil du lecteur");
-    let Ok(wake) = waker.recv() else { return };
     libwin::run(libwin::Link { tx, wake }, visible);
 }
 
 /// Le lecteur : mpv et son interface (egui dessinée en incrustation). Tourne jusqu'à la fin de
 /// mpv ; prévient alors la bibliothèque (fin de bioplay).
-fn player_main(args: Vec<String>, tx: std::sync::mpsc::Sender<Message>, rx: std::sync::mpsc::Receiver<Message>, ready: Option<std::sync::mpsc::SyncSender<mpv::Waker>>) {
-    let mpv = mpv::Mpv::new().expect("libmpv");
+fn player_main(args: Vec<String>, tx: std::sync::mpsc::Sender<Message>, rx: std::sync::mpsc::Receiver<Message>, waker: mpv::Waker) {
+    // Sans vidéo donnée, sous Hyprland : fenêtre de mpv créée tout de suite et mise de côté.
+    let bench = std::env::var_os("BIOPLAY_BENCH").is_some();
+    let preload = !bench && hypr::available() && !args.iter().any(|a| !a.starts_with("--"));
+    let mpv = mpv::Mpv::new(waker, preload).expect("libmpv");
     // Options mpv en ligne de commande, comme mpv : `bioplay --mute=yes --start=20 film.mkv`.
     let mut files = Vec::new();
     let mut panel = None;
@@ -902,9 +911,6 @@ fn player_main(args: Vec<String>, tx: std::sync::mpsc::Sender<Message>, rx: std:
     let ctx = egui::Context::default();
     ui::fonts(&ctx);
     let waker = mpv.waker();
-    if let Some(r) = ready {
-        let _ = r.send(waker.clone());
-    }
     let mut app = App {
         player: Player::new(mpv),
         overlay,
@@ -932,9 +938,10 @@ fn player_main(args: Vec<String>, tx: std::sync::mpsc::Sender<Message>, rx: std:
         hover_section: false,
         panel_section: false,
         outside: !files.is_empty(),
-        kept: false,
-        aside: false,
+        kept: preload,
+        aside: preload,
         bring: false,
+        waiting_title: preload,
         last_save: Instant::now(),
         seek_from: None,
         indexing: Vec::new(),
