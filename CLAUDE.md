@@ -23,7 +23,10 @@ Lecteur vidéo minimal (Android + bureau) construit sur libmpv, interface « ver
   (mpv renvoie TOUTES ses incrustations au GPU à chaque changement : jamais une par miniature) ;
   fond, miniatures (mises à l'échelle une fois, copiées par lignes) et interface y sont composés
   par bandes, une par cœur ; pendant un défilement, en demi-résolution agrandie par mpv (`dw/dh`).
-  Accueil sans verre (boutons opaques, texte blanc net) ; le verre est pour la vidéo. Mesure en
+  Accueil sans verre (boutons opaques, texte blanc net) ; le verre est pour la vidéo. Tuiles en
+  cache (`overlay::Sprite`, `ui::Rec`) : titre, durée, avancée, liseré, dossier dessinés une fois
+  par aspect puis recopiés (tronçons non transparents) ; seule la zone qui change est refaite,
+  le reste recopié de l'image précédente. Défilement : 71 → 44 % d'un cœur (mpv seul ≈ 21 %). Mesure en
   vrai du défilement : `BIOPLAY_SCROLLTEST=1 bioplay` (processeur par fil, position imposée à la
   grille, indépendante de la souris). Mesure sans fenêtre : `BIOPLAY_BENCH=grid|list [BIOPLAY_PLACE=sous/dossier]
   [BIOPLAY_SNAPSHOT=f.png] bioplay [fichier]` (durées par étape, ou capture de l'interface) ;

@@ -597,7 +597,32 @@ impl App {
         let prims = self.ctx.tessellate(shapes, out.pixels_per_point / reduce as f32);
         let t2 = Instant::now();
         let home = !self.player.has_file();
-        let presented = self.overlay.present(&self.player.mpv, &prims, &marks, &mut out.textures_delta, [w as u32, h as u32], out.pixels_per_point, home, &self.player.thumbs, reduce);
+        // Tuiles de l'accueil pas encore en cache à cette échelle : dessinées une fois maintenant.
+        if !self.player.sprites.is_empty() {
+            self.overlay.prepare_textures(&out.textures_delta);
+            let ppp = out.pixels_per_point / reduce as f32;
+            for sp in &self.player.sprites {
+                let key = overlay::Overlay::sprite_key(sp.key, ppp);
+                if self.overlay.has_sprite(key) {
+                    continue;
+                }
+                let origin = sp.rect.min.to_vec2();
+                let local = Rect::from_min_size(egui::Pos2::ZERO, sp.rect.size());
+                let shapes = sp
+                    .shapes
+                    .iter()
+                    .map(|s| {
+                        let mut s = s.clone();
+                        s.translate(-origin);
+                        egui::epaint::ClippedShape::new(local, s)
+                    })
+                    .collect();
+                let tile = self.ctx.tessellate(shapes, ppp);
+                let (tw, th) = ((sp.rect.width() * ppp).ceil() as usize, (sp.rect.height() * ppp).ceil() as usize);
+                self.overlay.make_sprite(key, &tile, tw.max(1), th.max(1), ppp);
+            }
+        }
+        let presented = self.overlay.present(&self.player.mpv, &prims, &marks, &mut out.textures_delta, [w as u32, h as u32], out.pixels_per_point, home, &self.player.thumbs, &self.player.sprites, reduce);
         if let Some(p) = &mut self.profile {
             let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1000.0;
             p.push([ms(t0, t1), ms(t1, t2), ms(t2, Instant::now())]);
@@ -959,6 +984,7 @@ fn scroll_test(app: &mut App) {
     }
     println!("avant : {} images, {} envois, réponses {}", app.frames, app.overlay.sends, app.player.mpv.overlay_done.get());
     app.events.push(Event::PointerMoved(pos2(720.0, 500.0)));
+    overlay::TIMING.store(true, std::sync::atomic::Ordering::Relaxed);
     let (threads0, cpu0, frames0, sends0) = (threads_ms(), cpu_ms().0, app.frames, app.overlay.sends);
     let start = Instant::now();
     let mut next = start;
@@ -990,7 +1016,8 @@ fn scroll_test(app: &mut App) {
     v.sort_by(|a, b| b.1.total_cmp(&a.1));
     println!("défilement : processeur {:.0} % d'un cœur, {} images, {} envois en {el:.1} s", total / el / 10.0, app.frames - frames0, app.overlay.sends - sends0);
     println!("  dessin par bandes (fils éphémères) {:.0} %", (total - live).max(0.0) / el / 10.0);
-    println!("  réponses de mpv aux envois : {} (attente : {:?})", app.player.mpv.overlay_done.get(), app.overlay_wait);
+    let ph: Vec<f64> = overlay::PHASES.iter().map(|a| a.load(std::sync::atomic::Ordering::Relaxed) as f64 / 1e6 / el / 10.0).collect();
+    println!("  étapes du dessin (% d'un cœur) : fond {:.1} · miniatures {:.1} · tuiles {:.1} · triangles {:.1}", ph[0], ph[1], ph[2], ph[3]);
     for (n, ms) in v.iter().take(10) {
         println!("  {n} {:.1} %", ms / el / 10.0);
     }

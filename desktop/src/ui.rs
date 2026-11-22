@@ -112,6 +112,7 @@ pub fn draw(ctx: &egui::Context, p: &mut Player, ppp: f32) -> (Vec<Plate>, Vec<A
     let screen = ctx.content_rect();
 
     p.thumbs.clear();
+    p.sprites.clear();
     if !p.has_file() {
         home(ctx, p, &mut plates, &mut actions, screen);
         return (plates.list, actions);
@@ -1203,37 +1204,43 @@ fn position(p: &Player, path: &str) -> f64 {
 }
 
 /// Miniature à coins arrondis, durée en haut à droite et avancée de lecture en bas.
-fn thumbnail(ui: &mut Ui, p: &mut Player, v: &crate::library::Video, r: Rect, hovered: bool) {
+/// Miniature : l'image posée sous l'interface (ou une case vide), et dans `rec` ce qui la
+/// couvre (liseré, durée, avancée). Rend la largeur remplie du rail (clé du cache).
+fn thumbnail(ui: &mut Ui, p: &mut Player, rec: &mut Rec, v: &crate::library::Video, r: Rect, hovered: bool) -> u32 {
     let cr = CornerRadius::same(12);
-    let painter = ui.painter().clone();
     match p.library.image(v) {
-        // L'image elle-même est posée par mpv sous l'interface ; ici, seulement ce qui la couvre.
+        // L'image elle-même est posée sous l'interface ; ici, seulement ce qui la couvre.
         Some(image) => p.thumbs.push(crate::overlay::Thumb { key: v.thumb(), rect: r, clip: ui.clip_rect(), radius: 12.0, image }),
         None => {
+            let painter = ui.painter();
             painter.rect_filled(r, cr, Color32::from_white_alpha(14));
-            icon(&painter, r.center(), 26.0, Icon::Play, FAINT);
+            icon(painter, r.center(), 26.0, Icon::Play, FAINT);
         }
     }
     // Survol : liseré bleu d'accent (comme les boutons), l'image garde sa luminosité.
     if hovered {
-        painter.rect_stroke(r, cr, Stroke::new(2.5, ACCENT), StrokeKind::Inside);
+        rec.rect_stroke(r, cr, Stroke::new(2.5, ACCENT), StrokeKind::Inside);
     } else {
-        painter.rect_stroke(r, cr, Stroke::new(1.0, Color32::from_white_alpha(34)), StrokeKind::Inside);
+        rec.rect_stroke(r, cr, Stroke::new(1.0, Color32::from_white_alpha(34)), StrokeKind::Inside);
     }
+    let mut fill = 0;
     if v.duration > 0.0 {
-        let g = painter.layout_no_wrap(clock(v.duration), semi(11.0), INK);
+        let g = ui.ctx().fonts_mut(|f| f.layout_no_wrap(clock(v.duration), semi(11.0), INK));
         let b = Rect::from_min_size(pos2(r.max.x - 8.0 - g.size().x - 12.0, r.min.y + 7.0), g.size() + vec2(12.0, 3.0));
-        painter.rect_filled(b, CornerRadius::same((b.height() / 2.0) as u8), Color32::from_black_alpha(150));
-        painter.galley(b.min + vec2(6.0, 1.5), g, INK);
+        rec.rect_filled(b, CornerRadius::same((b.height() / 2.0) as u8), Color32::from_black_alpha(150));
+        rec.galley(b.min + vec2(6.0, 1.5), g, INK);
         // Avancée : un rail discret sur chaque miniature, rempli jusqu'à la position.
         let f = (position(p, &v.path) / v.duration).clamp(0.0, 1.0) as f32;
         let rail = Rect::from_min_size(pos2(r.min.x + 9.0, r.max.y - 11.0), vec2(r.width() - 18.0, 4.0));
-        painter.rect_filled(rail, CornerRadius::same(2), Color32::from_black_alpha(110));
-        painter.rect_filled(rail, CornerRadius::same(2), Color32::from_white_alpha(52));
+        rec.rect_filled(rail, CornerRadius::same(2), Color32::from_black_alpha(110));
+        rec.rect_filled(rail, CornerRadius::same(2), Color32::from_white_alpha(52));
         if f > 0.0 {
-            painter.rect_filled(Rect::from_min_size(rail.min, vec2((rail.width() * f).max(4.0), 4.0)), CornerRadius::same(2), ACCENT);
+            let wf = (rail.width() * f).max(4.0);
+            fill = wf.round() as u32;
+            rec.rect_filled(Rect::from_min_size(rail.min, vec2(wf, 4.0)), CornerRadius::same(2), ACCENT);
         }
     }
+    fill
 }
 
 /// Titre sur deux lignes au plus, coupé proprement.
@@ -1255,19 +1262,19 @@ fn dir_count(d: &crate::library::Dir) -> String {
 
 /// Dossier dessiné : le dos et son onglet, deux feuilles qui dépassent, la face avant bleutée avec
 /// un reflet. Dans le même cadre 16:9 que les miniatures.
-pub(crate) fn folder_art(painter: &egui::Painter, r: Rect, hovered: bool) {
+pub(crate) fn folder_art(rec: &mut Rec, r: Rect, hovered: bool) {
     let h = r.height() * 0.86;
     let w = (r.width() * 0.86).min(h * 1.42);
     let x0 = r.center().x - w / 2.0;
     let y0 = r.center().y - h / 2.0 + r.height() * 0.02;
     let cr = CornerRadius::same((h * 0.07) as u8);
     let lift = if hovered { -3.0 } else { 0.0 };
-    let gradient = |rect: Rect, top: Color32, bottom: Color32| {
-        // Dégradé vertical continu aux coins arrondis : deux bandeaux arrondis aux extrémités
-        // (couleurs de bout) et, entre eux, un quadrilatère aux couleurs interpolées.
+    // Dégradé vertical continu aux coins arrondis : deux bandeaux arrondis aux extrémités
+    // (couleurs de bout) et, entre eux, un quadrilatère aux couleurs interpolées.
+    let gradient = |rec: &mut Rec, rect: Rect, top: Color32, bottom: Color32| {
         let rr = cr.nw as f32;
-        painter.rect_filled(Rect::from_min_max(rect.min, pos2(rect.max.x, rect.min.y + rr * 2.0)), cr, top);
-        painter.rect_filled(Rect::from_min_max(pos2(rect.min.x, rect.max.y - rr * 2.0), rect.max), cr, bottom);
+        rec.rect_filled(Rect::from_min_max(rect.min, pos2(rect.max.x, rect.min.y + rr * 2.0)), cr, top);
+        rec.rect_filled(Rect::from_min_max(pos2(rect.min.x, rect.max.y - rr * 2.0), rect.max), cr, bottom);
         let (y1, y2) = (rect.min.y + rr, rect.max.y - rr);
         let k = |y: f32| lerp_color(top, bottom, ((y - y1) / (y2 - y1).max(1.0)).clamp(0.0, 1.0));
         let mut mesh = egui::Mesh::default();
@@ -1277,19 +1284,61 @@ pub(crate) fn folder_art(painter: &egui::Painter, r: Rect, hovered: bool) {
         mesh.colored_vertex(pos2(rect.min.x, y2), k(y2));
         mesh.add_triangle(0, 1, 2);
         mesh.add_triangle(0, 2, 3);
-        painter.add(Shape::mesh(mesh));
+        rec.add(Shape::mesh(mesh));
     };
     let back_top = Color32::from_rgb(0x2B, 0x6D, 0xB3);
     let back_bottom = Color32::from_rgb(0x17, 0x3F, 0x70);
-    painter.rect_filled(Rect::from_min_size(pos2(x0, y0), vec2(w * 0.38, h * 0.22)), cr, back_top);
-    gradient(Rect::from_min_size(pos2(x0, y0 + h * 0.1), vec2(w, h * 0.9)), back_top, back_bottom);
+    rec.rect_filled(Rect::from_min_size(pos2(x0, y0), vec2(w * 0.38, h * 0.22)), cr, back_top);
+    gradient(rec, Rect::from_min_size(pos2(x0, y0 + h * 0.1), vec2(w, h * 0.9)), back_top, back_bottom);
     let sheet = CornerRadius::same((h * 0.04) as u8);
-    painter.rect_filled(Rect::from_min_size(pos2(x0 + w * 0.08, y0 + h * 0.17 + lift), vec2(w * 0.8, h * 0.5)), sheet, Color32::from_rgb(0xCF, 0xDD, 0xEB));
-    painter.rect_filled(Rect::from_min_size(pos2(x0 + w * 0.13, y0 + h * 0.23 + lift * 1.6), vec2(w * 0.76, h * 0.5)), sheet, Color32::from_rgb(0xF1, 0xF6, 0xFB));
+    rec.rect_filled(Rect::from_min_size(pos2(x0 + w * 0.08, y0 + h * 0.17 + lift), vec2(w * 0.8, h * 0.5)), sheet, Color32::from_rgb(0xCF, 0xDD, 0xEB));
+    rec.rect_filled(Rect::from_min_size(pos2(x0 + w * 0.13, y0 + h * 0.23 + lift * 1.6), vec2(w * 0.76, h * 0.5)), sheet, Color32::from_rgb(0xF1, 0xF6, 0xFB));
     let fy = y0 + h * 0.33;
     let front = Rect::from_min_max(pos2(x0, fy), pos2(x0 + w, y0 + h));
-    gradient(front, Color32::from_rgb(0x8F, 0xD8, 0xFF), Color32::from_rgb(0x2F, 0x86, 0xCF));
-    painter.line_segment([pos2(x0 + cr.nw as f32, fy + 1.0), pos2(x0 + w - cr.ne as f32, fy + 1.0)], Stroke::new(1.5, Color32::from_white_alpha(170)));
+    gradient(rec, front, Color32::from_rgb(0x8F, 0xD8, 0xFF), Color32::from_rgb(0x2F, 0x86, 0xCF));
+    rec.line_segment([pos2(x0 + cr.nw as f32, fy + 1.0), pos2(x0 + w - cr.ne as f32, fy + 1.0)], Stroke::new(1.5, Color32::from_white_alpha(170)));
+}
+
+/// Formes d'une tuile de la bibliothèque, dessinées UNE fois dans une image en cache
+/// (`overlay::Sprite`) puis seulement recopiée tant que rien n'y change : un défilement ne
+/// redessine plus titres, pastilles ni dossiers.
+pub(crate) struct Rec {
+    pub shapes: Vec<Shape>,
+}
+
+impl Rec {
+    pub(crate) fn new() -> Self {
+        Rec { shapes: Vec::new() }
+    }
+    fn rect_filled(&mut self, r: Rect, cr: CornerRadius, c: Color32) {
+        self.shapes.push(Shape::rect_filled(r, cr, c));
+    }
+    fn rect_stroke(&mut self, r: Rect, cr: CornerRadius, stroke: Stroke, kind: StrokeKind) {
+        self.shapes.push(Shape::rect_stroke(r, cr, stroke, kind));
+    }
+    fn galley(&mut self, pos: Pos2, g: std::sync::Arc<egui::Galley>, c: Color32) {
+        self.shapes.push(Shape::galley(pos, g, c));
+    }
+    fn add(&mut self, shape: Shape) {
+        self.shapes.push(shape);
+    }
+    fn line_segment(&mut self, pts: [Pos2; 2], stroke: Stroke) {
+        self.shapes.push(Shape::line_segment(pts, stroke));
+    }
+    fn text(&mut self, ctx: &egui::Context, pos: Pos2, align: Align2, text: String, font: FontId, color: Color32) {
+        let g = ctx.fonts_mut(|f| f.layout_no_wrap(text, font, color));
+        let r = align.anchor_size(pos, g.size());
+        self.galley(r.min, g, color);
+    }
+}
+
+/// Confie une tuile au cache : `key` résume tout ce qui change son aspect.
+fn sprite(p: &mut Player, ui: &Ui, rect: Rect, key: impl std::hash::Hash, rec: Rec) {
+    use std::hash::{Hash, Hasher};
+    let mut h = std::collections::hash_map::DefaultHasher::new();
+    key.hash(&mut h);
+    (rect.width().to_bits(), rect.height().to_bits()).hash(&mut h);
+    p.sprites.push(crate::overlay::Sprite { key: h.finish(), rect, clip: ui.clip_rect(), shapes: rec.shapes });
 }
 
 fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
@@ -1333,10 +1382,13 @@ fn grid(ui: &mut Ui, p: &mut Player, shelf: &crate::library::Shelf, body: Rect, 
                     Item::Dir(i) => {
                         let d = &shelf.dirs[i];
                         let resp = ui.interact(cell, ui.id().with(("dir", &d.place)), Sense::click());
-                        folder_art(ui.painter(), art, resp.hovered());
-                        let clip = ui.painter().with_clip_rect(cell);
-                        clip.text(pos2(cell.min.x + 2.0, cell.min.y + th + 15.0), Align2::LEFT_CENTER, &d.name, semi(13.5), INK);
-                        clip.text(pos2(cell.min.x + 2.0, cell.min.y + th + 33.0), Align2::LEFT_CENTER, dir_count(d), med(11.5), INK2);
+                        let hovered = resp.hovered();
+                        let count = dir_count(d);
+                        let mut rec = Rec::new();
+                        folder_art(&mut rec, art, hovered);
+                        rec.text(ui.ctx(), pos2(cell.min.x + 2.0, cell.min.y + th + 15.0), Align2::LEFT_CENTER, d.name.clone(), semi(13.5), INK);
+                        rec.text(ui.ctx(), pos2(cell.min.x + 2.0, cell.min.y + th + 33.0), Align2::LEFT_CENTER, count.clone(), med(11.5), INK2);
+                        sprite(p, ui, cell, ("dir", &d.name, &count, hovered), rec);
                         if resp.clicked() {
                             p.place = d.place.clone();
                         }
@@ -1344,9 +1396,13 @@ fn grid(ui: &mut Ui, p: &mut Player, shelf: &crate::library::Shelf, body: Rect, 
                     Item::Video(i) => {
                         let v = p.library.videos[i].clone();
                         let resp = ui.interact(cell, ui.id().with(("tile", &v.path)), Sense::click());
-                        thumbnail(ui, p, &v, art, resp.hovered());
-                        let g = title_galley(ui, v.title(), w - 4.0, 13.5);
-                        ui.painter().galley(pos2(cell.min.x + 2.0, cell.min.y + th + 7.0), g, INK);
+                        let hovered = resp.hovered();
+                        let mut rec = Rec::new();
+                        let fill = thumbnail(ui, p, &mut rec, &v, art, hovered);
+                        let title = v.title();
+                        let g = title_galley(ui, title.clone(), w - 4.0, 13.5);
+                        rec.galley(pos2(cell.min.x + 2.0, cell.min.y + th + 7.0), g, INK);
+                        sprite(p, ui, cell, ("tile", &v.path, &title, v.duration.to_bits(), fill, hovered, th.to_bits()), rec);
                         if resp.clicked() {
                             actions.push(Action::Play(v.path.clone()));
                         }
@@ -1377,12 +1433,16 @@ fn list(ui: &mut Ui, p: &mut Player, shelf: &crate::library::Shelf, body: Rect, 
                 Item::Dir(k) => {
                     let d = &shelf.dirs[k];
                     let resp = ui.interact(row, ui.id().with(("dirrow", &d.place)), Sense::click());
-                    if resp.hovered() {
-                        ui.painter().rect_filled(row, CornerRadius::same(16), Color32::from_white_alpha(14));
+                    let hovered = resp.hovered();
+                    let count = dir_count(d);
+                    let mut rec = Rec::new();
+                    if hovered {
+                        rec.rect_filled(row, CornerRadius::same(16), Color32::from_white_alpha(14));
                     }
-                    folder_art(ui.painter(), t, resp.hovered());
-                    ui.painter().text(pos2(tx, row.center().y - 10.0), Align2::LEFT_CENTER, &d.name, semi(15.0), INK);
-                    ui.painter().text(pos2(tx, row.center().y + 12.0), Align2::LEFT_CENTER, dir_count(d), med(12.0), INK2);
+                    folder_art(&mut rec, t, hovered);
+                    rec.text(ui.ctx(), pos2(tx, row.center().y - 10.0), Align2::LEFT_CENTER, d.name.clone(), semi(15.0), INK);
+                    rec.text(ui.ctx(), pos2(tx, row.center().y + 12.0), Align2::LEFT_CENTER, count.clone(), med(12.0), INK2);
+                    sprite(p, ui, row, ("dirrow", &d.name, &count, hovered), rec);
                     if resp.clicked() {
                         p.place = d.place.clone();
                     }
@@ -1390,14 +1450,17 @@ fn list(ui: &mut Ui, p: &mut Player, shelf: &crate::library::Shelf, body: Rect, 
                 Item::Video(k) => {
                     let v = p.library.videos[k].clone();
                     let resp = ui.interact(row, ui.id().with(("row", &v.path)), Sense::click());
-                    if resp.hovered() {
-                        ui.painter().rect_filled(row, CornerRadius::same(16), Color32::from_white_alpha(14));
+                    let hovered = resp.hovered();
+                    let mut rec = Rec::new();
+                    if hovered {
+                        rec.rect_filled(row, CornerRadius::same(16), Color32::from_white_alpha(14));
                     }
-                    thumbnail(ui, p, &v, t, resp.hovered());
-                    let g = title_galley(ui, v.title(), row.max.x - tx - 12.0, 15.0);
+                    let fill = thumbnail(ui, p, &mut rec, &v, t, hovered);
+                    let title = v.title();
+                    let g = title_galley(ui, title.clone(), row.max.x - tx - 12.0, 15.0);
                     let gh = g.size().y;
                     let top = row.center().y - (gh + 20.0) / 2.0;
-                    ui.painter().galley(pos2(tx, top), g, INK);
+                    rec.galley(pos2(tx, top), g, INK);
                     let pos = position(p, &v.path);
                     let detail = if v.duration <= 0.0 {
                         String::new()
@@ -1406,7 +1469,8 @@ fn list(ui: &mut Ui, p: &mut Player, shelf: &crate::library::Shelf, body: Rect, 
                     } else {
                         clock(v.duration)
                     };
-                    ui.painter().text(pos2(tx, top + gh + 4.0), Align2::LEFT_TOP, detail, med(12.0), INK2);
+                    rec.text(ui.ctx(), pos2(tx, top + gh + 4.0), Align2::LEFT_TOP, detail.clone(), med(12.0), INK2);
+                    sprite(p, ui, row, ("row", &v.path, &title, &detail, fill, hovered), rec);
                     if resp.clicked() {
                         actions.push(Action::Play(v.path.clone()));
                     }

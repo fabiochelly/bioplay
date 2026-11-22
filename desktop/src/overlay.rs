@@ -57,6 +57,38 @@ pub struct Overlay {
     /// Miniatures de l'accueil mises à la taille d'affichage (coins arrondis compris), BGRA
     /// prémultiplié : posées dans l'image par simple copie de lignes, gardées tant qu'elles servent.
     scaled: HashMap<(String, usize, usize, usize), Vec<u8>>,
+    /// Tuiles déjà dessinées, par empreinte et échelle.
+    sprites: HashMap<u64, SpriteImg>,
+}
+
+/// Une tuile de l'accueil (titre, durée, avancée, liseré ; ou dossier) : ses formes sont
+/// dessinées UNE fois dans une image en cache, puis seulement recopiée à sa place — seuls les
+/// tronçons de lignes non transparents. `key` résume son aspect (survol, avancée, langue…).
+pub struct Sprite {
+    pub key: u64,
+    pub rect: Rect,
+    pub clip: Rect,
+    pub shapes: Vec<egui::Shape>,
+}
+
+/// Mesure (BIOPLAY_SCROLLTEST) : temps cumulé (ns) de chaque étape du dessin par bandes :
+/// fond, miniatures, tuiles en cache, triangles.
+pub static PHASES: [std::sync::atomic::AtomicU64; 4] = [const { std::sync::atomic::AtomicU64::new(0) }; 4];
+pub static TIMING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn phase(i: usize, t: &mut Option<std::time::Instant>) {
+    if let Some(t0) = t {
+        let now = std::time::Instant::now();
+        PHASES[i].fetch_add((now - *t0).as_nanos() as u64, std::sync::atomic::Ordering::Relaxed);
+        *t = Some(now);
+    }
+}
+
+/// Image d'une tuile (BGRA prémultiplié) et, par ligne, ses tronçons non transparents.
+struct SpriteImg {
+    w: usize,
+    px: Vec<u8>,
+    spans: Vec<Vec<(u16, u16)>>,
 }
 
 /// Une miniature à poser (points de l'interface), découpée par `clip`.
@@ -82,6 +114,7 @@ impl Overlay {
             last: None,
             backdrop: Vec::new(),
             scaled: HashMap::new(),
+            sprites: HashMap::new(),
         })
     }
 
@@ -111,6 +144,62 @@ impl Overlay {
         }
     }
 
+    /// Empreinte d'une tuile à une échelle donnée (la demi-résolution du mouvement a la sienne).
+    pub fn sprite_key(key: u64, ppp: f32) -> u64 {
+        key ^ (ppp.to_bits() as u64).wrapping_mul(0x9E37_79B9_7F4A_7C15)
+    }
+
+    pub fn has_sprite(&self, key: u64) -> bool {
+        self.sprites.contains_key(&key)
+    }
+
+    /// Glyphes nouveaux de cette image appliqués avant de dessiner des tuiles avec.
+    pub fn prepare_textures(&mut self, delta: &egui::TexturesDelta) {
+        self.update_textures(delta);
+    }
+
+    /// Dessine une tuile (primitives à l'origine, en points) dans son image en cache.
+    pub fn make_sprite(&mut self, key: u64, prims: &[egui::ClippedPrimitive], w: usize, h: usize, ppp: f32) {
+        let mut px = vec![0u8; w * h * 4];
+        {
+            let mut canvas = Canvas { buf: &mut px, w, h, ox: 0.0, oy: 0.0 };
+            let clip = [0, 0, w as i32, h as i32];
+            for p in prims {
+                let Primitive::Mesh(m) = &p.primitive else { continue };
+                let Some(tex) = self.textures.get(&m.texture_id) else { continue };
+                for t in m.indices.chunks_exact(3) {
+                    let v = [&m.vertices[t[0] as usize], &m.vertices[t[1] as usize], &m.vertices[t[2] as usize]];
+                    canvas.triangle(v, tex, ppp, clip);
+                }
+            }
+        }
+        let spans = px
+            .chunks_exact(w * 4)
+            .map(|row| {
+                let mut out = Vec::new();
+                let mut start = None;
+                for (x, p) in row.chunks_exact(4).enumerate() {
+                    match (p[3] != 0, start) {
+                        (true, None) => start = Some(x),
+                        (false, Some(s0)) => {
+                            out.push((s0 as u16, x as u16));
+                            start = None;
+                        }
+                        _ => {}
+                    }
+                }
+                if let Some(s0) = start {
+                    out.push((s0 as u16, w as u16));
+                }
+                out
+            })
+            .collect();
+        if self.sprites.len() > 400 {
+            self.sprites.clear();
+        }
+        self.sprites.insert(key, SpriteImg { w, px, spans });
+    }
+
     /// Dessine les primitives et met à jour la superposition de mpv (ou la retire si vide).
     /// Une seule incrustation, fond et miniatures compris : mpv réassemble et renvoie toutes ses
     /// incrustations à la carte graphique à chaque changement, une seule commande par image.
@@ -124,6 +213,7 @@ impl Overlay {
         ppp: f32,
         home: bool,
         thumbs: &[Thumb],
+        sprites: &[Sprite],
         reduce: u32,
     ) -> bool {
         if !home && !self.scaled.is_empty() {
@@ -142,7 +232,7 @@ impl Overlay {
             return false;
         }
         let t0 = std::time::Instant::now();
-        let drawn = self.render(prims, Some(marks), textures, rsize, ppp / r as f32, home, thumbs);
+        let drawn = self.render(prims, Some(marks), textures, rsize, ppp / r as f32, home, thumbs, sprites);
         let t1 = std::time::Instant::now();
         static DBG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let dbg = *DBG.get_or_init(|| std::env::var_os("BIOPLAY_DEBUG_DAMAGE").is_some());
@@ -172,7 +262,7 @@ impl Overlay {
     }
 
     /// Remplit le prochain tampon ; ne touche pas à mpv.
-    fn render(&mut self, prims: &[egui::ClippedPrimitive], marks: Option<&[(u64, Rect)]>, textures: &mut egui::TexturesDelta, size: [u32; 2], ppp: f32, backdrop: bool, thumbs: &[Thumb]) -> Drawn {
+    fn render(&mut self, prims: &[egui::ClippedPrimitive], marks: Option<&[(u64, Rect)]>, textures: &mut egui::TexturesDelta, size: [u32; 2], ppp: f32, backdrop: bool, thumbs: &[Thumb], sprites: &[Sprite]) -> Drawn {
         self.update_textures(textures);
         let (w, h) = (size[0].max(1) as i32, size[1].max(1) as i32);
         // Zone dessinée : union des maillages, bornée par leurs rectangles de découpe.
@@ -286,6 +376,28 @@ impl Overlay {
             std::hash::Hash::hash(&(k, r, c), &mut hsh);
             all_info.push((std::hash::Hasher::finish(&hsh), *c));
         }
+        // Tuiles en cache : place (pixels du tampon) et découpe ; comptées dans ce qui change.
+        let mut tiles: Vec<([i32; 2], [i32; 4], u64)> = Vec::new();
+        for t in sprites {
+            let key = Overlay::sprite_key(t.key, ppp);
+            let Some(img) = self.sprites.get(&key) else { continue };
+            let tx = (t.rect.min.x * ppp).round() as i32 - x0;
+            let ty = (t.rect.min.y * ppp).round() as i32 - y0;
+            let th = img.spans.len() as i32;
+            let c = [
+                tx.max((t.clip.min.x * ppp).round() as i32 - x0).max(0),
+                ty.max((t.clip.min.y * ppp).round() as i32 - y0).max(0),
+                (tx + img.w as i32).min((t.clip.max.x * ppp).round() as i32 - x0).min(bw as i32),
+                (ty + th).min((t.clip.max.y * ppp).round() as i32 - y0).min(bh as i32),
+            ];
+            if c[0] >= c[2] || c[1] >= c[3] {
+                continue;
+            }
+            let mut hsh = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(&(key, tx, ty, c), &mut hsh);
+            all_info.push((std::hash::Hasher::finish(&hsh), c));
+            tiles.push(([tx, ty], c, key));
+        }
 
         // Seule la zone qui a changé est redessinée (un survol ne touche qu'un bouton) ; rien
         // n'a changé : rien à faire. Toute l'image si la taille, le fond ou les textures changent.
@@ -322,9 +434,10 @@ impl Overlay {
         };
 
         let full = [0, 0, bw as i32, bh as i32];
-        // Zone presque entière (défilement) : tout refaire coûte moins que recopier puis refaire.
+        // Seule la zone qui change est refaite ; le reste vient de l'image précédente (recopié
+        // hors zone seulement). Un défilement ne redessine ainsi pas la barre du haut, immobile.
         let (zone, prev) = match damage {
-            Some((prev, d)) if ((d[2] - d[0]) as usize * (d[3] - d[1]) as usize) < bw * bh * 3 / 5 => (d, Some(prev)),
+            Some((prev, d)) => (d, Some(prev)),
             _ => (full, None),
         };
         if backdrop {
@@ -334,7 +447,7 @@ impl Overlay {
         buf.resize(stride * bh, 0);
         let prev_buf: Option<&[u8]> = prev.map(|i| self.buffers[i].as_slice());
         let back: Option<&[u8]> = if backdrop { self.backdrop.iter().find(|b| (b.0, b.1) == (w as usize, h as usize)).map(|b| b.2.as_slice()) } else { None };
-        let (textures, scaled) = (&self.textures, &self.scaled);
+        let (textures, scaled, sprite_imgs) = (&self.textures, &self.scaled, &self.sprites);
         // Dessin par bandes horizontales, une par cœur : chaque bande fait tout pour ses lignes.
         // Petite zone (une seconde de l'horloge, un bouton survolé) : peu de fils, car chaque fil
         // reparcourt les triangles et coûte du processeur pour rien (≈ un fil par 200 000 pixels).
@@ -348,17 +461,30 @@ impl Overlay {
             for (bi, band) in buf.chunks_mut(stride * band_rows).enumerate() {
                 let b0 = (bi * band_rows) as i32;
                 let rows = (band.len() / stride) as i32;
-                let (placed, prims, prims_info) = (&placed, prims, &prims_info);
+                let (placed, prims, prims_info, tiles) = (&placed, prims, &prims_info, &tiles);
                 let mut job = move || {
                     // Lignes de la zone dans cette bande.
                     let zy0 = zone[1].max(b0);
                     let zy1 = zone[3].min(b0 + rows);
                     if let Some(pb) = prev_buf {
-                        band.copy_from_slice(&pb[b0 as usize * stride..b0 as usize * stride + band.len()]);
+                        // Hors zone : lignes entières, et dans la zone, ses marges gauche et droite.
+                        let (l, r) = (zone[0] as usize * 4, zone[2] as usize * 4);
+                        for ly in 0..rows {
+                            let y = b0 + ly;
+                            let o = ly as usize * stride;
+                            let g = y as usize * stride;
+                            if y < zone[1] || y >= zone[3] {
+                                band[o..o + stride].copy_from_slice(&pb[g..g + stride]);
+                            } else {
+                                band[o..o + l].copy_from_slice(&pb[g..g + l]);
+                                band[o + r..o + stride].copy_from_slice(&pb[g + r..g + stride]);
+                            }
+                        }
                     }
                     if zy0 >= zy1 {
                         return;
                     }
+                    let mut clock = TIMING.load(std::sync::atomic::Ordering::Relaxed).then(std::time::Instant::now);
                     let row = (zone[2] - zone[0]) as usize * 4;
                     for y in zy0..zy1 {
                         let o = (y - b0) as usize * stride + zone[0] as usize * 4;
@@ -370,6 +496,7 @@ impl Overlay {
                             None => band[o..o + row].fill(0),
                         }
                     }
+                    phase(0, &mut clock);
                     // Miniatures (sous l'interface) : lignes opaques copiées, coins mélangés.
                     for (r, c, k) in placed {
                         let z = [c[0].max(zone[0]), c[1].max(zy0), c[2].min(zone[2]), c[3].min(zy1)];
@@ -403,6 +530,39 @@ impl Overlay {
                             }
                         }
                     }
+                    phase(1, &mut clock);
+                    // Tuiles en cache (sur les miniatures) : tronçons non transparents seulement.
+                    for (o, c, key) in tiles {
+                        let z = [c[0].max(zone[0]), c[1].max(zy0), c[2].min(zone[2]), c[3].min(zy1)];
+                        if z[0] >= z[2] || z[1] >= z[3] {
+                            continue;
+                        }
+                        let img = &sprite_imgs[key];
+                        for y in z[1]..z[3] {
+                            let ly = (y - o[1]) as usize;
+                            let d_row = (y - b0) as usize * stride;
+                            let s_row = ly * img.w * 4;
+                            for &(a, b) in &img.spans[ly] {
+                                let xs = (o[0] + a as i32).max(z[0]);
+                                let xe = (o[0] + b as i32).min(z[2]);
+                                for x in xs..xe {
+                                    let so = s_row + (x - o[0]) as usize * 4;
+                                    let d = d_row + x as usize * 4;
+                                    let sp = &img.px[so..so + 4];
+                                    match sp[3] {
+                                        255 => band[d..d + 4].copy_from_slice(sp),
+                                        sa => {
+                                            let k = 255 - sa as u32;
+                                            for i in 0..4 {
+                                                band[d + i] = (sp[i] as u32 + (band[d + i] as u32 * k + 127) / 255).min(255) as u8;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    phase(2, &mut clock);
                     let mut canvas = Canvas { buf: band, w: bw, h: rows as usize, ox: x0 as f32, oy: (y0 + b0) as f32 };
                     for (p, (_, r)) in prims.iter().zip(prims_info) {
                         let Primitive::Mesh(m) = &p.primitive else { continue };
@@ -424,6 +584,7 @@ impl Overlay {
                             canvas.triangle(v, tex, ppp, clip);
                         }
                     }
+                    phase(3, &mut clock);
                 };
                 // Une seule bande (petite zone : l'horloge, un bouton) : dessinée ici, sans fil.
                 if threads == 1 {
@@ -791,16 +952,16 @@ mod tests {
         // Toutes les variantes une fois : leurs glyphes entrent dans l'atlas.
         for lit in [1, 2, 4, 0, 0] {
             let (p, mut t, m) = frame_marks(&ctx, lit);
-            partial.render(&p, Some(&m), &mut t, size, ppp, false, &[]);
-            full.render(&p, None, &mut t, size, ppp, false, &[]);
+            partial.render(&p, Some(&m), &mut t, size, ppp, false, &[], &[]);
+            full.render(&p, None, &mut t, size, ppp, false, &[], &[]);
         }
         let mut smaller = 0;
         for lit in [1, 4, 4, 2, 0] {
             let (p, mut t, m) = frame_marks(&ctx, lit);
             assert!(t.set.is_empty(), "les glyphes ne doivent pas changer");
-            let a = partial.render(&p, Some(&m), &mut t, size, ppp, false, &[]);
+            let a = partial.render(&p, Some(&m), &mut t, size, ppp, false, &[], &[]);
             full.last = None;
-            full.render(&p, None, &mut t, size, ppp, false, &[]);
+            full.render(&p, None, &mut t, size, ppp, false, &[], &[]);
             let pa = &partial.buffers[partial.last.as_ref().unwrap().buffer];
             let fa = &full.buffers[full.last.as_ref().unwrap().buffer];
             // Découpage en bandes différent (nombre de fils selon la zone) : arrondis à ±1 près.
@@ -825,15 +986,15 @@ mod tests {
         // Quelques images pour que les polices et la mise en page se stabilisent.
         for lit in [1, 2, 4, 0, 0] {
             let (p, mut t) = frame(&ctx, lit);
-            partial.render(&p, None, &mut t, size, ppp, false, &[]);
-            full.render(&p, None, &mut t, size, ppp, false, &[]);
+            partial.render(&p, None, &mut t, size, ppp, false, &[], &[]);
+            full.render(&p, None, &mut t, size, ppp, false, &[], &[]);
         }
         for lit in [1, 4, 4, 2] {
             let (p, mut t) = frame(&ctx, lit);
             assert!(t.set.is_empty(), "les glyphes ne doivent pas changer");
-            let a = partial.render(&p, None, &mut t, size, ppp, false, &[]);
+            let a = partial.render(&p, None, &mut t, size, ppp, false, &[], &[]);
             full.last = None;
-            full.render(&p, None, &mut t, size, ppp, false, &[]);
+            full.render(&p, None, &mut t, size, ppp, false, &[], &[]);
             let pa = &partial.buffers[partial.last.as_ref().unwrap().buffer];
             let fa = &full.buffers[full.last.as_ref().unwrap().buffer];
             if !matches!(a, Drawn::Same) {
@@ -879,7 +1040,7 @@ mod bench {
             let prims = ctx.tessellate(out.shapes, out.pixels_per_point);
             let mut t = out.textures_delta;
             let s = std::time::Instant::now();
-            o.render(&prims, None, &mut t, size, ppp, true, &thumbs);
+            o.render(&prims, None, &mut t, size, ppp, true, &thumbs, &[]);
             times.push(s.elapsed().as_secs_f64() * 1000.0);
         }
         eprintln!("rendu par image (ms) : {times:.1?}");
@@ -907,12 +1068,14 @@ mod look {
             let out = ctx.run_ui(raw, |ui| {
                 let p = ui.painter();
                 p.rect_filled(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(560.0, 180.0)), 0.0, Color32::from_rgb(10, 14, 26));
-                crate::ui::folder_art(p, Rect::from_min_size(egui::pos2(16.0, 16.0), egui::vec2(256.0, 144.0)), false);
-                crate::ui::folder_art(p, Rect::from_min_size(egui::pos2(288.0, 16.0), egui::vec2(256.0, 144.0)), true);
+                let mut rec = crate::ui::Rec::new();
+                crate::ui::folder_art(&mut rec, Rect::from_min_size(egui::pos2(16.0, 16.0), egui::vec2(256.0, 144.0)), false);
+                crate::ui::folder_art(&mut rec, Rect::from_min_size(egui::pos2(288.0, 16.0), egui::vec2(256.0, 144.0)), true);
+                p.extend(rec.shapes);
             });
             prims = ctx.tessellate(out.shapes, out.pixels_per_point);
             tex = out.textures_delta;
-            o.render(&prims, None, &mut tex, [1120, 360], ppp, false, &[]);
+            o.render(&prims, None, &mut tex, [1120, 360], ppp, false, &[], &[]);
         }
         let buf = &o.buffers[o.last.as_ref().unwrap().buffer];
         let l = o.last.as_ref().unwrap();
