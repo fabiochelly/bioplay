@@ -367,6 +367,8 @@ export component LibraryWindow inherits Window {
     in property <string> empty;
     in property <bool> empty-add;
     in-out property <bool> sheet;
+    // Position de défilement de la grille (mesure : défilement simulé).
+    in-out property <length> list-y;
 
     callback open-file;
     callback toggle-view;
@@ -454,6 +456,7 @@ export component LibraryWindow inherits Window {
     }
 
     if root.empty == "": ListView {
+        viewport-y <=> root.list-y;
         y: root.body-top;
         height: root.height - root.body-top;
         for row in root.rows: Rectangle {

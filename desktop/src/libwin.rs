@@ -80,7 +80,46 @@ pub fn run(link: Link, visible: bool) {
     if visible {
         let _ = ui.show();
     }
+    let _tests = tests(&ui);
     let _ = slint::run_event_loop_until_quit();
+}
+
+/// Mesures (fenêtre réelle, aucune entrée simulée chez le système) :
+/// - `BIOPLAY_AUTOPLAY=film.mkv` : ouvre la vidéo 2 s après le lancement (heure du « clic »
+///   sur la sortie d'erreur, `BIOPLAY_DEBUG_OPEN` donne celle de la première image) ;
+/// - `BIOPLAY_SCROLLTEST=1` : fait défiler la grille 4 s (dès la 3e seconde) et donne le temps
+///   processeur consommé.
+fn tests(ui: &LibraryWindow) -> Vec<slint::Timer> {
+    let mut timers = Vec::new();
+    if let Ok(path) = std::env::var("BIOPLAY_AUTOPLAY") {
+        let t = slint::Timer::default();
+        t.start(slint::TimerMode::SingleShot, std::time::Duration::from_secs(2), move || {
+            eprintln!("clic {:.4}", crate::stamp());
+            with(|s| s.play(path.clone()));
+        });
+        timers.push(t);
+    }
+    if std::env::var_os("BIOPLAY_SCROLLTEST").is_some() {
+        let weak = ui.as_weak();
+        let start = std::time::Instant::now();
+        let state: Rc<RefCell<Option<f64>>> = Rc::new(RefCell::new(None));
+        let t = slint::Timer::default();
+        t.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(16), move || {
+            let Some(ui) = weak.upgrade() else { return };
+            let e = start.elapsed();
+            if e > std::time::Duration::from_secs(3) && e < std::time::Duration::from_secs(7) {
+                if state.borrow().is_none() {
+                    *state.borrow_mut() = Some(crate::cpu_ms().0);
+                }
+                ui.set_list_y(ui.get_list_y() - 6.0);
+            } else if let Some(c) = state.borrow().filter(|_| e >= std::time::Duration::from_secs(7)) {
+                eprintln!("défilement : processeur {:.1} % d'un cœur en 4 s", (crate::cpu_ms().0 - c) / 40.0);
+                std::process::exit(0);
+            }
+        });
+        timers.push(t);
+    }
+    timers
 }
 
 /// Capture de la bibliothèque sans fenêtre (vérification) : `BIOPLAY_LIBSNAP=f.png

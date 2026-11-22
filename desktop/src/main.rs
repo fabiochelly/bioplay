@@ -326,6 +326,9 @@ impl App {
             // Saut venu d'un raccourci mpv (flèches haut/bas…) : annoncé dans une bulle.
             // (Une image retenue pendant un saut précis part d'elle-même à la reprise.)
             mpv::Change::Restarted => {
+                if std::env::var_os("BIOPLAY_DEBUG_OPEN").is_some() {
+                    eprintln!("image {:.4}", stamp());
+                }
                 if let Some(t) = self.seek_clock.take() {
                     self.seek_times.push(t.elapsed().as_secs_f64() * 1000.0);
                 }
@@ -939,6 +942,11 @@ fn player_main(args: Vec<String>, tx: std::sync::mpsc::Sender<Message>, rx: std:
     app.player.save();
     app.overlay.hide(&app.player.mpv);
     libwin::quit();
+}
+
+/// Heure murale (s), pour les mesures entre fils ou processus.
+fn stamp() -> f64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs_f64()
 }
 
 /// Temps processeur (ms) du processus entier et du fil principal, lus dans /proc.

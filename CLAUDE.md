@@ -14,6 +14,8 @@ Lecteur vidéo minimal (Android + bureau) construit sur libmpv, interface « ver
     (vitre sombre, Hyprland floute le fond d'écran). Grille par rangées (seules les rangées visibles
     existent, miniatures lues à ce moment). Capture sans fenêtre : `BIOPLAY_LIBSNAP=f.png
     [BIOPLAY_LIBPLACE=sous/dossier] [BIOPLAY_LIBVIEW=list] [BIOPLAY_LIBSHEET=1] bioplay`.
+    Mesures en vrai : `BIOPLAY_AUTOPLAY=film.mkv BIOPLAY_DEBUG_OPEN=1` (heures du clic et de la
+    première image), `BIOPLAY_SCROLLTEST=1` (processeur pendant 4 s de défilement).
   - la lecture : mpv (préparé dès le lancement dans le fil « lecteur », sans fenêtre tant qu'il n'y
     a pas de vidéo) ouvre SA fenêtre en gpu-next (même image et même coût que mpv, Dolby Vision
     compris) avec `~/.config/mpv/mpv.conf` et `input.conf`. Les commandes sont egui, rendues sur le
