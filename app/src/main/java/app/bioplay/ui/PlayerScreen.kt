@@ -165,10 +165,13 @@ fun PlayerScreen(session: Session, onBack: () -> Unit, onAddSubtitle: () -> Unit
 
     // Position et cache relus seulement quand quelque chose les affiche : commandes masquées,
     // rien ne réveille l'interface pendant la lecture.
-    LaunchedEffect(controls || panel != null) {
-        while (controls || panel != null) {
-            mpv.refresh()
+    // En pause, rien ne bouge : une lecture, puis plus rien (la fin d'un saut relit aussi).
+    LaunchedEffect(controls || panel != null, mpv.paused) {
+        if (!(controls || panel != null)) return@LaunchedEffect
+        mpv.refresh()
+        while (!mpv.paused) {
             delay(250)
+            mpv.refresh()
         }
     }
 

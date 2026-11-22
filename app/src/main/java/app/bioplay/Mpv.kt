@@ -87,7 +87,7 @@ class Mpv(context: Context) : MPVLib.EventObserver {
     /** Position exacte, lue à la demande (sauts de sous-titre). */
     fun now(): Double = if (alive && loaded) lib.getPropertyDouble("time-pos") ?: position else position
 
-    /** Relit position et cache (appelé 4 fois par seconde, commandes affichées seulement). */
+    /** Relit position et cache (4 fois par seconde en lecture, commandes affichées seulement). */
     fun refresh() {
         if (!alive || !loaded) return
         lib.getPropertyDouble("time-pos")?.let { position = it }
@@ -413,6 +413,8 @@ class Mpv(context: Context) : MPVLib.EventObserver {
                 // Le décodeur matériel a-t-il pris la vidéo ? Sinon, repli pour ce fichier.
                 main.postDelayed({ if (alive) checkDirect() }, 1200)
             }
+            // Fin d'un saut : position relue (utile en pause, où elle n'est plus relue en boucle).
+            MPVLib.MpvEvent.MPV_EVENT_PLAYBACK_RESTART -> post { refresh() }
         }
     }
 

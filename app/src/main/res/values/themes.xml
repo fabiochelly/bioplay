@@ -7,17 +7,4 @@
         <item name="android:windowLayoutInDisplayCutoutMode">always</item>
         <item name="android:windowSplashScreenBackground">@android:color/black</item>
     </style>
-
-    <!-- Tiroirs : fenêtres à part, pour que le compositeur floute la vidéo derrière. -->
-    <style name="Theme.Bioplay.Drawer" parent="android:Theme.Material.Dialog.NoActionBar">
-        <item name="android:windowBackground">@android:color/transparent</item>
-        <item name="android:windowIsFloating">true</item>
-        <item name="android:backgroundDimEnabled">false</item>
-        <item name="android:windowAnimationStyle">@style/DrawerAnimation</item>
-    </style>
-
-    <style name="DrawerAnimation">
-        <item name="android:windowEnterAnimation">@anim/drawer_in</item>
-        <item name="android:windowExitAnimation">@anim/drawer_out</item>
-    </style>
 </resources>

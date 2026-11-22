@@ -255,7 +255,8 @@ fun ListPanel(session: Session) {
         BasicText(why, style = text(15, color = Ink.secondary), modifier = Modifier.padding(4.dp, 8.dp, 4.dp, 12.dp))
         return
     }
-    val current by remember(idx) { derivedStateOf { idx.at(session.subClock()) } }
+    // Position observable (relue 4 fois par seconde tiroir ouvert) : la ligne suit la lecture.
+    val current by remember(idx) { derivedStateOf { idx.at(session.subClock(session.mpv.position)) } }
     val list = rememberLazyListState(initialFirstVisibleItemIndex = (current - 2).coerceAtLeast(0))
     var touched by remember { mutableLongStateOf(0L) }
     LaunchedEffect(list) {

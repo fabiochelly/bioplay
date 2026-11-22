@@ -18,11 +18,6 @@ object Icons {
     val back = icon("back", "M15.7 5.3a1 1 0 0 1 0 1.4L10.4 12l5.3 5.3a1 1 0 0 1-1.4 1.4l-6-6a1 1 0 0 1 0-1.4l6-6a1 1 0 0 1 1.4 0z")
     val prevLine = icon("prev", "M6 5h2v14H6zm3.5 7l8.5 6V6z")
     val nextLine = icon("next", "M16 5h2v14h-2zM6 18l8.5-6L6 6z")
-    val tracks = icon(
-        "tracks",
-        "M20 4H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V6a2 2 0 0 0-2-2zm0 14H4V6h16v12z",
-        "M6 10h2v4H6zm3-2h2v8H9zm3 3h2v2h-2zm3-1h3v1.6h-3zm0 2.4h3V16h-3z",
-    )
     val speed = icon("speed", "M20.38 8.57l-1.23 1.85a8 8 0 0 1-.22 7.58H5.07A8 8 0 0 1 15.58 6.85l1.85-1.23A10 10 0 0 0 3.35 19a2 2 0 0 0 1.72 1h13.85a2 2 0 0 0 1.74-1 10 10 0 0 0-.27-10.44zm-9.79 6.84a2 2 0 0 0 2.83 0l5.66-8.49-8.49 5.66a2 2 0 0 0 0 2.83z")
     val zoom = icon("zoom", "M7 14H5v5h5v-2H7v-3zm-2-4h2V7h3V5H5v5zm12 7h-3v2h5v-5h-2v3zM14 5v2h3v3h2V5h-5z")
     val list = icon("list", "M3 13h2v-2H3v2zm0 4h2v-2H3v2zm0-8h2V7H3v2zm4 4h14v-2H7v2zm0 4h14v-2H7v2zM7 7v2h14V7H7z")

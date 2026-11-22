@@ -29,7 +29,7 @@ data class Video(
 ) {
     val key get() = "$name|$size"
     /** Nom du fichier de miniature : change si le fichier est remplacé. */
-    val thumb: String get() = hash("$name|$size|$modified")
+    val thumb: String by lazy { hash("$name|$size|$modified") }
 }
 
 /** Endroit de la bibliothèque : un dossier surveillé et un sous-dossier ; racine si `root` est nul. */
@@ -102,7 +102,15 @@ class Library(private val context: Context) {
     var grid by mutableStateOf(prefs.getBoolean("grid", true)); private set
 
     /** Vrai pendant la lecture : la relecture et les miniatures attendent. */
+    private val holdLock = Object()
+    /** Pause du travail de fond pendant la lecture : le fil dort (sans réveil) tant qu'elle dure. */
     @Volatile var hold = false
+        set(v) {
+            synchronized(holdLock) {
+                field = v
+                holdLock.notifyAll()
+            }
+        }
 
     /** Miniatures décodées, gardées en mémoire dans la limite de 12 Mo. */
     private val memory = object : LruCache<String, Bitmap>(12 * 1024 * 1024) {
@@ -369,7 +377,9 @@ class Library(private val context: Context) {
     }
 
     private fun waitWhileHeld() {
-        while (hold) Thread.sleep(1000)
+        synchronized(holdLock) {
+            while (hold) holdLock.wait()
+        }
     }
 
     // --- Liste gardée -----------------------------------------------------------------------------
