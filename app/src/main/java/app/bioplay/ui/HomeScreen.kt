@@ -60,6 +60,8 @@ import androidx.compose.ui.unit.dp
 import app.bioplay.Folder
 import app.bioplay.Lang
 import app.bioplay.Library
+import app.bioplay.Place
+import app.bioplay.Dir
 import app.bioplay.Video
 import app.bioplay.clock
 import app.bioplay.t
@@ -75,20 +77,44 @@ private val Tile = RoundedCornerShape(14.dp)
 @Composable
 fun HomeScreen(
     library: Library,
-    gridState: LazyGridState,
-    listState: LazyListState,
+    place: Place,
+    onPlace: (Place) -> Unit,
+    gridState: (Place) -> LazyGridState,
+    listState: (Place) -> LazyListState,
     onOpen: (() -> Unit)?,
     onAddFolder: (() -> Unit)?,
     onPlay: (Video) -> Unit,
 ) {
     var folders by remember { mutableStateOf(false) }
     var network by remember { mutableStateOf(false) }
-    BackHandler(folders || network) { if (network) network = false else folders = false }
+    val shelf = remember(library.videos, library.folders, place) { library.shelf(place) }
+    val up = library.up(shelf.place)
+    // Télécommande : en entrant, le focus va au premier élément ; en remontant, au dossier quitté.
+    var cameFrom by remember { mutableStateOf<Place?>(null) }
+    val itemFocus = remember { androidx.compose.ui.focus.FocusRequester() }
+    val focusKey: Any? = shelf.dirs.firstOrNull { it.place == cameFrom }?.place ?: shelf.dirs.firstOrNull()?.place ?: shelf.videos.firstOrNull()?.uri
+    val enter = { p: Place -> cameFrom = null; onPlace(p) }
+    val goUp = { p: Place -> cameFrom = shelf.place; onPlace(p) }
+    // Retour : ferme une fenêtre, sinon remonte d'un dossier.
+    BackHandler(folders || network || up != null) {
+        when {
+            network -> network = false
+            folders -> folders = false
+            up != null -> goUp(up)
+        }
+    }
     // Ajouter un dossier : sélecteur du système s'il existe (téléphone), sinon partage réseau (TV).
     val addFolder = onAddFolder ?: { network = true }
     val keys = androidx.compose.ui.platform.LocalInputModeManager.current.inputMode == androidx.compose.ui.input.InputMode.Keyboard
     val navFocus = remember { androidx.compose.ui.focus.FocusRequester() }
     androidx.compose.runtime.LaunchedEffect(keys) { if (keys) runCatching { navFocus.requestFocus() } }
+    androidx.compose.runtime.LaunchedEffect(shelf.place) {
+        if (keys && (cameFrom != null || place != Place() || up != null)) {
+            kotlinx.coroutines.delay(60)
+            runCatching { itemFocus.requestFocus() }
+        }
+    }
+    val focusOn = { k: Any -> if (k == focusKey) Modifier.focusRequester(itemFocus) else Modifier }
     Box(Modifier.fillMaxSize().background(Color(0xFF05070C))) {
         Backdrop()
         Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.displayCutout)) {
@@ -104,24 +130,97 @@ fun HomeScreen(
                     else t("Aucune vidéo dans ces dossiers.", "No video in these folders."),
                     null, {},
                 )
-                library.grid -> LazyVerticalGrid(
-                    GridCells.Adaptive(160.dp), Modifier.fillMaxSize(), gridState,
-                    contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 24.dp),
-                    horizontalArrangement = Arrangement.spacedBy(12.dp),
-                    verticalArrangement = Arrangement.spacedBy(14.dp),
-                ) {
-                    items(videos, key = { it.uri }) { v -> GridTile(library, v) { onPlay(v) } }
-                }
-                else -> LazyColumn(
-                    Modifier.fillMaxSize(), listState,
-                    contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 2.dp, bottom = 24.dp),
-                ) {
-                    items(videos, key = { it.uri }) { v -> ListRow(library, v) { onPlay(v) } }
+                else -> {
+                    if (up != null) Breadcrumb(shelf.title.orEmpty()) { goUp(up) }
+                    if (library.grid) LazyVerticalGrid(
+                        GridCells.Adaptive(160.dp), Modifier.fillMaxSize(), gridState(shelf.place),
+                        contentPadding = PaddingValues(start = 16.dp, end = 16.dp, top = 4.dp, bottom = 24.dp),
+                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                        verticalArrangement = Arrangement.spacedBy(14.dp),
+                    ) {
+                        items(shelf.dirs, key = { "d:" + it.place }) { d -> FolderTile(d, focusOn(d.place)) { enter(d.place) } }
+                        items(shelf.videos, key = { it.uri }) { v -> GridTile(library, v, focusOn(v.uri)) { onPlay(v) } }
+                    } else LazyColumn(
+                        Modifier.fillMaxSize(), listState(shelf.place),
+                        contentPadding = PaddingValues(start = 12.dp, end = 12.dp, top = 2.dp, bottom = 24.dp),
+                    ) {
+                        items(shelf.dirs, key = { "d:" + it.place }) { d -> FolderListRow(d, focusOn(d.place)) { enter(d.place) } }
+                        items(shelf.videos, key = { it.uri }) { v -> ListRow(library, v, focusOn(v.uri)) { onPlay(v) } }
+                    }
                 }
             }
         }
         if (folders) FoldersSheet(library, onAddFolder, onNetwork = { folders = false; network = true }, onDismiss = { folders = false })
         if (network) NetworkSheet(library, onDone = { network = false }, onDismiss = { network = false })
+    }
+}
+
+/** Dossier en cours : bouton pour remonter et nom du dossier. */
+@Composable
+private fun Breadcrumb(title: String, onUp: () -> Unit) {
+    Row(Modifier.fillMaxWidth().padding(start = 16.dp, end = 16.dp, bottom = 8.dp), verticalAlignment = Alignment.CenterVertically) {
+        GlassButton(onUp, size = 38.dp) { Icon(Icons.back, size = 20.dp) }
+        BasicText(title, maxLines = 1, overflow = TextOverflow.Ellipsis, style = text(18, FontWeight.SemiBold), modifier = Modifier.padding(start = 12.dp))
+    }
+}
+
+/** « 12 vidéos », « 3 dossiers · 12 vidéos ». */
+private fun Dir.count(): String {
+    val v = "$videos ${if (videos > 1) t("vidéos", "videos") else t("vidéo", "video")}"
+    return if (dirs > 0) "$dirs ${if (dirs > 1) t("dossiers", "folders") else t("dossier", "folder")} · $v" else v
+}
+
+/**
+ * Dossier dessiné : le dos et son onglet, deux feuilles qui dépassent, la face avant en verre
+ * bleuté avec un reflet. Même cadre 16:9 que les miniatures, la grille reste alignée.
+ */
+@Composable
+private fun FolderArt(modifier: Modifier) = Canvas(modifier) {
+    val h = size.height * 0.86f
+    val w = minOf(size.width * 0.86f, h * 1.42f)
+    val x0 = (size.width - w) / 2
+    val y0 = (size.height - h) / 2 + size.height * 0.02f
+    val r = CornerRadius(h * 0.07f)
+    // Dos et onglet.
+    val back = Brush.verticalGradient(listOf(Color(0xFF2B6DB3), Color(0xFF173F70)), startY = y0, endY = y0 + h)
+    drawRoundRect(back, Offset(x0, y0), Size(w * 0.38f, h * 0.22f), r)
+    drawRoundRect(back, Offset(x0, y0 + h * 0.1f), Size(w, h * 0.9f), r)
+    // Feuilles.
+    drawRoundRect(Color(0xFFCFDDEB), Offset(x0 + w * 0.08f, y0 + h * 0.17f), Size(w * 0.8f, h * 0.5f), CornerRadius(h * 0.04f))
+    drawRoundRect(Color(0xFFF1F6FB), Offset(x0 + w * 0.13f, y0 + h * 0.23f), Size(w * 0.76f, h * 0.5f), CornerRadius(h * 0.04f))
+    // Face avant.
+    val fy = y0 + h * 0.33f
+    drawRoundRect(
+        Brush.verticalGradient(listOf(Color(0xFF8FD8FF), Color(0xFF4FB2F0), Color(0xFF2F86CF)), startY = fy, endY = y0 + h),
+        Offset(x0, fy), Size(w, y0 + h - fy), r,
+    )
+    drawRoundRect(
+        Brush.verticalGradient(listOf(Color.White.copy(alpha = 0.45f), Color.Transparent), startY = fy, endY = fy + h * 0.25f),
+        Offset(x0, fy), Size(w, h * 0.25f), r,
+    )
+    drawLine(Color.White.copy(alpha = 0.7f), Offset(x0 + r.x, fy + 1f), Offset(x0 + w - r.x, fy + 1f), 1.5f)
+}
+
+@Composable
+private fun FolderTile(d: Dir, modifier: Modifier, onClick: () -> Unit) {
+    Column(modifier.focusRing(Tile).clip(Tile).clickable(onClick = onClick)) {
+        FolderArt(Modifier.fillMaxWidth().aspectRatio(16f / 9f))
+        BasicText(d.name, maxLines = 1, overflow = TextOverflow.Ellipsis, style = text(13, FontWeight.SemiBold), modifier = Modifier.padding(start = 2.dp, end = 2.dp, top = 7.dp))
+        BasicText(d.count(), maxLines = 1, style = text(11, color = Ink.secondary), modifier = Modifier.padding(start = 2.dp, top = 1.dp))
+    }
+}
+
+@Composable
+private fun FolderListRow(d: Dir, modifier: Modifier, onClick: () -> Unit) {
+    Row(
+        modifier.fillMaxWidth().focusRing(Tile).clip(Tile).clickable(onClick = onClick).padding(horizontal = 6.dp, vertical = 6.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        FolderArt(Modifier.width(112.dp).aspectRatio(16f / 9f))
+        Column(Modifier.weight(1f).padding(start = 14.dp)) {
+            BasicText(d.name, maxLines = 2, overflow = TextOverflow.Ellipsis, style = text(15, FontWeight.SemiBold))
+            BasicText(d.count(), style = text(12, color = Ink.secondary), modifier = Modifier.padding(top = 3.dp))
+        }
     }
 }
 
@@ -238,8 +337,8 @@ private fun BoxScope.Progress(library: Library, v: Video) {
 private fun Video.title() = name.substringBeforeLast('.').replace('.', ' ').replace('_', ' ')
 
 @Composable
-private fun GridTile(library: Library, v: Video, onClick: () -> Unit) {
-    Column(Modifier.focusRing(Tile).clip(Tile).clickable(onClick = onClick)) {
+private fun GridTile(library: Library, v: Video, modifier: Modifier, onClick: () -> Unit) {
+    Column(modifier.focusRing(Tile).clip(Tile).clickable(onClick = onClick)) {
         Thumb(library, v, Modifier.fillMaxWidth().aspectRatio(16f / 9f))
         BasicText(
             v.title(), maxLines = 2, overflow = TextOverflow.Ellipsis, style = text(13, FontWeight.SemiBold),
@@ -249,9 +348,9 @@ private fun GridTile(library: Library, v: Video, onClick: () -> Unit) {
 }
 
 @Composable
-private fun ListRow(library: Library, v: Video, onClick: () -> Unit) {
+private fun ListRow(library: Library, v: Video, modifier: Modifier, onClick: () -> Unit) {
     Row(
-        Modifier.fillMaxWidth().focusRing(Tile).clip(Tile).clickable(onClick = onClick).padding(horizontal = 6.dp, vertical = 6.dp),
+        modifier.fillMaxWidth().focusRing(Tile).clip(Tile).clickable(onClick = onClick).padding(horizontal = 6.dp, vertical = 6.dp),
         verticalAlignment = Alignment.CenterVertically,
     ) {
         Thumb(library, v, Modifier.width(112.dp).aspectRatio(16f / 9f))

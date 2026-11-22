@@ -17,8 +17,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.foundation.lazy.grid.rememberLazyGridState
-import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.lazy.LazyListState
+import androidx.compose.foundation.lazy.grid.LazyGridState
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.key
 import androidx.compose.runtime.getValue
@@ -99,15 +99,19 @@ class MainActivity : ComponentActivity() {
                 }
             }
             // Défilement gardé pendant la lecture : on revient là où l'on était.
-            val gridState = rememberLazyGridState()
-            val listState = rememberLazyListState()
+            // Un défilement par dossier : on retrouve sa place en remontant.
+            var place by remember { mutableStateOf(Place()) }
+            val grids = remember { HashMap<Place, LazyGridState>() }
+            val lists = remember { HashMap<Place, LazyListState>() }
             if (playing) {
                 PlayerScreen(session, onBack = ::leavePlayer, onAddSubtitle = { pickSubtitle.launch(arrayOf("*/*")) })
             } else {
                 // Relu au retour du lecteur : barres d'avancée à jour.
                 key(homeVersion) {
                     HomeScreen(
-                        library, gridState, listState,
+                        library, place, { place = it },
+                        { p -> grids.getOrPut(p) { LazyGridState() } },
+                        { p -> lists.getOrPut(p) { LazyListState() } },
                         onOpen = if (canPickFile) ({ pickVideo.launch(arrayOf("video/*", "application/x-matroska")) }) else null,
                         onAddFolder = if (canPickFolder) ({ pickFolder.launch(null) }) else null,
                         onPlay = { v -> fromOutside = false; play(Uri.parse(v.uri)) },

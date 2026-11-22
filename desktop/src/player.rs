@@ -55,6 +55,8 @@ pub struct Player {
     pub library: crate::library::Library,
     /// Miniatures de l'accueil à poser cette image (incrustations mpv sous l'interface).
     pub thumbs: Vec<crate::overlay::Thumb>,
+    /// Dossier affiché dans la bibliothèque.
+    pub place: crate::library::Place,
     /// Fenêtre des dossiers surveillés ouverte (accueil).
     pub folders_open: bool,
     pub over_ui: bool,
@@ -87,6 +89,7 @@ impl Player {
         Self {
             library,
             folders_open: false,
+            place: Default::default(),
             thumbs: Vec::new(),
             mpv,
             embedded: HashMap::new(),

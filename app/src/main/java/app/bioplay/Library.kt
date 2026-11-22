@@ -21,10 +21,39 @@ import java.security.MessageDigest
 import java.util.concurrent.Executors
 
 /** Une vidéo d'un dossier surveillé. `key` est la clé de reprise de [Session] (nom + taille). */
-data class Video(val uri: String, val name: String, val size: Long, val modified: Long, val folder: String, val duration: Double = 0.0) {
+data class Video(
+    val uri: String, val name: String, val size: Long, val modified: Long, val folder: String,
+    val duration: Double = 0.0,
+    /** Sous-dossier, relatif au dossier surveillé (« Série/Saison 1 », vide à la racine). */
+    val dir: String = "",
+) {
     val key get() = "$name|$size"
     /** Nom du fichier de miniature : change si le fichier est remplacé. */
     val thumb: String get() = hash("$name|$size|$modified")
+}
+
+/** Endroit de la bibliothèque : un dossier surveillé et un sous-dossier ; racine si `root` est nul. */
+data class Place(val root: String? = null, val path: String = "")
+
+/** Un dossier à l'écran : son nom, où il mène, ce qu'il contient (vidéos comprises en dessous). */
+class Dir(val name: String, val place: Place, val videos: Int, val dirs: Int)
+
+/** Contenu d'un endroit : ses dossiers (jamais vides), puis ses vidéos, par ordre naturel. */
+class Shelf(val place: Place, val title: String?, val dirs: List<Dir>, val videos: List<Video>)
+
+/** Ordre « naturel » : « Épisode 2 » avant « Épisode 10 ». */
+private val chunks = Regex("\\d+|\\D+")
+val natural = Comparator<String> { a, b ->
+    val re = chunks
+    val x = re.findAll(a.lowercase()).map { it.value }.toList()
+    val y = re.findAll(b.lowercase()).map { it.value }.toList()
+    for (i in 0 until minOf(x.size, y.size)) {
+        val (p, q) = x[i] to y[i]
+        val c = if (p[0].isDigit() && q[0].isDigit()) (p.toBigInteger().compareTo(q.toBigInteger())).takeIf { it != 0 } ?: p.length.compareTo(q.length)
+        else p.compareTo(q)
+        if (c != 0) return@Comparator c
+    }
+    x.size.compareTo(y.size)
 }
 
 /** Un dossier surveillé (arbre SAF dont l'accès est conservé). */
@@ -78,6 +107,38 @@ class Library(private val context: Context) {
     /** Miniatures décodées, gardées en mémoire dans la limite de 12 Mo. */
     private val memory = object : LruCache<String, Bitmap>(12 * 1024 * 1024) {
         override fun sizeOf(key: String, value: Bitmap) = value.allocationByteCount
+    }
+
+    /** Ce qu'on voit à cet endroit. Un seul dossier surveillé : on est directement dedans. */
+    fun shelf(place: Place): Shelf {
+        val roots = folders.filter { f -> videos.any { it.folder == f.uri } }
+        val root = place.root ?: roots.singleOrNull()?.uri ?: folders.singleOrNull()?.uri
+        if (root == null) {
+            val dirs = roots.map { f ->
+                val mine = videos.filter { it.folder == f.uri }
+                Dir(f.name, Place(f.uri, ""), mine.size, mine.map { it.dir.substringBefore('/') }.filter { it.isNotEmpty() }.distinct().size)
+            }.sortedWith(compareBy(natural) { it.name })
+            return Shelf(Place(), null, dirs, emptyList())
+        }
+        val path = place.path
+        val inside = videos.filter { it.folder == root && (path.isEmpty() || it.dir == path || it.dir.startsWith("$path/")) }
+        val here = inside.filter { it.dir == path }.sortedWith(compareBy(natural) { it.name })
+        val dirs = inside.filter { it.dir != path }
+            .groupBy { (if (path.isEmpty()) it.dir else it.dir.removePrefix("$path/")).substringBefore('/') }
+            .map { (name, vs) ->
+                val sub = if (path.isEmpty()) name else "$path/$name"
+                Dir(name, Place(root, sub), vs.size, vs.filter { it.dir != sub }.map { it.dir.removePrefix("$sub/").substringBefore('/') }.distinct().size)
+            }
+            .sortedWith(compareBy(natural) { it.name })
+        val title = if (path.isEmpty()) folders.firstOrNull { it.uri == root }?.name else path.substringAfterLast('/')
+        return Shelf(Place(root, path), title, dirs, here)
+    }
+
+    /** L'endroit au-dessus (null si on est déjà en haut). */
+    fun up(place: Place): Place? {
+        val root = place.root ?: return null
+        if (place.path.isNotEmpty()) return Place(root, place.path.substringBeforeLast('/', ""))
+        return if (folders.count { f -> videos.any { it.folder == f.uri } } > 1) Place() else null
     }
 
     fun toggleView() {
@@ -157,11 +218,12 @@ class Library(private val context: Context) {
             DocumentsContract.Document.COLUMN_MIME_TYPE, DocumentsContract.Document.COLUMN_SIZE,
             DocumentsContract.Document.COLUMN_LAST_MODIFIED,
         )
-        val pending = ArrayDeque<Pair<String, Int>>()
-        pending += DocumentsContract.getTreeDocumentId(tree) to 0
+        val pending = ArrayDeque<Pair<String, String>>()
+        pending += DocumentsContract.getTreeDocumentId(tree) to ""
         var first = true
         while (pending.isNotEmpty()) {
-            val (doc, depth) = pending.removeFirst()
+            val (doc, rel) = pending.removeFirst()
+            val depth = if (rel.isEmpty()) 0 else rel.count { it == '/' } + 1
             val children = DocumentsContract.buildChildDocumentsUriUsingTree(tree, doc)
             val cursor = context.contentResolver.query(children, cols, null, null, null)
             if (cursor == null) {
@@ -176,9 +238,9 @@ class Library(private val context: Context) {
                     if (name.startsWith('.')) continue
                     val mime = c.getString(2).orEmpty()
                     if (mime == DocumentsContract.Document.MIME_TYPE_DIR) {
-                        if (depth < 8) pending += id to depth + 1
+                        if (depth < 8) pending += id to (if (rel.isEmpty()) name else "$rel/$name")
                     } else if (isVideo(name, mime)) {
-                        out += Video(DocumentsContract.buildDocumentUriUsingTree(tree, id).toString(), name, c.getLong(3), c.getLong(4), tree.toString())
+                        out += Video(DocumentsContract.buildDocumentUriUsingTree(tree, id).toString(), name, c.getLong(3), c.getLong(4), tree.toString(), dir = rel)
                     }
                 }
             }
@@ -189,20 +251,20 @@ class Library(private val context: Context) {
     /** Vidéos d'un dossier réseau, sous-dossiers compris (dossiers cachés exclus). */
     private fun scanSmb(root: Uri): List<Video> {
         val out = mutableListOf<Video>()
-        val pending = ArrayDeque<Pair<Uri, Int>>()
-        pending += root to 0
+        val pending = ArrayDeque<Triple<Uri, Int, String>>()
+        pending += Triple(root, 0, "")
         var first = true
         while (pending.isNotEmpty()) {
-            val (dir, depth) = pending.removeFirst()
+            val (dir, depth, rel) = pending.removeFirst()
             val entries = if (first) Smb.list(context, dir) else runCatching { Smb.list(context, dir) }.getOrNull() ?: continue
             first = false
             for (e in entries) {
                 if (e.name.startsWith('.')) continue
                 val u = dir.buildUpon().appendPath(e.name).build()
                 if (e.dir) {
-                    if (depth < 8) pending += u to depth + 1
+                    if (depth < 8) pending += Triple(u, depth + 1, if (rel.isEmpty()) e.name else "$rel/${e.name}")
                 } else if (isVideo(e.name, "")) {
-                    out += Video(u.toString(), e.name, e.size, e.modified, root.toString())
+                    out += Video(u.toString(), e.name, e.size, e.modified, root.toString(), dir = rel)
                 }
             }
         }
@@ -315,13 +377,13 @@ class Library(private val context: Context) {
     private fun readList(): List<Video> = runCatching {
         val a = JSONArray(listFile.readText())
         List(a.length()) { a.getJSONObject(it) }.map {
-            Video(it.getString("u"), it.getString("n"), it.getLong("s"), it.getLong("m"), it.getString("f"), it.optDouble("d", 0.0))
+            Video(it.getString("u"), it.getString("n"), it.getLong("s"), it.getLong("m"), it.getString("f"), it.optDouble("d", 0.0), it.optString("r"))
         }
     }.getOrElse { emptyList() }
 
     private fun writeList(list: List<Video>) {
         val a = JSONArray()
-        list.forEach { a.put(JSONObject().put("u", it.uri).put("n", it.name).put("s", it.size).put("m", it.modified).put("f", it.folder).put("d", it.duration)) }
+        list.forEach { a.put(JSONObject().put("u", it.uri).put("n", it.name).put("s", it.size).put("m", it.modified).put("f", it.folder).put("d", it.duration).put("r", it.dir)) }
         val tmp = File(listFile.path + ".tmp")
         tmp.writeText(a.toString())
         tmp.renameTo(listFile)

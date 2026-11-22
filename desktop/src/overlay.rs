@@ -676,3 +676,42 @@ mod bench {
         eprintln!("rendu par image (ms) : {times:.1?}");
     }
 }
+
+#[cfg(test)]
+mod look {
+    use super::*;
+
+    /// Image d'un dossier dessiné, pour vérifier son allure sans ouvrir de fenêtre.
+    /// `cargo test --release -- --ignored folder_png` → $TMPDIR/bioplay-folder.png
+    #[test]
+    #[ignore]
+    fn folder_png() {
+        let ctx = egui::Context::default();
+        crate::ui::fonts(&ctx);
+        let ppp = 2.0;
+        ctx.set_pixels_per_point(ppp);
+        let mut o = Overlay::new().unwrap();
+        let mut prims = Vec::new();
+        let mut tex = Default::default();
+        for _ in 0..2 {
+            let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(560.0, 180.0))), ..Default::default() };
+            let out = ctx.run_ui(raw, |ui| {
+                let p = ui.painter();
+                p.rect_filled(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(560.0, 180.0)), 0.0, Color32::from_rgb(10, 14, 26));
+                crate::ui::folder_art(p, Rect::from_min_size(egui::pos2(16.0, 16.0), egui::vec2(256.0, 144.0)), false);
+                crate::ui::folder_art(p, Rect::from_min_size(egui::pos2(288.0, 16.0), egui::vec2(256.0, 144.0)), true);
+            });
+            prims = ctx.tessellate(out.shapes, out.pixels_per_point);
+            tex = out.textures_delta;
+            o.render(&prims, &mut tex, [1120, 360], ppp, false);
+        }
+        let buf = &o.buffers[o.last.as_ref().unwrap().buffer];
+        let l = o.last.as_ref().unwrap();
+        let (w, h) = (l.area[2] as u32, l.area[3] as u32);
+        let rgba: Vec<u8> = buf.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
+        let f = std::fs::File::create(std::env::temp_dir().join("bioplay-folder.png")).unwrap();
+        let mut e = png::Encoder::new(std::io::BufWriter::new(f), w, h);
+        e.set_color(png::ColorType::Rgba);
+        e.write_header().unwrap().write_image_data(&rgba).unwrap();
+    }
+}

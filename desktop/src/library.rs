@@ -29,6 +29,59 @@ pub struct Video {
     pub modified: u64,
     pub folder: String,
     pub duration: f64,
+    /// Sous-dossier, relatif au dossier surveillé (« Série/Saison 1 », vide à la racine).
+    pub dir: String,
+}
+
+/// Endroit de la bibliothèque : un dossier surveillé et un sous-dossier ; racine si `root` est vide.
+#[derive(Clone, Default, PartialEq, Eq, Hash, Debug)]
+pub struct Place {
+    pub root: Option<String>,
+    pub path: String,
+}
+
+/// Un dossier à l'écran (jamais vide) : nom, où il mène, vidéos en dessous, sous-dossiers directs.
+pub struct Dir {
+    pub name: String,
+    pub place: Place,
+    pub videos: usize,
+    pub dirs: usize,
+}
+
+/// Contenu d'un endroit : dossiers puis vidéos, par ordre naturel.
+pub struct Shelf {
+    pub place: Place,
+    pub title: String,
+    pub dirs: Vec<Dir>,
+    pub videos: Vec<usize>,
+}
+
+/// Ordre « naturel » : « Épisode 2 » avant « Épisode 10 ».
+pub fn natural(a: &str, b: &str) -> std::cmp::Ordering {
+    fn chunks(s: &str) -> Vec<(bool, String)> {
+        let mut out: Vec<(bool, String)> = Vec::new();
+        for c in s.to_lowercase().chars() {
+            let d = c.is_ascii_digit();
+            match out.last_mut() {
+                Some((k, t)) if *k == d => t.push(c),
+                _ => out.push((d, c.to_string())),
+            }
+        }
+        out
+    }
+    let (x, y) = (chunks(a), chunks(b));
+    for (p, q) in x.iter().zip(&y) {
+        let c = if p.0 && q.0 {
+            let (a, b) = (p.1.trim_start_matches('0'), q.1.trim_start_matches('0'));
+            a.len().cmp(&b.len()).then(a.cmp(b)).then(p.1.len().cmp(&q.1.len()))
+        } else {
+            p.1.cmp(&q.1)
+        };
+        if c != std::cmp::Ordering::Equal {
+            return c;
+        }
+    }
+    x.len().cmp(&y.len())
 }
 
 impl Video {
@@ -120,6 +173,92 @@ impl Library {
         self.refresh();
     }
 
+    /// Dossiers surveillés qui contiennent au moins une vidéo.
+    fn roots(&self) -> Vec<String> {
+        self.folders.iter().map(|f| f.to_string_lossy().into_owned()).filter(|k| self.videos.iter().any(|v| &v.folder == k)).collect()
+    }
+
+    pub fn shelf(&self, place: &Place) -> Shelf {
+        Tree { folders: &self.folders, videos: &self.videos }.shelf(place)
+    }
+
+    pub fn up(&self, place: &Place) -> Option<Place> {
+        Tree { folders: &self.folders, videos: &self.videos }.up(place)
+    }
+}
+
+/// Arborescence des vidéos, déduite de leurs sous-dossiers (un dossier sans vidéo n'existe pas).
+struct Tree<'a> {
+    folders: &'a [PathBuf],
+    videos: &'a [Video],
+}
+
+impl Tree<'_> {
+    fn roots(&self) -> Vec<String> {
+        self.folders.iter().map(|f| f.to_string_lossy().into_owned()).filter(|k| self.videos.iter().any(|v| &v.folder == k)).collect()
+    }
+
+    /// Ce qu'on voit à cet endroit. Un seul dossier surveillé : on est directement dedans.
+    fn shelf(&self, place: &Place) -> Shelf {
+        let roots = self.roots();
+        let root = place.root.clone().or_else(|| (roots.len() == 1).then(|| roots[0].clone()));
+        let Some(root) = root else {
+            let mut dirs: Vec<Dir> = roots
+                .iter()
+                .map(|k| {
+                    let mine: Vec<&Video> = self.videos.iter().filter(|v| &v.folder == k).collect();
+                    let mut subs: Vec<&str> = mine.iter().map(|v| v.dir.split('/').next().unwrap_or("")).filter(|d| !d.is_empty()).collect();
+                    subs.sort_unstable();
+                    subs.dedup();
+                    let name = Path::new(k).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| k.clone());
+                    Dir { name, place: Place { root: Some(k.clone()), path: String::new() }, videos: mine.len(), dirs: subs.len() }
+                })
+                .collect();
+            dirs.sort_by(|a, b| natural(&a.name, &b.name));
+            return Shelf { place: Place::default(), title: String::new(), dirs, videos: Vec::new() };
+        };
+        let path = &place.path;
+        let prefix = format!("{path}/");
+        let inside = |v: &Video| v.folder == root && (path.is_empty() || &v.dir == path || v.dir.starts_with(&prefix));
+        let mut videos: Vec<usize> = (0..self.videos.len()).filter(|&i| inside(&self.videos[i]) && &self.videos[i].dir == path).collect();
+        videos.sort_by(|&a, &b| natural(&self.videos[a].name, &self.videos[b].name));
+        let mut groups: HashMap<String, (usize, HashSet<String>)> = HashMap::new();
+        for v in self.videos.iter().filter(|v| inside(v) && &v.dir != path) {
+            let rest = if path.is_empty() { v.dir.as_str() } else { &v.dir[prefix.len()..] };
+            let (name, deeper) = rest.split_once('/').map_or((rest, None), |(a, b)| (a, Some(b)));
+            let g = groups.entry(name.to_owned()).or_default();
+            g.0 += 1;
+            if let Some(d) = deeper {
+                g.1.insert(d.split('/').next().unwrap_or("").to_owned());
+            }
+        }
+        let mut dirs: Vec<Dir> = groups
+            .into_iter()
+            .map(|(name, (n, subs))| {
+                let sub = if path.is_empty() { name.clone() } else { format!("{path}/{name}") };
+                Dir { name, place: Place { root: Some(root.clone()), path: sub }, videos: n, dirs: subs.len() }
+            })
+            .collect();
+        dirs.sort_by(|a, b| natural(&a.name, &b.name));
+        let title = if path.is_empty() {
+            Path::new(&root).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default()
+        } else {
+            path.rsplit('/').next().unwrap_or("").to_owned()
+        };
+        Shelf { place: Place { root: Some(root), path: path.clone() }, title, dirs, videos }
+    }
+
+    /// L'endroit au-dessus (None si on est déjà en haut).
+    fn up(&self, place: &Place) -> Option<Place> {
+        let root = place.root.clone()?;
+        if !place.path.is_empty() {
+            return Some(Place { root: Some(root), path: place.path.rsplit_once('/').map_or(String::new(), |(a, _)| a.to_owned()) });
+        }
+        (self.roots().len() > 1).then(Place::default)
+    }
+}
+
+impl Library {
     pub fn count(&self, f: &Path) -> usize {
         let key = f.to_string_lossy();
         self.videos.iter().filter(|v| v.folder == key).count()
@@ -147,7 +286,7 @@ impl Library {
             for root in &roots {
                 let key = root.to_string_lossy().into_owned();
                 if root.is_dir() {
-                    scan(root, &key, 0, &mut found);
+                    scan(root, &key, "", 0, &mut found);
                 } else {
                     // Disque débranché : on garde ce qu'on en savait.
                     complete = false;
@@ -273,7 +412,7 @@ fn wait(hold: &AtomicBool) {
     }
 }
 
-fn scan(dir: &Path, folder: &str, depth: u32, out: &mut Vec<Video>) {
+fn scan(dir: &Path, folder: &str, rel: &str, depth: u32, out: &mut Vec<Video>) {
     let Ok(rd) = std::fs::read_dir(dir) else { return };
     for e in rd.flatten() {
         let name = e.file_name().to_string_lossy().into_owned();
@@ -284,11 +423,12 @@ fn scan(dir: &Path, folder: &str, depth: u32, out: &mut Vec<Video>) {
         let Ok(meta) = std::fs::metadata(&path) else { continue };
         if meta.is_dir() {
             if depth < 8 {
-                scan(&path, folder, depth + 1, out);
+                let sub = if rel.is_empty() { name.clone() } else { format!("{rel}/{name}") };
+                scan(&path, folder, &sub, depth + 1, out);
             }
         } else if path.extension().is_some_and(|x| VIDEO_EXT.contains(&x.to_string_lossy().to_ascii_lowercase().as_str())) {
             let modified = meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map_or(0, |d| d.as_secs());
-            out.push(Video { path: path.to_string_lossy().into_owned(), name, size: meta.len(), modified, folder: folder.to_owned(), duration: 0.0 });
+            out.push(Video { path: path.to_string_lossy().into_owned(), name, size: meta.len(), modified, folder: folder.to_owned(), duration: 0.0, dir: rel.to_owned() });
         }
     }
 }
@@ -452,13 +592,14 @@ fn read_list() -> Vec<Video> {
         .lines()
         .filter_map(|l| {
             let f: Vec<&str> = l.split('\t').collect();
-            (f.len() == 6).then(|| Video {
+            (f.len() >= 6).then(|| Video {
                 path: f[0].into(),
                 name: f[1].into(),
                 size: f[2].parse().unwrap_or(0),
                 modified: f[3].parse().unwrap_or(0),
                 folder: f[4].into(),
                 duration: f[5].parse().unwrap_or(0.0),
+                dir: f.get(6).map(|d| d.to_string()).unwrap_or_default(),
             })
         })
         .collect()
@@ -467,7 +608,7 @@ fn read_list() -> Vec<Video> {
 fn write_list(list: &[Video]) {
     let body: String = list
         .iter()
-        .map(|v| format!("{}\t{}\t{}\t{}\t{}\t{:.1}\n", v.path.replace('\t', " "), v.name.replace('\t', " "), v.size, v.modified, v.folder.replace('\t', " "), v.duration))
+        .map(|v| format!("{}\t{}\t{}\t{}\t{}\t{:.1}\t{}\n", v.path.replace('\t', " "), v.name.replace('\t', " "), v.size, v.modified, v.folder.replace('\t', " "), v.duration, v.dir.replace('\t', " ")))
         .collect();
     write(&list_file(), &body);
 }
@@ -489,6 +630,38 @@ mod tests {
         let (h2, out) = trim_bars(w, h, px);
         assert_eq!(h2, 6);
         assert_eq!(out.len(), (w * 6 * 3) as usize);
+    }
+
+    #[test]
+    fn tree() {
+        let v = |name: &str, folder: &str, dir: &str| Video { path: format!("{folder}/{dir}/{name}"), name: name.into(), size: 1, modified: 0, folder: folder.into(), duration: 0.0, dir: dir.into() };
+        let videos = vec![
+            v("Film.mkv", "/a", ""),
+            v("E10.mkv", "/a", "Série/S1"),
+            v("E2.mkv", "/a", "Série/S1"),
+            v("E1.mkv", "/a", "Série/S2"),
+            v("Doc.mkv", "/a", "Docs"),
+        ];
+        let folders = vec![PathBuf::from("/a"), PathBuf::from("/vide")];
+        let t = Tree { folders: &folders, videos: &videos };
+        // Un seul dossier surveillé avec des vidéos : on est directement dedans.
+        let top = t.shelf(&Place::default());
+        assert_eq!(top.dirs.iter().map(|d| (d.name.as_str(), d.videos, d.dirs)).collect::<Vec<_>>(), [("Docs", 1, 0), ("Série", 3, 2)]);
+        assert_eq!(top.videos.len(), 1);
+        assert_eq!(t.up(&top.place), None);
+        let serie = t.shelf(&top.dirs[1].place);
+        assert_eq!(serie.dirs.len(), 2);
+        let s1 = t.shelf(&serie.dirs[0].place);
+        assert_eq!(s1.videos.iter().map(|&i| videos[i].name.as_str()).collect::<Vec<_>>(), ["E2.mkv", "E10.mkv"]);
+        assert_eq!(t.up(&s1.place), Some(serie.place.clone()));
+        assert_eq!(t.up(&serie.place), Some(top.place.clone()));
+    }
+
+    #[test]
+    fn natural_order() {
+        let mut v = vec!["Episode 10", "episode 2", "Episode 1", "Bonus"];
+        v.sort_by(|a, b| natural(a, b));
+        assert_eq!(v, ["Bonus", "Episode 1", "episode 2", "Episode 10"]);
     }
 
     /// Miniature tirée d'une vraie vidéo (`samples/test.mkv`, si présente).

@@ -429,6 +429,7 @@ enum Icon {
     Close,
     Speaker,
     SubtitlesOff,
+    Back,
     Open,
     Grid,
     Rows,
@@ -521,6 +522,9 @@ fn icon(painter: &egui::Painter, c: Pos2, size: f32, which: Icon, color: Color32
             let thin = Stroke::new(1.9 * s, color);
             painter.add(Shape::line(vec![p(3.5, 18.5), p(3.5, 5.5), p(9.3, 5.5), p(11.3, 7.5), p(19.5, 7.5), p(19.5, 10.3)], thin));
             painter.add(Shape::closed_line(vec![p(3.5, 18.5), p(6.4, 10.3), p(21.8, 10.3), p(18.9, 18.5)], thin));
+        }
+        Icon::Back => {
+            painter.add(Shape::line(vec![p(14.5, 6.0), p(8.5, 12.0), p(14.5, 18.0)], stroke));
         }
         Icon::Grid => {
             for (x, y) in [(4.0, 4.0), (13.0, 4.0), (4.0, 13.0), (13.0, 13.0)] {
@@ -1092,10 +1096,26 @@ fn home(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actions: &mut 
         } else if lib.videos.is_empty() {
             let msg = if lib.scanning { tr("Recherche des vidéos…", "Looking for videos…") } else { tr("Aucune vidéo dans ces dossiers.", "No video in these folders.") };
             empty(ui, body, msg, false, actions);
-        } else if lib.grid {
-            grid(ui, p, body, actions);
         } else {
-            list(ui, p, body, actions);
+            let shelf = lib.shelf(&p.place);
+            p.place = shelf.place.clone();
+            let mut body = body;
+            if let Some(up) = lib.up(&shelf.place) {
+                // Dossier en cours : bouton pour remonter et son nom.
+                let b = Rect::from_min_size(pos2(body.min.x + SIDE, body.min.y), vec2(38.0, 38.0));
+                ui.painter().circle_filled(b.center(), 19.0, Color32::from_white_alpha(22));
+                ui.painter().circle_stroke(b.center(), 19.0, Stroke::new(1.0, Color32::from_white_alpha(50)));
+                if icon_button(ui, b, Icon::Back).on_hover_text(tr("Remonter (Échap)", "Up (Esc)")).clicked() {
+                    p.place = up;
+                }
+                ui.painter().text(pos2(b.max.x + 12.0, b.center().y), Align2::LEFT_CENTER, &shelf.title, semi(18.0), INK);
+                body.min.y += 50.0;
+            }
+            if p.library.grid {
+                grid(ui, p, &shelf, body, actions);
+            } else {
+                list(ui, p, &shelf, body, actions);
+            }
         }
     });
     if p.folders_open {
@@ -1214,29 +1234,110 @@ fn title_galley(ui: &Ui, text: String, width: f32, size: f32) -> std::sync::Arc<
     ui.painter().layout_job(job)
 }
 
-fn grid(ui: &mut Ui, p: &mut Player, body: Rect, actions: &mut Vec<Action>) {
+/// « 12 vidéos », « 3 dossiers · 12 vidéos ».
+fn dir_count(d: &crate::library::Dir) -> String {
+    let v = format!("{} {}", d.videos, if d.videos > 1 { tr("vidéos", "videos") } else { tr("vidéo", "video") });
+    if d.dirs > 0 {
+        format!("{} {} · {v}", d.dirs, if d.dirs > 1 { tr("dossiers", "folders") } else { tr("dossier", "folder") })
+    } else {
+        v
+    }
+}
+
+/// Dossier dessiné : le dos et son onglet, deux feuilles qui dépassent, la face avant bleutée avec
+/// un reflet. Dans le même cadre 16:9 que les miniatures.
+pub(crate) fn folder_art(painter: &egui::Painter, r: Rect, hovered: bool) {
+    let h = r.height() * 0.86;
+    let w = (r.width() * 0.86).min(h * 1.42);
+    let x0 = r.center().x - w / 2.0;
+    let y0 = r.center().y - h / 2.0 + r.height() * 0.02;
+    let cr = CornerRadius::same((h * 0.07) as u8);
+    let lift = if hovered { -3.0 } else { 0.0 };
+    let gradient = |rect: Rect, top: Color32, bottom: Color32| {
+        // Dégradé vertical continu aux coins arrondis : deux bandeaux arrondis aux extrémités
+        // (couleurs de bout) et, entre eux, un quadrilatère aux couleurs interpolées.
+        let rr = cr.nw as f32;
+        painter.rect_filled(Rect::from_min_max(rect.min, pos2(rect.max.x, rect.min.y + rr * 2.0)), cr, top);
+        painter.rect_filled(Rect::from_min_max(pos2(rect.min.x, rect.max.y - rr * 2.0), rect.max), cr, bottom);
+        let (y1, y2) = (rect.min.y + rr, rect.max.y - rr);
+        let k = |y: f32| lerp_color(top, bottom, ((y - y1) / (y2 - y1).max(1.0)).clamp(0.0, 1.0));
+        let mut mesh = egui::Mesh::default();
+        mesh.colored_vertex(pos2(rect.min.x, y1), k(y1));
+        mesh.colored_vertex(pos2(rect.max.x, y1), k(y1));
+        mesh.colored_vertex(pos2(rect.max.x, y2), k(y2));
+        mesh.colored_vertex(pos2(rect.min.x, y2), k(y2));
+        mesh.add_triangle(0, 1, 2);
+        mesh.add_triangle(0, 2, 3);
+        painter.add(Shape::mesh(mesh));
+    };
+    let back_top = Color32::from_rgb(0x2B, 0x6D, 0xB3);
+    let back_bottom = Color32::from_rgb(0x17, 0x3F, 0x70);
+    painter.rect_filled(Rect::from_min_size(pos2(x0, y0), vec2(w * 0.38, h * 0.22)), cr, back_top);
+    gradient(Rect::from_min_size(pos2(x0, y0 + h * 0.1), vec2(w, h * 0.9)), back_top, back_bottom);
+    let sheet = CornerRadius::same((h * 0.04) as u8);
+    painter.rect_filled(Rect::from_min_size(pos2(x0 + w * 0.08, y0 + h * 0.17 + lift), vec2(w * 0.8, h * 0.5)), sheet, Color32::from_rgb(0xCF, 0xDD, 0xEB));
+    painter.rect_filled(Rect::from_min_size(pos2(x0 + w * 0.13, y0 + h * 0.23 + lift * 1.6), vec2(w * 0.76, h * 0.5)), sheet, Color32::from_rgb(0xF1, 0xF6, 0xFB));
+    let fy = y0 + h * 0.33;
+    let front = Rect::from_min_max(pos2(x0, fy), pos2(x0 + w, y0 + h));
+    gradient(front, Color32::from_rgb(0x8F, 0xD8, 0xFF), Color32::from_rgb(0x2F, 0x86, 0xCF));
+    painter.line_segment([pos2(x0 + cr.nw as f32, fy + 1.0), pos2(x0 + w - cr.ne as f32, fy + 1.0)], Stroke::new(1.5, Color32::from_white_alpha(170)));
+}
+
+fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
+    let m = |x: u8, y: u8| (x as f32 + (y as f32 - x as f32) * t) as u8;
+    Color32::from_rgb(m(a.r(), b.r()), m(a.g(), b.g()), m(a.b(), b.b()))
+}
+
+/// Un élément de l'endroit affiché : dossier (indice dans `shelf.dirs`) ou vidéo (dans la bibliothèque).
+#[derive(Clone, Copy)]
+enum Item {
+    Dir(usize),
+    Video(usize),
+}
+
+fn items(shelf: &crate::library::Shelf) -> Vec<Item> {
+    (0..shelf.dirs.len()).map(Item::Dir).chain(shelf.videos.iter().map(|&i| Item::Video(i))).collect()
+}
+
+fn grid(ui: &mut Ui, p: &mut Player, shelf: &crate::library::Shelf, body: Rect, actions: &mut Vec<Action>) {
     let gap = 16.0;
     let inner = body.width() - SIDE * 2.0;
     let cols = ((inner + gap) / (230.0 + gap)).floor().max(1.0) as usize;
     let w = (inner - gap * (cols - 1) as f32) / cols as f32;
     let th = w * 9.0 / 16.0;
     let row_h = th + 50.0;
-    let n = p.library.videos.len();
-    let rows = n.div_ceil(cols);
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, row_h, rows, |ui, range| {
+    let all = items(shelf);
+    let rows = all.len().div_ceil(cols);
+    // Un défilement par dossier : on retrouve sa place en remontant.
+    egui::ScrollArea::vertical().id_salt(("grid", &shelf.place)).auto_shrink([false, false]).show_rows(ui, row_h, rows, |ui, range| {
         for row in range {
             let (line, _) = ui.allocate_exact_size(vec2(body.width(), row_h), Sense::hover());
             for c in 0..cols {
-                let i = row * cols + c;
-                let Some(v) = p.library.videos.get(i).cloned() else { break };
+                let Some(&item) = all.get(row * cols + c) else { break };
                 let cell = Rect::from_min_size(pos2(line.min.x + SIDE + c as f32 * (w + gap), line.min.y), vec2(w, row_h - 6.0));
-                let resp = ui.interact(cell, ui.id().with(("tile", &v.path)), Sense::click());
-                let hovered = resp.hovered();
-                thumbnail(ui, p, &v, Rect::from_min_size(cell.min, vec2(w, th)), hovered);
-                let g = title_galley(ui, v.title(), w - 4.0, 13.5);
-                ui.painter().galley(pos2(cell.min.x + 2.0, cell.min.y + th + 7.0), g, INK);
-                if resp.clicked() {
-                    actions.push(Action::Play(v.path.clone()));
+                let art = Rect::from_min_size(cell.min, vec2(w, th));
+                match item {
+                    Item::Dir(i) => {
+                        let d = &shelf.dirs[i];
+                        let resp = ui.interact(cell, ui.id().with(("dir", &d.place)), Sense::click());
+                        folder_art(ui.painter(), art, resp.hovered());
+                        let clip = ui.painter().with_clip_rect(cell);
+                        clip.text(pos2(cell.min.x + 2.0, cell.min.y + th + 15.0), Align2::LEFT_CENTER, &d.name, semi(13.5), INK);
+                        clip.text(pos2(cell.min.x + 2.0, cell.min.y + th + 33.0), Align2::LEFT_CENTER, dir_count(d), med(11.5), INK2);
+                        if resp.clicked() {
+                            p.place = d.place.clone();
+                        }
+                    }
+                    Item::Video(i) => {
+                        let v = p.library.videos[i].clone();
+                        let resp = ui.interact(cell, ui.id().with(("tile", &v.path)), Sense::click());
+                        thumbnail(ui, p, &v, art, resp.hovered());
+                        let g = title_galley(ui, v.title(), w - 4.0, 13.5);
+                        ui.painter().galley(pos2(cell.min.x + 2.0, cell.min.y + th + 7.0), g, INK);
+                        if resp.clicked() {
+                            actions.push(Action::Play(v.path.clone()));
+                        }
+                    }
                 }
             }
         }
@@ -1244,38 +1345,55 @@ fn grid(ui: &mut Ui, p: &mut Player, body: Rect, actions: &mut Vec<Action>) {
     });
 }
 
-fn list(ui: &mut Ui, p: &mut Player, body: Rect, actions: &mut Vec<Action>) {
+fn list(ui: &mut Ui, p: &mut Player, shelf: &crate::library::Shelf, body: Rect, actions: &mut Vec<Action>) {
     let row_h = 86.0;
-    let n = p.library.videos.len();
+    let all = items(shelf);
     let width = (body.width() - SIDE * 2.0).min(980.0);
     let x0 = body.center().x - width / 2.0;
-    egui::ScrollArea::vertical().auto_shrink([false, false]).show_rows(ui, row_h, n, |ui, range| {
+    egui::ScrollArea::vertical().id_salt(("list", &shelf.place)).auto_shrink([false, false]).show_rows(ui, row_h, all.len(), |ui, range| {
         for i in range {
-            let v = p.library.videos[i].clone();
             let (line, _) = ui.allocate_exact_size(vec2(body.width(), row_h), Sense::hover());
             let row = Rect::from_min_size(pos2(x0, line.min.y + 3.0), vec2(width, row_h - 6.0));
-            let resp = ui.interact(row, ui.id().with(("row", &v.path)), Sense::click());
-            if resp.hovered() {
-                ui.painter().rect_filled(row, CornerRadius::same(16), Color32::from_white_alpha(14));
-            }
             let t = Rect::from_min_size(pos2(row.min.x + 6.0, row.min.y + 4.0), vec2(128.0, 72.0));
-            thumbnail(ui, p, &v, t, false);
             let tx = t.max.x + 16.0;
-            let g = title_galley(ui, v.title(), row.max.x - tx - 12.0, 15.0);
-            let gh = g.size().y;
-            let top = row.center().y - (gh + 20.0) / 2.0;
-            ui.painter().galley(pos2(tx, top), g, INK);
-            let pos = position(p, &v.path);
-            let detail = if v.duration <= 0.0 {
-                String::new()
-            } else if pos > 0.0 {
-                format!("{} {}", tr("Reste", "Left"), clock(v.duration - pos))
-            } else {
-                clock(v.duration)
-            };
-            ui.painter().text(pos2(tx, top + gh + 4.0), Align2::LEFT_TOP, detail, med(12.0), INK2);
-            if resp.clicked() {
-                actions.push(Action::Play(v.path.clone()));
+            match all[i] {
+                Item::Dir(k) => {
+                    let d = &shelf.dirs[k];
+                    let resp = ui.interact(row, ui.id().with(("dirrow", &d.place)), Sense::click());
+                    if resp.hovered() {
+                        ui.painter().rect_filled(row, CornerRadius::same(16), Color32::from_white_alpha(14));
+                    }
+                    folder_art(ui.painter(), t, resp.hovered());
+                    ui.painter().text(pos2(tx, row.center().y - 10.0), Align2::LEFT_CENTER, &d.name, semi(15.0), INK);
+                    ui.painter().text(pos2(tx, row.center().y + 12.0), Align2::LEFT_CENTER, dir_count(d), med(12.0), INK2);
+                    if resp.clicked() {
+                        p.place = d.place.clone();
+                    }
+                }
+                Item::Video(k) => {
+                    let v = p.library.videos[k].clone();
+                    let resp = ui.interact(row, ui.id().with(("row", &v.path)), Sense::click());
+                    if resp.hovered() {
+                        ui.painter().rect_filled(row, CornerRadius::same(16), Color32::from_white_alpha(14));
+                    }
+                    thumbnail(ui, p, &v, t, false);
+                    let g = title_galley(ui, v.title(), row.max.x - tx - 12.0, 15.0);
+                    let gh = g.size().y;
+                    let top = row.center().y - (gh + 20.0) / 2.0;
+                    ui.painter().galley(pos2(tx, top), g, INK);
+                    let pos = position(p, &v.path);
+                    let detail = if v.duration <= 0.0 {
+                        String::new()
+                    } else if pos > 0.0 {
+                        format!("{} {}", tr("Reste", "Left"), clock(v.duration - pos))
+                    } else {
+                        clock(v.duration)
+                    };
+                    ui.painter().text(pos2(tx, top + gh + 4.0), Align2::LEFT_TOP, detail, med(12.0), INK2);
+                    if resp.clicked() {
+                        actions.push(Action::Play(v.path.clone()));
+                    }
+                }
             }
         }
         ui.add_space(20.0);

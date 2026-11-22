@@ -41,6 +41,11 @@ WHEEL_UP script-binding main/wheel-up
 WHEEL_DOWN script-binding main/wheel-down";
 /// Actifs quand un tiroir est ouvert : Échap le ferme au lieu de quitter.
 const PANEL_BINDINGS: &str = "ESC script-binding main/esc";
+/// Accueil, dans un sous-dossier ou fenêtre ouverte : Échap, Retour arrière et le bouton
+/// « précédent » de la souris remontent au lieu de quitter.
+const BACK_BINDINGS: &str = "ESC script-binding main/esc
+BS script-binding main/esc
+MBTN_BACK script-binding main/esc";
 /// Durée de l'aperçu des sous-titres après un réglage de taille ou de hauteur.
 const PREVIEW_LIFE: Duration = Duration::from_millis(1600);
 /// Numéro de l'incrustation mpv qui porte l'aperçu.
@@ -77,6 +82,7 @@ struct App {
     shader_opts: String,
     hover_section: bool,
     panel_section: bool,
+    back_section: bool,
     last_save: Instant,
     seek_from: Option<f64>,
     indexing: Vec<String>,
@@ -207,7 +213,15 @@ impl App {
             "sub-up" => p.sub_height(1),
             "sub-down" => p.sub_height(-1),
             "tab" => p.panel = if p.panel == Some(Panel::List) { None } else { Some(Panel::List) },
-            "esc" => p.panel = None,
+            "esc" => {
+                if p.panel.is_some() {
+                    p.panel = None;
+                } else if p.folders_open {
+                    p.folders_open = false;
+                } else if let Some(up) = p.library.up(&p.place) {
+                    p.place = up;
+                }
+            }
             _ => {}
         }
         // Le clavier n'affiche pas le contrôleur : seule la bulle confirme l'action.
@@ -481,6 +495,11 @@ impl App {
             self.section("bioplay-hover", over);
             self.hover_section = over;
         }
+        let back = !self.player.has_file() && (self.player.folders_open || self.player.library.up(&self.player.place).is_some());
+        if back != self.back_section {
+            self.section("bioplay-back", back);
+            self.back_section = back;
+        }
         let panel = self.player.panel.is_some();
         if panel != self.panel_section {
             self.section("bioplay-panel", panel);
@@ -604,6 +623,7 @@ fn main() {
     mpv.command_sync(&["define-section", "bioplay", BINDINGS, "force"]);
     mpv.command_sync(&["define-section", "bioplay-hover", HOVER_BINDINGS, "force"]);
     mpv.command_sync(&["define-section", "bioplay-panel", PANEL_BINDINGS, "force"]);
+    mpv.command_sync(&["define-section", "bioplay-back", BACK_BINDINGS, "force"]);
     mpv.command_sync(&["enable-section", "bioplay", "allow-hide-cursor"]);
 
     let overlay = overlay::Overlay::new().expect("contexte GPU de l'interface");
@@ -628,6 +648,7 @@ fn main() {
         shader_opts: String::new(),
         hover_section: false,
         panel_section: false,
+        back_section: false,
         last_save: Instant::now(),
         seek_from: None,
         indexing: Vec::new(),
