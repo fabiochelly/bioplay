@@ -34,6 +34,7 @@ enum Drawn {
 struct Last {
     area: [i32; 4],
     buffer: usize,
+    backdrop: bool,
     prims: Vec<(u64, [i32; 4])>,
 }
 
@@ -49,6 +50,20 @@ pub struct Overlay {
     next: usize,
     shown: bool,
     last: Option<Last>,
+    /// Fond de l'accueil, calculé une fois par taille (pleine et demi-résolution), BGRA.
+    backdrop: Vec<(usize, usize, Vec<u8>)>,
+    /// Miniatures de l'accueil mises à la taille d'affichage (coins arrondis compris), BGRA
+    /// prémultiplié : posées dans l'image par simple copie de lignes, gardées tant qu'elles servent.
+    scaled: HashMap<(String, usize, usize, usize), Vec<u8>>,
+}
+
+/// Une miniature à poser (points de l'interface), découpée par `clip`.
+pub struct Thumb {
+    pub key: String,
+    pub rect: Rect,
+    pub clip: Rect,
+    pub radius: f32,
+    pub image: std::sync::Arc<egui::ColorImage>,
 }
 
 impl Overlay {
@@ -62,6 +77,8 @@ impl Overlay {
             next: 0,
             shown: false,
             last: None,
+            backdrop: Vec::new(),
+            scaled: HashMap::new(),
         })
     }
 
@@ -102,8 +119,13 @@ impl Overlay {
         textures: &mut egui::TexturesDelta,
         size: [u32; 2],
         ppp: f32,
+        home: bool,
+        thumbs: &[Thumb],
         reduce: u32,
     ) -> bool {
+        if !home && !self.scaled.is_empty() {
+            self.scaled = HashMap::new();
+        }
         // En mouvement (défilement), image dessinée en résolution réduite (`reduce` = 2 : quatre
         // fois moins de pixels à dessiner et à envoyer) et agrandie par mpv sur la carte graphique ;
         // l'image nette suit dès l'arrêt. `prims` sont déjà découpés à cette échelle.
@@ -116,7 +138,7 @@ impl Overlay {
             return false;
         }
         let t0 = std::time::Instant::now();
-        let drawn = self.render(prims, Some(marks), textures, rsize, ppp / r as f32);
+        let drawn = self.render(prims, Some(marks), textures, rsize, ppp / r as f32, home, thumbs);
         let t1 = std::time::Instant::now();
         static DBG: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         let dbg = *DBG.get_or_init(|| std::env::var_os("BIOPLAY_DEBUG_DAMAGE").is_some());
@@ -146,7 +168,7 @@ impl Overlay {
     }
 
     /// Remplit le prochain tampon ; ne touche pas à mpv.
-    fn render(&mut self, prims: &[egui::ClippedPrimitive], marks: Option<&[(u64, Rect)]>, textures: &mut egui::TexturesDelta, size: [u32; 2], ppp: f32) -> Drawn {
+    fn render(&mut self, prims: &[egui::ClippedPrimitive], marks: Option<&[(u64, Rect)]>, textures: &mut egui::TexturesDelta, size: [u32; 2], ppp: f32, backdrop: bool, thumbs: &[Thumb]) -> Drawn {
         self.update_textures(textures);
         let (w, h) = (size[0].max(1) as i32, size[1].max(1) as i32);
         // Zone dessinée : union des maillages, bornée par leurs rectangles de découpe.
@@ -159,6 +181,9 @@ impl Overlay {
                 }
                 bb = bb.union(r.intersect(p.clip_rect));
             }
+        }
+        if backdrop {
+            bb = Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(w as f32 / ppp, h as f32 / ppp));
         }
         for id in &textures.free {
             self.textures.remove(id);
@@ -200,6 +225,43 @@ impl Overlay {
             })
             .collect();
 
+        // Miniatures : place (pixels du tampon), découpe, image à la bonne taille.
+        let mut used = std::collections::HashSet::new();
+        let mut placed: Vec<([i32; 4], [i32; 4], (String, usize, usize, usize))> = Vec::new();
+        for t in thumbs {
+            let tx = (t.rect.min.x * ppp).round() as i32 - x0;
+            let ty = (t.rect.min.y * ppp).round() as i32 - y0;
+            let tw = ((t.rect.max.x * ppp).round() as i32 - x0 - tx).max(1) as usize;
+            let th = ((t.rect.max.y * ppp).round() as i32 - y0 - ty).max(1) as usize;
+            let c = [
+                tx.max((t.clip.min.x * ppp).round() as i32 - x0).max(0),
+                ty.max((t.clip.min.y * ppp).round() as i32 - y0).max(0),
+                (tx + tw as i32).min((t.clip.max.x * ppp).round() as i32 - x0).min(bw as i32),
+                (ty + th as i32).min((t.clip.max.y * ppp).round() as i32 - y0).min(bh as i32),
+            ];
+            if c[0] >= c[2] || c[1] >= c[3] {
+                continue;
+            }
+            let key = (t.key.clone(), tw, th, (t.radius * ppp).round() as usize);
+            used.insert(key.clone());
+            placed.push(([tx, ty, tw as i32, th as i32], c, key));
+        }
+        // Nouvelles miniatures (une rangée qui apparaît) : mises à l'échelle en parallèle.
+        let missing: Vec<(&(String, usize, usize, usize), &Thumb)> = placed
+            .iter()
+            .filter(|(_, _, k)| !self.scaled.contains_key(k))
+            .filter_map(|(_, _, k)| thumbs.iter().find(|t| t.key == k.0).map(|t| (k, t)))
+            .collect();
+        let made: Vec<Vec<u8>> = std::thread::scope(|sc| {
+            let hs: Vec<_> = missing.iter().map(|(k, t)| sc.spawn(move || scale_rounded(&t.image, k.1, k.2, k.3 as f32))).collect();
+            hs.into_iter().map(|h| h.join().unwrap_or_default()).collect()
+        });
+        for ((k, _), px) in missing.iter().zip(made) {
+            self.scaled.insert((*k).clone(), px);
+        }
+        if self.scaled.len() > 160 {
+            self.scaled.retain(|k, _| used.contains(k));
+        }
         // Ce qui a changé, élément par élément (texte, plaque, icône) quand les empreintes des
         // formes sont fournies : egui fond toute une zone en un seul maillage, si bien qu'une
         // seconde de l'horloge ferait sinon redessiner toute la barre.
@@ -211,16 +273,21 @@ impl Overlay {
                 ((r.max.y * ppp).ceil() as i32 + 2 - y0).clamp(0, bh as i32),
             ]
         };
-        let all_info: Vec<(u64, [i32; 4])> = match marks {
+        let mut all_info = match marks {
             Some(m) => m.iter().map(|(h, r)| (*h, to_px(*r))).collect(),
             None => prims_info.clone(),
         };
+        for (r, c, k) in &placed {
+            let mut hsh = std::collections::hash_map::DefaultHasher::new();
+            std::hash::Hash::hash(&(k, r, c), &mut hsh);
+            all_info.push((std::hash::Hasher::finish(&hsh), *c));
+        }
 
         // Seule la zone qui a changé est redessinée (un survol ne touche qu'un bouton) ; rien
         // n'a changé : rien à faire. Toute l'image si la taille, le fond ou les textures changent.
         let textures_changed = !textures.set.is_empty() || !textures.free.is_empty();
         let damage = match &self.last {
-            Some(l) if l.area == area && !textures_changed => {
+            Some(l) if l.area == area && l.backdrop == backdrop && !textures_changed => {
                 let mut before: HashMap<u64, Vec<[i32; 4]>> = HashMap::new();
                 for (h, r) in &l.prims {
                     before.entry(*h).or_default().push(*r);
@@ -256,10 +323,14 @@ impl Overlay {
             Some((prev, d)) if ((d[2] - d[0]) as usize * (d[3] - d[1]) as usize) < bw * bh * 3 / 5 => (d, Some(prev)),
             _ => (full, None),
         };
+        if backdrop {
+            self.backdrop(w as usize, h as usize);
+        }
         let mut buf = std::mem::take(&mut self.buffers[self.next]);
         buf.resize(stride * bh, 0);
         let prev_buf: Option<&[u8]> = prev.map(|i| self.buffers[i].as_slice());
-        let textures = &self.textures;
+        let back: Option<&[u8]> = if backdrop { self.backdrop.iter().find(|b| (b.0, b.1) == (w as usize, h as usize)).map(|b| b.2.as_slice()) } else { None };
+        let (textures, scaled) = (&self.textures, &self.scaled);
         // Dessin par bandes horizontales, une par cœur : chaque bande fait tout pour ses lignes.
         // Petite zone (une seconde de l'horloge, un bouton survolé) : peu de fils, car chaque fil
         // reparcourt les triangles et coûte du processeur pour rien (≈ un fil par 200 000 pixels).
@@ -270,7 +341,7 @@ impl Overlay {
             for (bi, band) in buf.chunks_mut(stride * band_rows).enumerate() {
                 let b0 = (bi * band_rows) as i32;
                 let rows = (band.len() / stride) as i32;
-                let (prims, prims_info) = (prims, &prims_info);
+                let (placed, prims, prims_info) = (&placed, prims, &prims_info);
                 let mut job = move || {
                     // Lignes de la zone dans cette bande.
                     let zy0 = zone[1].max(b0);
@@ -284,7 +355,46 @@ impl Overlay {
                     let row = (zone[2] - zone[0]) as usize * 4;
                     for y in zy0..zy1 {
                         let o = (y - b0) as usize * stride + zone[0] as usize * 4;
-                        band[o..o + row].fill(0);
+                        match back {
+                            Some(bd) => {
+                                let g = y as usize * stride + zone[0] as usize * 4;
+                                band[o..o + row].copy_from_slice(&bd[g..g + row]);
+                            }
+                            None => band[o..o + row].fill(0),
+                        }
+                    }
+                    // Miniatures (sous l'interface) : lignes opaques copiées, coins mélangés.
+                    for (r, c, k) in placed {
+                        let z = [c[0].max(zone[0]), c[1].max(zy0), c[2].min(zone[2]), c[3].min(zy1)];
+                        if z[0] >= z[2] || z[1] >= z[3] {
+                            continue;
+                        }
+                        let src = &scaled[k];
+                        let sw = r[2] as usize;
+                        let radius = k.3 as i32;
+                        let n = (z[2] - z[0]) as usize * 4;
+                        for y in z[1]..z[3] {
+                            let so = ((y - r[1]) as usize * sw + (z[0] - r[0]) as usize) * 4;
+                            let d0 = (y - b0) as usize * stride + z[0] as usize * 4;
+                            let (s_row, d_row) = (&src[so..so + n], &mut band[d0..d0 + n]);
+                            let ly = y - r[1];
+                            if ly >= radius && ly < r[3] - radius && z[0] - r[0] >= radius && r[0] + r[2] - z[2] >= radius {
+                                d_row.copy_from_slice(s_row);
+                                continue;
+                            }
+                            for (sp, dp) in s_row.chunks_exact(4).zip(d_row.chunks_exact_mut(4)) {
+                                match sp[3] {
+                                    255 => dp.copy_from_slice(sp),
+                                    0 => {}
+                                    a => {
+                                        let k = 255 - a as u32;
+                                        for i in 0..4 {
+                                            dp[i] = (sp[i] as u32 + (dp[i] as u32 * k + 127) / 255).min(255) as u8;
+                                        }
+                                    }
+                                }
+                            }
+                        }
                     }
                     let mut canvas = Canvas { buf: band, w: bw, h: rows as usize, ox: x0 as f32, oy: (y0 + b0) as f32 };
                     for (p, (_, r)) in prims.iter().zip(prims_info) {
@@ -316,7 +426,7 @@ impl Overlay {
                 }
             }
         });
-        self.last = Some(Last { area, buffer: self.next, prims: all_info });
+        self.last = Some(Last { area, buffer: self.next, backdrop, prims: all_info });
         self.buffers[self.next] = buf;
         self.next = (self.next + 1) % BUFFERS;
         Drawn::New { x: x0, y: y0, w: bw, h: bh }
@@ -356,6 +466,64 @@ impl Overlay {
         }
     }
 
+    /// Fond de l'accueil : trois lumières en dégradés radiaux, avec un tramage léger qui supprime
+    /// les marches des dégradés sombres.
+    fn backdrop(&mut self, w: usize, h: usize) -> &[u8] {
+        if !self.backdrop.iter().any(|b| (b.0, b.1) == (w, h)) {
+            let mut px = vec![0u8; w * h * 4];
+            let aspect = w as f32 / h as f32;
+            // Très sombre : un noir bleuté, une lueur bleu nuit douce en haut, une autre plus
+            // discrète en bas à droite, les bords assombris.
+            let glows = [
+                (0.50f32, -0.10f32, 0.95f32, [0.050f32, 0.085, 0.170], 0.85f32),
+                (0.88, 1.05, 0.70, [0.045, 0.040, 0.120], 0.55),
+            ];
+            // Calculé par bandes, une par cœur (une fois par taille d'écran).
+            let threads = std::thread::available_parallelism().map_or(4, |n| n.get()).clamp(1, 16);
+            let band = h.div_ceil(threads).max(1);
+            std::thread::scope(|sc| {
+                for (bi, chunk) in px.chunks_mut(w * 4 * band).enumerate() {
+                    sc.spawn(move || {
+                        for (ry, line) in chunk.chunks_exact_mut(w * 4).enumerate() {
+                            let y = bi * band + ry;
+                            let v = y as f32 / h as f32;
+                            for x in 0..w {
+                                let u = x as f32 / w as f32;
+                                let mut c = [0.012f32, 0.016, 0.026];
+                                for (cx, cy, r, col, k) in glows {
+                                    let dx = (u - cx) * aspect;
+                                    let dy = v - cy;
+                                    let e = (-(dx * dx + dy * dy) / (r * r) * 2.2).exp() * k;
+                                    for i in 0..3 {
+                                        c[i] += col[i] * e;
+                                    }
+                                }
+                                // Vignette : les bords un peu plus sombres.
+                                let (du, dv) = ((u - 0.5) * aspect, v - 0.5);
+                                let vig = 1.0 - 0.35 * ((du * du + dv * dv) * 1.1).min(1.0);
+                                for ch in &mut c {
+                                    *ch *= vig;
+                                }
+                                // Tramage : bruit de ±0,75 niveau, déterministe.
+                                let n = ((x as u32).wrapping_mul(0x9E37_79B1) ^ (y as u32).wrapping_mul(0x85EB_CA77)).wrapping_mul(0xC2B2_AE3D) >> 24;
+                                let d = (n as f32 / 255.0 - 0.5) * 1.5;
+                                let o = x * 4;
+                                line[o] = (c[2] * 255.0 + d).clamp(0.0, 255.0) as u8;
+                                line[o + 1] = (c[1] * 255.0 + d).clamp(0.0, 255.0) as u8;
+                                line[o + 2] = (c[0] * 255.0 + d).clamp(0.0, 255.0) as u8;
+                                line[o + 3] = 255;
+                            }
+                        }
+                    });
+                }
+            });
+            if self.backdrop.len() >= 2 {
+                self.backdrop.remove(0);
+            }
+            self.backdrop.push((w, h, px));
+        }
+        &self.backdrop.iter().find(|b| (b.0, b.1) == (w, h)).unwrap().2
+    }
 }
 
 /// Zone de la superposition en cours de dessin (BGRA prémultiplié).
@@ -514,6 +682,45 @@ impl Canvas<'_> {
     }
 }
 
+/// Miniature mise à la taille voulue (bilinéaire), coins arrondis adoucis, en BGRA prémultiplié.
+fn scale_rounded(img: &egui::ColorImage, w: usize, h: usize, radius: f32) -> Vec<u8> {
+    let [iw, ih] = img.size;
+    let mut out = vec![0u8; w * h * 4];
+    if iw == 0 || ih == 0 {
+        return out;
+    }
+    // Recadrage au rapport de la vignette (centre gardé).
+    let (ta, ra) = (iw as f32 / ih as f32, w as f32 / h as f32);
+    let (sw, sh) = if ta > ra { (ih as f32 * ra, ih as f32) } else { (iw as f32, iw as f32 / ra) };
+    let (sx0, sy0) = ((iw as f32 - sw) / 2.0, (ih as f32 - sh) / 2.0);
+    let px = |x: usize, y: usize| img.pixels[y.min(ih - 1) * iw + x.min(iw - 1)];
+    for y in 0..h {
+        let fy = (sy0 + (y as f32 + 0.5) * sh / h as f32 - 0.5).max(0.0);
+        let (y0, ty) = (fy as usize, fy.fract());
+        for x in 0..w {
+            let fx = (sx0 + (x as f32 + 0.5) * sw / w as f32 - 0.5).max(0.0);
+            let (x0, tx) = (fx as usize, fx.fract());
+            let (a, b, c, d) = (px(x0, y0), px(x0 + 1, y0), px(x0, y0 + 1), px(x0 + 1, y0 + 1));
+            let mix = |k: usize| {
+                let top = a[k] as f32 + (b[k] as f32 - a[k] as f32) * tx;
+                let bot = c[k] as f32 + (d[k] as f32 - c[k] as f32) * tx;
+                top + (bot - top) * ty
+            };
+            // Couverture du coin arrondi (distance au centre de l'arc, bord adouci d'un pixel).
+            let (cx, cy) = (x as f32 + 0.5, y as f32 + 0.5);
+            let dx = (radius - cx).max(cx - (w as f32 - radius)).max(0.0);
+            let dy = (radius - cy).max(cy - (h as f32 - radius)).max(0.0);
+            let cover = if dx > 0.0 && dy > 0.0 { (radius - (dx * dx + dy * dy).sqrt() + 0.5).clamp(0.0, 1.0) } else { 1.0 };
+            let o = (y * w + x) * 4;
+            out[o] = (mix(2) * cover) as u8;
+            out[o + 1] = (mix(1) * cover) as u8;
+            out[o + 2] = (mix(0) * cover) as u8;
+            out[o + 3] = (255.0 * cover) as u8;
+        }
+    }
+    out
+}
+
 /// Lecture bilinéaire, bords répétés.
 fn sample(t: &Texture, x: f32, y: f32) -> [f32; 4] {
     let (xf, yf) = (x.floor(), y.floor());
@@ -577,16 +784,16 @@ mod tests {
         // Toutes les variantes une fois : leurs glyphes entrent dans l'atlas.
         for lit in [1, 2, 4, 0, 0] {
             let (p, mut t, m) = frame_marks(&ctx, lit);
-            partial.render(&p, Some(&m), &mut t, size, ppp);
-            full.render(&p, None, &mut t, size, ppp);
+            partial.render(&p, Some(&m), &mut t, size, ppp, false, &[]);
+            full.render(&p, None, &mut t, size, ppp, false, &[]);
         }
         let mut smaller = 0;
         for lit in [1, 4, 4, 2, 0] {
             let (p, mut t, m) = frame_marks(&ctx, lit);
             assert!(t.set.is_empty(), "les glyphes ne doivent pas changer");
-            let a = partial.render(&p, Some(&m), &mut t, size, ppp);
+            let a = partial.render(&p, Some(&m), &mut t, size, ppp, false, &[]);
             full.last = None;
-            full.render(&p, None, &mut t, size, ppp);
+            full.render(&p, None, &mut t, size, ppp, false, &[]);
             let pa = &partial.buffers[partial.last.as_ref().unwrap().buffer];
             let fa = &full.buffers[full.last.as_ref().unwrap().buffer];
             // Découpage en bandes différent (nombre de fils selon la zone) : arrondis à ±1 près.
@@ -611,15 +818,15 @@ mod tests {
         // Quelques images pour que les polices et la mise en page se stabilisent.
         for lit in [1, 2, 4, 0, 0] {
             let (p, mut t) = frame(&ctx, lit);
-            partial.render(&p, None, &mut t, size, ppp);
-            full.render(&p, None, &mut t, size, ppp);
+            partial.render(&p, None, &mut t, size, ppp, false, &[]);
+            full.render(&p, None, &mut t, size, ppp, false, &[]);
         }
         for lit in [1, 4, 4, 2] {
             let (p, mut t) = frame(&ctx, lit);
             assert!(t.set.is_empty(), "les glyphes ne doivent pas changer");
-            let a = partial.render(&p, None, &mut t, size, ppp);
+            let a = partial.render(&p, None, &mut t, size, ppp, false, &[]);
             full.last = None;
-            full.render(&p, None, &mut t, size, ppp);
+            full.render(&p, None, &mut t, size, ppp, false, &[]);
             let pa = &partial.buffers[partial.last.as_ref().unwrap().buffer];
             let fa = &full.buffers[full.last.as_ref().unwrap().buffer];
             if !matches!(a, Drawn::Same) {
@@ -629,5 +836,102 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod bench {
+    use super::*;
 
+    /// Coût d'une image de l'accueil en défilement, à 2880×1800 (échelle 2) : fond, miniatures
+    /// et texte. `cargo test --release -- --ignored --nocapture grid_cost`
+    #[test]
+    #[ignore]
+    fn grid_cost() {
+        let ctx = egui::Context::default();
+        crate::ui::fonts(&ctx);
+        let ppp = 2.0;
+        ctx.set_pixels_per_point(ppp);
+        let img = std::sync::Arc::new(egui::ColorImage::from_rgb([320, 180], &vec![120u8; 320 * 180 * 3]));
+        let mut o = Overlay::new().unwrap();
+        let size = [2880, 1800];
+        let mut times = Vec::new();
+        for k in 0..12 {
+            let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(1440.0, 900.0))), ..Default::default() };
+            let body = Rect::from_min_max(egui::pos2(0.0, 80.0), egui::pos2(1440.0, 900.0));
+            let mut thumbs = Vec::new();
+            let out = ctx.run_ui(raw, |ui| {
+                let p = ui.painter().with_clip_rect(body);
+                for i in 0..20 {
+                    let r = Rect::from_min_size(egui::pos2(28.0 + (i % 5) as f32 * 280.0, 60.0 + (i / 5) as f32 * 210.0 - k as f32 * 9.0), egui::vec2(264.0, 148.0));
+                    thumbs.push(Thumb { key: format!("t{i}"), rect: r, clip: body, radius: 12.0, image: img.clone() });
+                    p.rect_stroke(r, 12.0, egui::Stroke::new(1.0, Color32::from_white_alpha(34)), egui::StrokeKind::Inside);
+                    let rail = Rect::from_min_size(egui::pos2(r.min.x + 9.0, r.max.y - 11.0), egui::vec2(r.width() - 18.0, 4.0));
+                    p.rect_filled(rail, 2.0, Color32::from_white_alpha(52));
+                    p.text(r.right_top() + egui::vec2(-10.0, 9.0), egui::Align2::RIGHT_TOP, "1:42:10", egui::FontId::proportional(11.0), Color32::WHITE);
+                    p.text(r.left_bottom() + egui::vec2(2.0, 8.0), egui::Align2::LEFT_TOP, "Un titre de film assez long", egui::FontId::proportional(13.5), Color32::WHITE);
+                }
+            });
+            let prims = ctx.tessellate(out.shapes, out.pixels_per_point);
+            let mut t = out.textures_delta;
+            let s = std::time::Instant::now();
+            o.render(&prims, None, &mut t, size, ppp, true, &thumbs);
+            times.push(s.elapsed().as_secs_f64() * 1000.0);
+        }
+        eprintln!("rendu par image (ms) : {times:.1?}");
+    }
+}
 
+#[cfg(test)]
+mod look {
+    use super::*;
+
+    /// Image d'un dossier dessiné, pour vérifier son allure sans ouvrir de fenêtre.
+    /// `cargo test --release -- --ignored folder_png` → $TMPDIR/bioplay-folder.png
+    #[test]
+    #[ignore]
+    fn folder_png() {
+        let ctx = egui::Context::default();
+        crate::ui::fonts(&ctx);
+        let ppp = 2.0;
+        ctx.set_pixels_per_point(ppp);
+        let mut o = Overlay::new().unwrap();
+        let mut prims = Vec::new();
+        let mut tex = Default::default();
+        for _ in 0..2 {
+            let raw = egui::RawInput { screen_rect: Some(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(560.0, 180.0))), ..Default::default() };
+            let out = ctx.run_ui(raw, |ui| {
+                let p = ui.painter();
+                p.rect_filled(Rect::from_min_size(egui::Pos2::ZERO, egui::vec2(560.0, 180.0)), 0.0, Color32::from_rgb(10, 14, 26));
+                crate::ui::folder_art(p, Rect::from_min_size(egui::pos2(16.0, 16.0), egui::vec2(256.0, 144.0)), false);
+                crate::ui::folder_art(p, Rect::from_min_size(egui::pos2(288.0, 16.0), egui::vec2(256.0, 144.0)), true);
+            });
+            prims = ctx.tessellate(out.shapes, out.pixels_per_point);
+            tex = out.textures_delta;
+            o.render(&prims, None, &mut tex, [1120, 360], ppp, false, &[]);
+        }
+        let buf = &o.buffers[o.last.as_ref().unwrap().buffer];
+        let l = o.last.as_ref().unwrap();
+        let (w, h) = (l.area[2] as u32, l.area[3] as u32);
+        let rgba: Vec<u8> = buf.chunks_exact(4).flat_map(|p| [p[2], p[1], p[0], p[3]]).collect();
+        let f = std::fs::File::create(std::env::temp_dir().join("bioplay-folder.png")).unwrap();
+        let mut e = png::Encoder::new(std::io::BufWriter::new(f), w, h);
+        e.set_color(png::ColorType::Rgba);
+        e.write_header().unwrap().write_image_data(&rgba).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod scale_bench {
+    #[test]
+    #[ignore]
+    fn scale_cost() {
+        let img = egui::ColorImage::from_rgb([320, 180], &vec![120u8; 320 * 180 * 3]);
+        let t = std::time::Instant::now();
+        for _ in 0..10 {
+            std::hint::black_box(super::scale_rounded(&img, 528, 296, 24.0));
+        }
+        eprintln!("mise à l'échelle : {:.2} ms", t.elapsed().as_secs_f64() * 100.0);
+        let t = std::time::Instant::now();
+        let mut o = super::Overlay::new().unwrap();
+        o.backdrop(2880, 1800);
+        eprintln!("fond : {:.0} ms", t.elapsed().as_secs_f64() * 1000.0);
+    }
+}
