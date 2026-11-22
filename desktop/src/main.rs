@@ -58,7 +58,8 @@ const WHEEL_MOTION: Duration = Duration::from_millis(350);
 const SUB_MARGIN: i32 = 46;
 
 enum Message {
-    Indexed { path: String, external: Option<String>, tracks: Vec<bioplay_core::Track>, keyframes: Vec<f64> },
+    Indexed { path: String, external: Option<String>, tracks: Vec<bioplay_core::Track> },
+    Keyframes { path: String, keyframes: Vec<f64> },
     Picked(String),
     Folder(PathBuf),
 }
@@ -84,6 +85,8 @@ struct App {
     overlay_wait: Option<u64>,
     /// Prochain changement de l'horloge ou de la barre (réveil prévu).
     change_at: Option<Instant>,
+    /// Horloge et barre telles que dessinées en dernier (`display_sig`).
+    drawn_sig: [i64; 3],
     /// Mesure : envoi du dernier saut, et durées appui → reprise de l'image.
     seek_clock: Option<Instant>,
     seek_times: Vec<f64>,
@@ -131,19 +134,23 @@ impl App {
         if external.is_none() {
             self.player.indexing = true;
         }
-        let (tx, waker) = (self.tx.clone(), self.waker);
+        let (tx, waker) = (self.tx.clone(), self.waker.clone());
         std::thread::spawn(move || {
-            // Images clés d'abord (index du fichier, ≈ 1 ms) : les sauts rapides marchent tout de
-            // suite, même pendant l'index des sous-titres.
-            let keyframes = if external.is_none() { std::fs::File::open(&path).map(bioplay_core::keyframes).unwrap_or_default() } else { Vec::new() };
+            // Images clés d'abord, envoyées seules (index du fichier, ≈ 1 ms) : les sauts rapides
+            // marchent tout de suite, même pendant un long index des sous-titres.
+            if external.is_none() {
+                let keyframes = std::fs::File::open(&path).map(bioplay_core::keyframes).unwrap_or_default();
+                let _ = tx.send(Message::Keyframes { path: path.clone(), keyframes });
+                waker.wake();
+            }
             let tracks = std::fs::File::open(&path).ok().and_then(|f| bioplay_core::index(f).ok()).unwrap_or_default();
-            let _ = tx.send(Message::Indexed { path, external, tracks, keyframes });
+            let _ = tx.send(Message::Indexed { path, external, tracks });
             waker.wake();
         });
     }
 
     fn pick(&self) {
-        let (tx, waker) = (self.tx.clone(), self.waker);
+        let (tx, waker) = (self.tx.clone(), self.waker.clone());
         std::thread::spawn(move || {
             let f = rfd::FileDialog::new()
                 .set_title(tr("Ouvrir une vidéo", "Open a video"))
@@ -166,7 +173,7 @@ impl App {
     }
 
     fn pick_folder(&self) {
-        let (tx, waker) = (self.tx.clone(), self.waker);
+        let (tx, waker) = (self.tx.clone(), self.waker.clone());
         std::thread::spawn(move || {
             if let Some(f) = rfd::FileDialog::new().set_title(tr("Ajouter un dossier", "Add a folder")).pick_folder() {
                 let _ = tx.send(Message::Folder(f));
@@ -228,6 +235,10 @@ impl App {
         }
         if !down {
             return;
+        }
+        // Touche : position exacte avant de calculer un saut (réplique suivante, 10 s).
+        if !self.player.mpv.is_seeking() && self.player.mpv.target.get().is_none_or(|t| t.done) {
+            self.player.mpv.refresh_position();
         }
         let p = &mut self.player;
         match name {
@@ -308,6 +319,7 @@ impl App {
             }
             // Saut venu d'un raccourci mpv (flèches haut/bas…) : annoncé dans une bulle.
             mpv::Change::Restarted => {
+                self.dirty = true; // image retenue pendant le saut
                 if let Some(t) = self.seek_clock.take() {
                     self.seek_times.push(t.elapsed().as_secs_f64() * 1000.0);
                 }
@@ -398,7 +410,12 @@ impl App {
 
     fn on_message(&mut self, m: Message) {
         match m {
-            Message::Indexed { path, external, tracks, keyframes } => {
+            Message::Keyframes { path, keyframes } => {
+                if path == self.player.mpv.state.path {
+                    self.player.keyframes = keyframes;
+                }
+            }
+            Message::Indexed { path, external, tracks } => {
                 let p = &mut self.player;
                 match external {
                     Some(f) => {
@@ -409,7 +426,6 @@ impl App {
                     }
                     None if path == p.mpv.state.path => {
                         p.embedded = tracks.into_iter().map(|t| (t.number as i64, t)).collect();
-                        p.keyframes = keyframes;
                         p.indexing = false;
                     }
                     None => {}
@@ -469,24 +485,51 @@ impl App {
         let pos = self.player.mpv.position();
         let dur = s.duration.max(0.001);
         let px = s.osd_w.max(1.0) / dur;
-        let sec = pos.floor() + 1.0 - pos;
-        let rem = (dur - pos).fract();
-        let pixel = ((pos * px).floor() + 1.0) / px - pos;
-        let dt = sec.min(if rem > 0.001 { rem } else { 1.0 }).min(pixel).max(0.004) / s.speed;
-        Some(self.last_frame.max(Instant::now() - Duration::from_secs(1)) + Duration::from_secs_f64(dt).min(Duration::from_secs(1)))
+        // Temps jusqu'au prochain entier (secondes écoulées) ; le restant change, lui, quand sa
+        // partie fractionnaire s'épuise. Une valeur pile sur la limite compte pour un tour entier.
+        let up = |v: f64| {
+            let f = 1.0 - v.fract();
+            if f < 1e-4 { 1.0 } else { f }
+        };
+        let down = |v: f64| {
+            let f = v.fract();
+            if f < 1e-4 { 1.0 } else { f }
+        };
+        let pixel = up(pos * px) / px;
+        let dt = up(pos).min(down(dur - pos)).min(pixel).max(0.004) / s.speed;
+        Some(Instant::now() + Duration::from_secs_f64(dt).min(Duration::from_secs(1)))
+    }
+
+    /// Un saut précis n'est pas fini : pas d'image d'interface d'ici là. Au plus 1,5 s, au cas
+    /// où mpv ne signalerait pas la reprise.
+    fn seek_hold(&self) -> bool {
+        self.player.has_file() && self.player.mpv.target.get().is_some_and(|t| t.exact && !t.done && t.sent.elapsed() < Duration::from_millis(1500))
+    }
+
+    /// Ce que montrent l'horloge et la barre : secondes écoulées et restantes, pixel de la barre.
+    fn display_sig(&self) -> [i64; 3] {
+        let s = &self.player.mpv.state;
+        let pos = self.player.mpv.position();
+        let dur = s.duration.max(0.001);
+        let px = s.osd_w.max(1.0) / dur;
+        [pos.floor() as i64, (dur - pos).floor() as i64, (pos * px).floor() as i64]
     }
 
     fn frame(&mut self) {
         self.frames += 1;
         // Position déduite (non suivie) mise à jour pour l'affichage ; cache relu, commandes
         // visibles seulement (une lecture brève par image, hors saut).
-        let pos = self.player.mpv.position();
-        self.player.mpv.state.position = pos;
+        // Commandes visibles (≈ 4 images/s) : position et cache relus chez mpv, ce qui recale aussi
+        // la position déduite (un blocage de lecture la ferait sinon dériver).
         if self.visible && self.player.has_file() && !self.player.mpv.is_seeking() {
+            self.player.mpv.refresh_position();
             if let Some(c) = self.player.mpv.get("demuxer-cache-time").and_then(|v| v.parse::<f64>().ok()) {
                 self.player.mpv.state.cached = c;
             }
         }
+        let pos = self.player.mpv.position();
+        self.player.mpv.state.position = pos;
+        self.drawn_sig = self.display_sig();
         let s = &self.player.mpv.state;
         let (w, h, scale) = (s.osd_w as f32, s.osd_h as f32, s.scale as f32);
         if w < 1.0 || h < 1.0 {
@@ -668,7 +711,18 @@ impl App {
             if let Some(l) = limit {
                 wake = wake.min(now + l);
             }
-            let timeout = if self.dirty { 0.0 } else { wake.saturating_duration_since(now).as_secs_f64() };
+            // Saut en cours (lecture) : l'interface attend la nouvelle image. Redessiner pendant
+            // qu'un saut précis vide la file de mpv lui fait afficher du noir (clignotement).
+            let hold = self.seek_hold();
+            // Retenue : on dort jusqu'à la reprise (événement de mpv), au plus 1,5 s ; les réveils
+            // prévus (fondus, horloge) attendront.
+            if let Some(t) = self.player.mpv.target.get().filter(|_| hold) {
+                wake = t.sent + Duration::from_millis(1500);
+                if let Some(l) = limit {
+                    wake = wake.min(now + l);
+                }
+            }
+            let timeout = if self.dirty && !hold { 0.0 } else { wake.saturating_duration_since(now).as_secs_f64() };
             self.wakeups += 1;
             for c in self.player.mpv.wait(timeout) {
                 if matches!(c, mpv::Change::Shutdown) {
@@ -679,9 +733,13 @@ impl App {
             while let Ok(m) = self.rx.try_recv() {
                 self.on_message(m);
             }
+            // Réveil prévu : redessin seulement si l'affichage change vraiment (une position
+            // recalée peut avancer ou retarder l'instant prévu de quelques millisecondes).
             if self.change_at.is_some_and(|t| t <= Instant::now()) {
                 self.change_at = None;
-                self.dirty = true;
+                if self.player.panel.is_some() || self.display_sig() != self.drawn_sig {
+                    self.dirty = true;
+                }
             }
             self.overlay.release(&self.player.mpv);
             if self.overlay_wait.is_some_and(|d| self.player.mpv.overlay_done.get() > d) {
@@ -697,7 +755,7 @@ impl App {
             if self.next_frame.is_some_and(|t| t <= now) || (self.visible && hide_at <= now) {
                 self.dirty = true;
             }
-            if self.dirty {
+            if self.dirty && !self.seek_hold() {
                 self.dirty = false;
                 self.frame();
             }
@@ -765,6 +823,7 @@ fn main() {
         last_frame: Instant::now(),
         overlay_wait: None,
         change_at: None,
+        drawn_sig: [0; 3],
         seek_clock: None,
         seek_times: Vec::new(),
         visible: false,
@@ -788,6 +847,10 @@ fn main() {
             app.player.mpv.command(&["loadfile", f, "append"]);
         }
     }
+    // Bibliothèque relue en fond, mais pas pendant la lecture d'un fichier donné au lancement :
+    // en pause dès le départ (sans quoi la relecture concurrencerait l'ouverture du film).
+    app.player.library.set_hold(!files.is_empty());
+    app.player.library.refresh();
     if let Ok(mode) = std::env::var("BIOPLAY_BENCH") {
         if mode == "play" {
             bench_play(&mut app);

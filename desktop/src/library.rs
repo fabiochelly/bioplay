@@ -14,7 +14,7 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver, Sender};
 use std::sync::Arc;
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 
 use crate::mpv::Waker;
 
@@ -113,7 +113,9 @@ pub struct Library {
     tx: Sender<Event>,
     rx: Receiver<Event>,
     waker: Waker,
-    hold: Arc<AtomicBool>,
+    /// Pause du travail de fond pendant la lecture : le fil dort (sans réveil périodique) tant
+    /// qu'elle dure.
+    hold: Hold,
     busy: Arc<AtomicBool>,
     again: bool,
     /// Arborescence de l'endroit affiché, gardée tant que la liste ne change pas.
@@ -142,20 +144,24 @@ impl Library {
             tx,
             rx,
             waker,
-            hold: Arc::new(AtomicBool::new(false)),
+            hold: Arc::new((std::sync::Mutex::new(false), std::sync::Condvar::new())),
             busy: Arc::new(AtomicBool::new(false)),
             again: false,
             images: HashMap::new(),
             shelf_cache: None,
             version: 0,
         };
-        lib.refresh();
         lib
     }
 
     /// Pendant la lecture : la relecture et les miniatures attendent.
     pub fn set_hold(&self, on: bool) {
-        self.hold.store(on, Ordering::Relaxed);
+        let (m, cv) = &*self.hold;
+        let mut g = m.lock().unwrap_or_else(|e| e.into_inner());
+        if *g != on {
+            *g = on;
+            cv.notify_all();
+        }
     }
 
     pub fn toggle_view(&mut self) {
@@ -180,11 +186,6 @@ impl Library {
         self.version += 1;
         self.save_folders();
         self.refresh();
-    }
-
-    /// Dossiers surveillés qui contiennent au moins une vidéo.
-    fn roots(&self) -> Vec<String> {
-        self.folders.iter().map(|f| f.to_string_lossy().into_owned()).filter(|k| self.videos.iter().any(|v| &v.folder == k)).collect()
     }
 
     /// Contenu d'un endroit, recalculé seulement quand l'endroit ou la liste change.
@@ -295,7 +296,7 @@ impl Library {
         self.scanning = true;
         let roots = self.folders.clone();
         let old = self.videos.clone();
-        let (tx, waker, hold, busy) = (self.tx.clone(), self.waker, self.hold.clone(), self.busy.clone());
+        let (tx, waker, hold, busy) = (self.tx.clone(), self.waker.clone(), self.hold.clone(), self.busy.clone());
         std::thread::spawn(move || {
             wait(&hold);
             let mut found = Vec::new();
@@ -425,9 +426,13 @@ impl Library {
     }
 }
 
-fn wait(hold: &AtomicBool) {
-    while hold.load(Ordering::Relaxed) {
-        std::thread::sleep(Duration::from_secs(1));
+type Hold = Arc<(std::sync::Mutex<bool>, std::sync::Condvar)>;
+
+fn wait(hold: &Hold) {
+    let (m, cv) = &**hold;
+    let mut g = m.lock().unwrap_or_else(|e| e.into_inner());
+    while *g {
+        g = cv.wait(g).unwrap_or_else(|e| e.into_inner());
     }
 }
 

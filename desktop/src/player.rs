@@ -58,6 +58,8 @@ pub struct Player {
     pub scrub: Option<Scrub>,
     pub activity: Instant,
     pub recents: Vec<Recent>,
+    /// Position par chemin (index de `recents`) : lue pour chaque miniature à chaque image.
+    pub positions: HashMap<String, f64>,
     pub library: crate::library::Library,
     /// Miniatures de l'accueil à poser cette image (incrustations mpv sous l'interface).
     pub thumbs: Vec<crate::overlay::Thumb>,
@@ -69,8 +71,6 @@ pub struct Player {
     /// Dernières valeurs annoncées : un message seulement quand l'utilisateur change quelque chose.
     pub shown: HashMap<&'static str, f64>,
     pub loaded_at: Option<Instant>,
-    /// Touche transmise à mpv et position à cet instant : un saut qui suit est annoncé.
-    pub key_seek: Option<(Instant, f64)>,
     /// Taille des sous-titres (facteur mpv `sub-scale`) et hauteur ajoutée à leur marge basse
     /// (unités mpv, image de 720 lignes). Communes à toutes les vidéos, mémorisées.
     pub sub_scale: f64,
@@ -95,6 +95,8 @@ pub fn message_alpha(age: f32) -> f32 {
 impl Player {
     pub fn new(mpv: Mpv) -> Self {
         let library = crate::library::Library::new(mpv.waker());
+        let recents = load_recents();
+        let positions = recents.iter().rev().map(|r| (r.path.clone(), r.position)).collect();
         Self {
             library,
             folders_open: false,
@@ -112,11 +114,11 @@ impl Player {
             panel: None,
             scrub: None,
             activity: Instant::now(),
-            recents: load_recents(),
+            recents,
+            positions,
             over_ui: false,
             shown: HashMap::new(),
             loaded_at: None,
-            key_seek: None,
             sub_scale: 1.0,
             sub_lift: 0,
             sub_preview: None,
@@ -351,11 +353,15 @@ impl Player {
             return;
         }
         self.mpv.command_sync(&["write-watch-later-config"]);
+        if !self.mpv.is_seeking() {
+            self.mpv.refresh_position();
+        }
         let s = &self.mpv.state;
         let path = s.path.clone();
         let name = Path::new(&path).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| s.title.clone());
         let (pos, dur) = (self.mpv.position(), s.duration);
         self.recents.retain(|r| r.path != path);
+        self.positions.insert(path.clone(), pos);
         self.recents.insert(0, Recent { path, name, position: pos, duration: dur });
         // Gardée longtemps : c'est elle qui donne l'avancée de chaque miniature de l'accueil.
         self.recents.truncate(5000);
@@ -397,7 +403,6 @@ fn load_recents() -> Vec<Recent> {
                 duration: f[3].parse().unwrap_or(0.0),
             })
         })
-        .filter(|r| Path::new(&r.path).exists())
         .collect()
 }
 

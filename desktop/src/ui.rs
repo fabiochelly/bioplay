@@ -1190,7 +1190,7 @@ fn empty(ui: &mut Ui, body: Rect, message: &str, add: bool, actions: &mut Vec<Ac
 
 /// Position mémorisée d'une vidéo (secondes), d'après les dernières lectures.
 fn position(p: &Player, path: &str) -> f64 {
-    p.recents.iter().find(|r| r.path == path).map_or(0.0, |r| r.position)
+    p.positions.get(path).copied().unwrap_or(0.0)
 }
 
 /// Miniature à coins arrondis, durée en haut à droite et avancée de lecture en bas.
@@ -1205,10 +1205,12 @@ fn thumbnail(ui: &mut Ui, p: &mut Player, v: &crate::library::Video, r: Rect, ho
             icon(&painter, r.center(), 26.0, Icon::Play, FAINT);
         }
     }
+    // Survol : liseré bleu d'accent (comme les boutons), l'image garde sa luminosité.
     if hovered {
-        painter.rect_filled(r, cr, Color32::from_white_alpha(22));
+        painter.rect_stroke(r, cr, Stroke::new(2.5, ACCENT), StrokeKind::Inside);
+    } else {
+        painter.rect_stroke(r, cr, Stroke::new(1.0, Color32::from_white_alpha(34)), StrokeKind::Inside);
     }
-    painter.rect_stroke(r, cr, Stroke::new(1.0, Color32::from_white_alpha(if hovered { 90 } else { 34 })), StrokeKind::Inside);
     if v.duration > 0.0 {
         let g = painter.layout_no_wrap(clock(v.duration), semi(11.0), INK);
         let b = Rect::from_min_size(pos2(r.max.x - 8.0 - g.size().x - 12.0, r.min.y + 7.0), g.size() + vec2(12.0, 3.0));
@@ -1374,7 +1376,7 @@ fn list(ui: &mut Ui, p: &mut Player, shelf: &crate::library::Shelf, body: Rect, 
                     if resp.hovered() {
                         ui.painter().rect_filled(row, CornerRadius::same(16), Color32::from_white_alpha(14));
                     }
-                    thumbnail(ui, p, &v, t, false);
+                    thumbnail(ui, p, &v, t, resp.hovered());
                     let g = title_galley(ui, v.title(), row.max.x - tx - 12.0, 15.0);
                     let gh = g.size().y;
                     let top = row.center().y - (gh + 20.0) / 2.0;

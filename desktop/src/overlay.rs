@@ -218,7 +218,8 @@ impl Overlay {
                         ((r.max.x * ppp).ceil() as i32 + 1 - x0).clamp(0, bw as i32),
                         ((r.max.y * ppp).ceil() as i32 + 1 - y0).clamp(0, bh as i32),
                     ];
-                    (mesh_hash(p.clip_rect, m), px)
+                    // Empreinte du maillage seulement sans celles des formes (tests) : coûteuse.
+                    (if marks.is_none() { mesh_hash(p.clip_rect, m) } else { 0 }, px)
                 }
                 _ => (0, [0; 4]),
             })
@@ -341,7 +342,7 @@ impl Overlay {
                 let b0 = (bi * band_rows) as i32;
                 let rows = (band.len() / stride) as i32;
                 let (placed, prims, prims_info) = (&placed, prims, &prims_info);
-                sc.spawn(move || {
+                let mut job = move || {
                     // Lignes de la zone dans cette bande.
                     let zy0 = zone[1].max(b0);
                     let zy1 = zone[3].min(b0 + rows);
@@ -416,7 +417,13 @@ impl Overlay {
                             canvas.triangle(v, tex, ppp, clip);
                         }
                     }
-                });
+                };
+                // Une seule bande (petite zone : l'horloge, un bouton) : dessinée ici, sans fil.
+                if threads == 1 {
+                    job();
+                } else {
+                    sc.spawn(job);
+                }
             }
         });
         self.last = Some(Last { area, buffer: self.next, backdrop, prims: all_info });

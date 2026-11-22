@@ -34,13 +34,11 @@ extern "C" {
     fn mpv_initialize(h: *mut mpv_handle) -> c_int;
     fn mpv_terminate_destroy(h: *mut mpv_handle);
     fn mpv_set_option_string(h: *mut mpv_handle, name: *const c_char, data: *const c_char) -> c_int;
-    fn mpv_set_property_string(h: *mut mpv_handle, name: *const c_char, data: *const c_char) -> c_int;
     fn mpv_set_property(h: *mut mpv_handle, name: *const c_char, format: c_int, data: *mut c_void) -> c_int;
     fn mpv_get_property_string(h: *mut mpv_handle, name: *const c_char) -> *mut c_char;
     fn mpv_command_async(h: *mut mpv_handle, reply: u64, args: *mut *const c_char) -> c_int;
     fn mpv_command(h: *mut mpv_handle, args: *mut *const c_char) -> c_int;
     fn mpv_observe_property(h: *mut mpv_handle, reply: u64, name: *const c_char, format: c_int) -> c_int;
-    fn mpv_unobserve_property(h: *mut mpv_handle, reply: u64) -> c_int;
     fn mpv_set_property_async(h: *mut mpv_handle, reply: u64, name: *const c_char, format: c_int, data: *mut c_void) -> c_int;
     fn mpv_wait_event(h: *mut mpv_handle, timeout: c_double) -> *mut Event;
     fn mpv_free(data: *mut c_void);
@@ -64,13 +62,18 @@ const EVENT_SEEK: c_int = 20;
 const EVENT_PLAYBACK_RESTART: c_int = 21;
 const EVENT_PROPERTY_CHANGE: c_int = 22;
 
-#[derive(Clone, Copy)]
-pub struct Waker(usize);
+/// Réveille la boucle depuis un autre fil (index, sélecteur de fichiers, bibliothèque). Le
+/// lecteur peut avoir été détruit entre-temps (fermeture pendant un index) : l'adresse est remise
+/// à zéro sous verrou avant la destruction, et `wake` ne fait alors plus rien.
+#[derive(Clone)]
+pub struct Waker(std::sync::Arc<std::sync::Mutex<usize>>);
 
 impl Waker {
     pub fn wake(&self) {
-        // mpv_wakeup est sûr depuis n'importe quel fil tant que le lecteur existe.
-        unsafe { mpv_wakeup(self.0 as *mut mpv_handle) };
+        let h = self.0.lock().unwrap_or_else(|e| e.into_inner());
+        if *h != 0 {
+            unsafe { mpv_wakeup(*h as *mut mpv_handle) };
+        }
     }
 }
 
@@ -101,10 +104,8 @@ pub struct State {
     pub tracks: Vec<Track>,
     pub aid: Option<i64>,
     pub sid: Option<i64>,
-    pub fullscreen: bool,
     pub title: String,
     pub path: String,
-    pub hwdec: String,
     pub idle: bool,
     pub zoom: f64,
     /// Fenêtre (pixels) et position de l'image vidéo dedans (marges des bandes noires).
@@ -132,13 +133,8 @@ pub enum Change {
     Property(&'static str),
 }
 
-/// Jamais suivies (voir `position`) : gardées dans la liste pour leur nom seulement.
-const POSITION_PROPS: [&str; 2] = ["time-pos", "demuxer-cache-time"];
-
 const OBSERVED: &[(&str, c_int)] = &[
-    ("time-pos", FORMAT_DOUBLE),
     ("duration", FORMAT_DOUBLE),
-    ("demuxer-cache-time", FORMAT_DOUBLE),
     ("pause", FORMAT_FLAG),
     ("speed", FORMAT_DOUBLE),
     ("volume", FORMAT_DOUBLE),
@@ -147,10 +143,8 @@ const OBSERVED: &[(&str, c_int)] = &[
     ("track-list", FORMAT_STRING),
     ("aid", FORMAT_STRING),
     ("sid", FORMAT_STRING),
-    ("fullscreen", FORMAT_FLAG),
     ("media-title", FORMAT_STRING),
     ("path", FORMAT_STRING),
-    ("hwdec-current", FORMAT_STRING),
     ("idle-active", FORMAT_FLAG),
     ("video-zoom", FORMAT_DOUBLE),
     ("osd-dimensions", FORMAT_STRING),
@@ -160,6 +154,8 @@ const OBSERVED: &[(&str, c_int)] = &[
 
 #[derive(Clone, Copy)]
 pub struct Target {
+    /// Saut précis (long : mpv vide sa file d'images, l'interface attend la reprise).
+    pub exact: bool,
     pub at: f64,
     pub landing: f64,
     pub sent: std::time::Instant,
@@ -168,6 +164,7 @@ pub struct Target {
 
 pub struct Mpv {
     h: *mut mpv_handle,
+    waker: Waker,
     pub state: State,
     /// Sauts lancés par bioplay (les autres viennent des raccourcis : annoncés dans une bulle).
     pub own_seeks: std::cell::Cell<u32>,
@@ -197,7 +194,7 @@ impl Mpv {
         if h.is_null() {
             return Err("mpv_create a échoué".into());
         }
-        let m = Self { h, state: State { speed: 1.0, scale: 1.0, ..Default::default() }, own_seeks: Default::default(), overlay_done: Default::default(), target: Default::default(), anchor: (0.0, std::time::Instant::now()), seeking: false };
+        let m = Self { h, waker: Waker(std::sync::Arc::new(std::sync::Mutex::new(h as usize))), state: State { speed: 1.0, scale: 1.0, ..Default::default() }, own_seeks: Default::default(), overlay_done: Default::default(), target: Default::default(), anchor: (0.0, std::time::Instant::now()), seeking: false };
         // mpv ouvre et dessine sa propre fenêtre en gpu-next : même image, même coût que mpv
         // (Dolby Vision et HDR compris). bioplay y ajoute son interface en superposition.
         for (k, v) in [
@@ -248,9 +245,7 @@ impl Mpv {
             m.set(k, v);
         }
         for (i, (name, f)) in OBSERVED.iter().enumerate() {
-            if !POSITION_PROPS.contains(name) {
-                unsafe { mpv_observe_property(h, i as u64, cs(name).as_ptr(), *f) };
-            }
+            unsafe { mpv_observe_property(h, i as u64, cs(name).as_ptr(), *f) };
         }
         Ok(m)
     }
@@ -277,6 +272,8 @@ impl Mpv {
         self.seeking
     }
 
+
+
     /// Relit la position chez mpv (appel bref, hors saut en cours).
     pub fn refresh_position(&mut self) {
         if let Some(v) = self.get("time-pos").and_then(|v| v.parse::<f64>().ok()) {
@@ -298,11 +295,6 @@ impl Mpv {
 
     pub fn set_f64(&self, k: &str, mut v: f64) {
         unsafe { mpv_set_property(self.h, cs(k).as_ptr(), FORMAT_DOUBLE, &mut v as *mut f64 as *mut c_void) };
-    }
-
-    pub fn set_flag(&self, k: &str, v: bool) {
-        let mut i: c_int = v as c_int;
-        unsafe { mpv_set_property(self.h, cs(k).as_ptr(), FORMAT_FLAG, &mut i as *mut c_int as *mut c_void) };
     }
 
     pub fn get(&self, k: &str) -> Option<String> {
@@ -345,7 +337,7 @@ impl Mpv {
         let max = if self.state.duration > 0.0 { self.state.duration } else { f64::MAX };
         let t = t.clamp(0.0, max);
         self.own_seeks.set(self.own_seeks.get() + 1);
-        self.target.set(Some(Target { at: t, landing: t, sent: std::time::Instant::now(), done: false }));
+        self.target.set(Some(Target { exact, at: t, landing: t, sent: std::time::Instant::now(), done: false }));
         self.command(&["seek", &format!("{t:.3}"), if exact { "absolute+exact" } else { "absolute+keyframes" }]);
     }
 
@@ -354,7 +346,7 @@ impl Mpv {
     /// la demande : on demande donc à peine après `key`.
     pub fn seek_keyframe(&self, key: f64, t: f64) {
         self.own_seeks.set(self.own_seeks.get() + 1);
-        self.target.set(Some(Target { at: t, landing: key, sent: std::time::Instant::now(), done: false }));
+        self.target.set(Some(Target { exact: false, at: t, landing: key, sent: std::time::Instant::now(), done: false }));
         self.command(&["seek", &format!("{:.3}", key + 0.001), "absolute+keyframes"]);
     }
 
@@ -362,7 +354,7 @@ impl Mpv {
     /// sens et cumule les appuis rapprochés.
     pub fn seek_relative_keyframe(&self, by: f64, t: f64) {
         self.own_seeks.set(self.own_seeks.get() + 1);
-        self.target.set(Some(Target { at: t, landing: t, sent: std::time::Instant::now(), done: false }));
+        self.target.set(Some(Target { exact: false, at: t, landing: t, sent: std::time::Instant::now(), done: false }));
         self.command(&["seek", &format!("{by:.3}"), "relative+keyframes"]);
     }
 
@@ -379,7 +371,7 @@ impl Mpv {
 
     /// Réveille `wait` depuis un autre fil (index des sous-titres prêt, fichier choisi…).
     pub fn waker(&self) -> Waker {
-        Waker(self.h as usize)
+        self.waker.clone()
     }
 
     /// Attend un événement de mpv (au plus `timeout` secondes), puis vide la file.
@@ -469,12 +461,7 @@ impl Mpv {
                 .then(|| unsafe { CStr::from_ptr(*(p.data as *const *const c_char)).to_string_lossy().into_owned() })
         };
         match name {
-            "time-pos" => {
-                s.position = double().unwrap_or(0.0);
-                self.anchor = (s.position, std::time::Instant::now());
-            }
             "duration" => s.duration = double().unwrap_or(0.0),
-            "demuxer-cache-time" => s.cached = double().unwrap_or(0.0),
             "speed" => s.speed = double().unwrap_or(1.0),
             "volume" => s.volume = double().unwrap_or(100.0),
             "sub-delay" => s.sub_delay = double().unwrap_or(0.0),
@@ -483,14 +470,12 @@ impl Mpv {
             "pause" => {
                 s.paused = flag().unwrap_or(false);
             }
-            "fullscreen" => s.fullscreen = flag().unwrap_or(false),
             "idle-active" => s.idle = flag().unwrap_or(false),
             "track-list" => s.tracks = string().map(|j| parse_tracks(&j)).unwrap_or_default(),
             "aid" => s.aid = string().and_then(|v| v.parse().ok()),
             "sid" => s.sid = string().and_then(|v| v.parse().ok()),
             "media-title" => s.title = string().unwrap_or_default(),
             "path" => s.path = string().unwrap_or_default(),
-            "hwdec-current" => s.hwdec = string().unwrap_or_default(),
             "display-hidpi-scale" => s.scale = double().filter(|v| *v > 0.0).unwrap_or(1.0),
             "osd-dimensions" => {
                 if let Some(v) = string().and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok()) {
@@ -514,6 +499,7 @@ impl Mpv {
 
 impl Drop for Mpv {
     fn drop(&mut self) {
+        *self.waker.0.lock().unwrap_or_else(|e| e.into_inner()) = 0;
         unsafe { mpv_terminate_destroy(self.h) };
     }
 }
@@ -581,7 +567,9 @@ pub fn track_detail(t: &Track) -> String {
 }
 
 pub fn language(code: &str) -> Option<String> {
-    let names: HashMap<&str, (&str, &str)> = [
+    // Table construite une fois (appelée à chaque image de la barre).
+    static NAMES: std::sync::OnceLock<HashMap<&'static str, (&'static str, &'static str)>> = std::sync::OnceLock::new();
+    let names = NAMES.get_or_init(|| [
         ("fr", ("Français", "French")),
         ("fre", ("Français", "French")),
         ("fra", ("Français", "French")),
@@ -620,7 +608,7 @@ pub fn language(code: &str) -> Option<String> {
         ("heb", ("Hébreu", "Hebrew")),
     ]
     .into_iter()
-    .collect();
+    .collect());
     if code.is_empty() || code == "und" {
         return None;
     }
