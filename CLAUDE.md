@@ -5,8 +5,8 @@ Lecteur vidéo minimal (Android + bureau) construit sur libmpv, interface « ver
 - `core/` : Rust, commun. Index de tous les sous-titres d'un fichier (MKV parcouru en sautant
   l'audio/vidéo ; SRT/ASS/VTT). `cargo test -p bioplay-core`, `cargo run --release --example dump -- f.mkv`.
   `keyframes()` : images clés lues dans les Cues (≈ 0,1 ms) ; le bureau saute dessus (≈ 30 ms au lieu
-  de 200-700 ms précis) : 10 s → toujours l'image clé la plus proche ; réplique → image clé entre
-  3 s avant et 0,15 s après, sinon précis. `--example keyframes|hits -- f.mkv`.
+  de 200-700 ms précis) : 10 s → toujours l'image clé la plus proche ; réplique (≤ 10 s) → précis,
+  image clé seulement dans les 500 ms qui précèdent. `--example keyframes|hits -- f.mkv`.
 - `app/` : Android (Kotlin + Compose), libmpv via `dev.jdtech.mpv:libmpv`. `./dev.sh` compile,
   installe sur l'émulateur et ouvre `samples/test.mkv` (copié dans `files/` de l'app via run-as).
 - `desktop/` : bureau (Rust). mpv ouvre et dessine SA fenêtre en gpu-next (même image et même coût

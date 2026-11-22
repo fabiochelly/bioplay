@@ -83,7 +83,7 @@ pub struct Player {
 pub const MESSAGE_LIFE: f32 = 1.05;
 
 /// Avance tolérée (s) sur le début d'une réplique pour sauter sur une image clé.
-const LINE_EARLY: f64 = 3.0;
+const LINE_EARLY: f64 = 0.5;
 pub const MESSAGE_IN: f32 = 0.08;
 pub const MESSAGE_OUT: f32 = 0.25;
 
@@ -248,12 +248,11 @@ impl Player {
         (ms < c.end).then(|| clone_cue(c))
     }
 
-    /// Début d'une réplique : sur une image clé s'il y en a une entre 3 s avant et 0,15 s après
-    /// (saut immédiat ; arriver un peu avant ne fait rien perdre), sinon saut précis (200 à 700 ms).
-    /// Répliques concernées : The Rookie 86 %, Moana 84 %, One Piece 71 % (2 s : 76, 74, 60 %).
+    /// Début d'une réplique : précis (la réplique doit être entendue en entier). Image clé
+    /// seulement si elle tombe dans les 500 ms qui précèdent (saut immédiat, rien de perdu).
     pub fn seek_line(&self, t: f64) {
         let k = &self.keyframes;
-        let i = k.partition_point(|&x| x <= t + 0.15);
+        let i = k.partition_point(|&x| x <= t);
         match i.checked_sub(1).map(|j| k[j]).filter(|&x| x >= t - LINE_EARLY) {
             Some(key) => self.mpv.seek_keyframe(key, t),
             None => self.mpv.seek(t, true),
@@ -306,7 +305,7 @@ impl Player {
             let ahead = (t - pos) * dir as f64;
             ahead > 0.05 && ahead <= 10.0
         });
-        // Réplique : image clé proche si possible. 10 s : toujours une image clé, et la bulle
+        // Réplique (à moins de 10 s) : précise. Sinon 10 s : toujours une image clé, et la bulle
         // montre le saut réel (+8 s, +13 s…).
         let target = match line {
             Some(t) => {
