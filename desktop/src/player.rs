@@ -42,6 +42,8 @@ pub struct Player {
     pub mpv: Mpv,
     /// Pistes intégrées, par numéro de piste du conteneur (`src-id`).
     pub embedded: HashMap<i64, SubIndex>,
+    /// Images clés de la vidéo (secondes, MKV) : sauts rapides quand l'une tombe près de la cible.
+    pub keyframes: Vec<f64>,
     /// Fichiers de sous-titres ajoutés, par nom donné à mpv.
     pub external: HashMap<String, SubIndex>,
     pub indexing: bool,
@@ -97,6 +99,7 @@ impl Player {
             thumbs: Vec::new(),
             mpv,
             embedded: HashMap::new(),
+            keyframes: Vec::new(),
             external: HashMap::new(),
             indexing: false,
             message: None,
@@ -242,13 +245,48 @@ impl Player {
         (ms < c.end).then(|| clone_cue(c))
     }
 
+    /// Début d'une réplique : sur une image clé s'il y en a une entre 2 s avant et 0,15 s après
+    /// (saut immédiat ; arriver un peu avant ne fait rien perdre), sinon saut précis.
+    /// Sur The Rookie : 76 % des répliques.
+    pub fn seek_line(&self, t: f64) {
+        let k = &self.keyframes;
+        let i = k.partition_point(|&x| x <= t + 0.15);
+        match i.checked_sub(1).map(|j| k[j]).filter(|&x| x >= t - 2.0) {
+            Some(key) => self.mpv.seek_keyframe(key, t),
+            None => self.mpv.seek(t, true),
+        }
+    }
+
+    /// Saut d'une durée (10 s, 1 min) depuis `from` : toujours sur une image clé (immédiat ; la
+    /// précision compte peu ici), la plus proche de la cible dans le bon sens.
+    pub fn seek_span(&self, from: f64, t: f64) {
+        let max = if self.mpv.state.duration > 0.0 { self.mpv.state.duration } else { f64::MAX };
+        let t = t.clamp(0.0, max);
+        let dir = if t >= from { 1.0 } else { -1.0 };
+        let k = &self.keyframes;
+        let i = k.partition_point(|&x| x < t);
+        // Voisines de la cible, puis plus loin dans le bon sens si elles sont du mauvais côté.
+        let around = k[i.saturating_sub(2)..(i + 2).min(k.len())].iter().copied();
+        let beyond = if dir > 0.0 { k[i.min(k.len())..].iter().copied().find(|&x| x > from + 1.0) } else { k[..i].iter().rev().copied().find(|&x| x < from - 1.0) };
+        let key = around
+            .chain(beyond)
+            .filter(|&x| (x - from) * dir > 1.0)
+            .min_by(|a, b| (*a - t).abs().total_cmp(&(*b - t).abs()));
+        match key {
+            Some(key) => self.mpv.seek_keyframe(key, key),
+            // Sans index (MP4…) : saut relatif de mpv à l'image clé, qui va dans le bon sens.
+            None if k.is_empty() => self.mpv.seek_relative_keyframe(t - from, t),
+            None => self.mpv.seek(t, false),
+        }
+    }
+
     /// Saut de ligne en ligne : exact grâce à l'index, sinon `sub-seek` de mpv.
     pub fn step_sub(&mut self, steps: i32) {
         if steps == 0 {
             return;
         }
         match self.cue_after(steps, self.mpv.pos()) {
-            Some(c) => self.mpv.seek(self.cue_time(&c), true),
+            Some(c) => self.seek_line(self.cue_time(&c)),
             None => {
                 self.mpv.own_seeks.set(self.mpv.own_seeks.get() + 1);
                 self.mpv.command(&["sub-seek", &steps.to_string()]);
@@ -258,17 +296,25 @@ impl Player {
 
     /// Flèches : saut à la ligne suivante (ou précédente), limité à 10 s. Sans index de
     /// sous-titres (MP4, AVI…), simple saut de 10 s.
-    pub fn step_line_or_ten(&mut self, dir: i32, repeat: bool) {
+    pub fn step_line_or_ten(&mut self, dir: i32) {
         let pos = self.mpv.pos();
         let ten = pos + 10.0 * dir as f64;
         let line = self.cue_after(dir, pos).map(|c| self.cue_time(&c)).filter(|t| {
             let ahead = (t - pos) * dir as f64;
             ahead > 0.05 && ahead <= 10.0
         });
-        // Touche maintenue, sauts de 10 s : à l'image clé (≈ 30 ms au lieu de 200 à 700 ms pour
-        // un saut précis), l'image suit le doigt ; un appui simple reste précis.
-        let target = line.unwrap_or(ten);
-        self.mpv.seek(target, line.is_some() || !repeat);
+        // Réplique : image clé proche si possible. 10 s : toujours une image clé, et la bulle
+        // montre le saut réel (+8 s, +13 s…).
+        let target = match line {
+            Some(t) => {
+                self.seek_line(t);
+                t
+            }
+            None => {
+                self.seek_span(pos, ten);
+                self.mpv.target.get().map_or(ten, |t| t.at)
+            }
+        };
         let tr = crate::i18n::tr;
         let detail = match (line.is_some(), dir > 0) {
             (true, true) => tr("Sous-titre suivant", "Next subtitle").to_string(),

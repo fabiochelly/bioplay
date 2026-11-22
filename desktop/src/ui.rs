@@ -167,8 +167,10 @@ fn surface(ctx: &egui::Context, p: &mut Player, screen: Rect) {
                     if s.zone == Zone::Line && s.cue.is_none() {
                         p.mpv.own_seeks.set(p.mpv.own_seeks.get() + 1);
                         p.mpv.command(&["sub-seek", &s.steps.to_string()]);
+                    } else if s.zone == Zone::Line {
+                        p.seek_line(s.target);
                     } else {
-                        p.mpv.seek(s.target, true);
+                        p.seek_span(s.from, s.target);
                     }
                 } else {
                     p.mpv.seek(s.from, true);
@@ -958,7 +960,7 @@ fn list_panel(ui: &mut Ui, p: &mut Player, max_height: f32) {
     }
     if let Some(t) = seek {
         let d = p.mpv.state.sub_delay;
-        p.mpv.seek(t + d, true);
+        p.seek_line(t + d);
     }
 }
 

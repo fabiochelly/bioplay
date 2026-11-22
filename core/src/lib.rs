@@ -29,6 +29,16 @@ pub fn index(file: File) -> io::Result<Vec<Track>> {
     Ok(text::index(&bytes))
 }
 
+/// Instants (secondes) des images clés d'un MKV, d'après son index : sauts rapides quand une
+/// image clé tombe assez près de la cible. Vide pour les autres formats.
+pub fn keyframes(file: File) -> Vec<f64> {
+    let Ok(mut r) = reader::Reader::new(file) else { return Vec::new() };
+    if r.size >= 4 && r.peek(4).is_ok_and(|b| b == [0x1A, 0x45, 0xDF, 0xA3]) {
+        return mkv::keyframes(&mut r).unwrap_or_default();
+    }
+    Vec::new()
+}
+
 pub fn index_encoded(file: File) -> String {
     match std::panic::catch_unwind(move || index(file)) {
         Ok(Ok(mut tracks)) => model::encode(&mut tracks),

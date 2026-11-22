@@ -39,6 +39,7 @@ const SEEK_ID: u32 = 0x53AB;
 const SEEK_POSITION: u32 = 0x53AC;
 const CUES: u32 = 0x1C53BB6B;
 const CUE_POINT: u32 = 0xBB;
+const CUE_TIME: u32 = 0xB3;
 const CUE_TRACK_POSITIONS: u32 = 0xB7;
 const CUE_TRACK: u32 = 0xF7;
 const CUE_CLUSTER_POSITION: u32 = 0xF1;
@@ -530,4 +531,112 @@ mod tests {
             }
         }
     }
+}
+
+/// Instants (secondes) des images clés de la vidéo, lus dans l'index du fichier (Cues) : quelques
+/// centaines de Ko au plus, sans parcourir le film. Vide sans index ou sans piste vidéo.
+pub fn keyframes(r: &mut Reader) -> io::Result<Vec<f64>> {
+    let h = header(r)?;
+    if h.id != EBML {
+        return Ok(Vec::new());
+    }
+    r.skip(h.size.unwrap_or(0));
+    let seg = loop {
+        let h = header(r)?;
+        if h.id == SEGMENT {
+            break h;
+        }
+        r.skip(h.size.unwrap_or(0));
+    };
+    let seg_start = r.pos;
+    let seg_end = seg.size.map(|s| r.pos + s).unwrap_or(r.size).min(r.size);
+    let (mut scale, mut video, mut cues_pos) = (1_000_000u64, None, None);
+    while r.pos < seg_end {
+        let at = r.pos;
+        let Ok(h) = header(r) else { break };
+        let start = r.pos;
+        match h.id {
+            INFO => children(r, h.size, |r, h| {
+                if h.id == TIMESTAMP_SCALE {
+                    scale = uint(r, h.size.unwrap_or(0))?;
+                }
+                Ok(())
+            })?,
+            TRACKS => children(r, h.size, |r, h| {
+                if h.id == TRACK_ENTRY {
+                    let (mut n, mut kind) = (0, 0);
+                    children(r, h.size, |r, h| {
+                        match h.id {
+                            TRACK_NUMBER => n = uint(r, h.size.unwrap_or(0))?,
+                            TRACK_TYPE => kind = uint(r, h.size.unwrap_or(0))?,
+                            _ => {}
+                        }
+                        Ok(())
+                    })?;
+                    if kind == 1 && video.is_none() {
+                        video = Some(n);
+                    }
+                }
+                Ok(())
+            })?,
+            SEEK_HEAD => children(r, h.size, |r, h| {
+                if h.id != SEEK {
+                    return Ok(());
+                }
+                let (mut id, mut pos) = (0u64, None);
+                children(r, h.size, |r, h| {
+                    match h.id {
+                        SEEK_ID => id = uint(r, h.size.unwrap_or(0))?,
+                        SEEK_POSITION => pos = Some(uint(r, h.size.unwrap_or(0))?),
+                        _ => {}
+                    }
+                    Ok(())
+                })?;
+                if id == CUES as u64 {
+                    cues_pos = pos;
+                }
+                Ok(())
+            })?,
+            CUES => cues_pos = Some(at - seg_start),
+            CLUSTER => break, // en-têtes lus : le reste est le film
+            _ => {}
+        }
+        match h.size {
+            Some(s) => r.pos = start + s,
+            None => break,
+        }
+    }
+    let (Some(v), Some(cp)) = (video, cues_pos) else { return Ok(Vec::new()) };
+    r.pos = seg_start + cp;
+    let h = header(r)?;
+    if h.id != CUES {
+        return Ok(Vec::new());
+    }
+    let mut out = Vec::new();
+    children(r, h.size, |r, h| {
+        if h.id != CUE_POINT {
+            return Ok(());
+        }
+        let (mut t, mut mine) = (None, false);
+        children(r, h.size, |r, h| {
+            match h.id {
+                CUE_TIME => t = Some(uint(r, h.size.unwrap_or(0))?),
+                CUE_TRACK_POSITIONS => children(r, h.size, |r, h| {
+                    if h.id == CUE_TRACK && uint(r, h.size.unwrap_or(0))? == v {
+                        mine = true;
+                    }
+                    Ok(())
+                })?,
+                _ => {}
+            }
+            Ok(())
+        })?;
+        if let (Some(t), true) = (t, mine) {
+            out.push(t as f64 * scale as f64 / 1e9);
+        }
+        Ok(())
+    })?;
+    out.sort_by(|a, b| a.total_cmp(b));
+    out.dedup();
+    Ok(out)
 }

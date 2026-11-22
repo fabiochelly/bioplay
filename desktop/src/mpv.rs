@@ -153,6 +153,14 @@ const OBSERVED: &[(&str, c_int)] = &[
     ("display-hidpi-scale", FORMAT_DOUBLE),
 ];
 
+#[derive(Clone, Copy)]
+pub struct Target {
+    pub at: f64,
+    pub landing: f64,
+    pub sent: std::time::Instant,
+    pub done: bool,
+}
+
 pub struct Mpv {
     h: *mut mpv_handle,
     pub state: State,
@@ -163,7 +171,10 @@ pub struct Mpv {
     /// Cible du dernier saut lancé par bioplay, tant qu'il n'est pas terminé.
     /// (cible, envoi, terminé) : mpv fond les sauts rapprochés, si bien qu'une fin de saut
     /// peut précéder un saut encore en file ; la cible reste donc valable une seconde.
-    pub target: std::cell::Cell<Option<(f64, std::time::Instant, bool)>>,
+    /// Avec un saut à l'image clé, l'image atteinte (`landing`) précède un peu la cible : tant
+    /// que la lecture n'a pas quitté cet intervalle, la cible reste la référence (sinon
+    /// « sous-titre suivant » viserait de nouveau la même réplique).
+    pub target: std::cell::Cell<Option<Target>>,
 }
 
 fn cs(s: &str) -> CString {
@@ -291,16 +302,35 @@ impl Mpv {
         let max = if self.state.duration > 0.0 { self.state.duration } else { f64::MAX };
         let t = t.clamp(0.0, max);
         self.own_seeks.set(self.own_seeks.get() + 1);
-        self.target.set(Some((t, std::time::Instant::now(), false)));
+        self.target.set(Some(Target { at: t, landing: t, sent: std::time::Instant::now(), done: false }));
         self.command(&["seek", &format!("{t:.3}"), if exact { "absolute+exact" } else { "absolute+keyframes" }]);
+    }
+
+    /// Saut rapide sur l'image clé `key` (≈ 30 ms au lieu de 200 à 700 ms pour un saut précis),
+    /// pour viser `t` qui en est tout près. Un saut absolu à l'image clé va à celle qui précède
+    /// la demande : on demande donc à peine après `key`.
+    pub fn seek_keyframe(&self, key: f64, t: f64) {
+        self.own_seeks.set(self.own_seeks.get() + 1);
+        self.target.set(Some(Target { at: t, landing: key, sent: std::time::Instant::now(), done: false }));
+        self.command(&["seek", &format!("{:.3}", key + 0.001), "absolute+keyframes"]);
+    }
+
+    /// Saut relatif à l'image clé (fichiers sans index d'images clés) : mpv le fait dans le bon
+    /// sens et cumule les appuis rapprochés.
+    pub fn seek_relative_keyframe(&self, by: f64, t: f64) {
+        self.own_seeks.set(self.own_seeks.get() + 1);
+        self.target.set(Some(Target { at: t, landing: t, sent: std::time::Instant::now(), done: false }));
+        self.command(&["seek", &format!("{by:.3}"), "relative+keyframes"]);
     }
 
     /// Position d'où partir pour un saut relatif : la cible du saut en cours s'il y en a un
     /// (sinon des appuis rapprochés viseraient tous le même instant), sinon la position.
     pub fn pos(&self) -> f64 {
+        let p = self.state.position;
         match self.target.get() {
-            Some((t, at, done)) if !done || at.elapsed() < std::time::Duration::from_secs(1) => t,
-            _ => self.state.position,
+            Some(t) if !t.done || t.sent.elapsed() < std::time::Duration::from_secs(1) => t.at,
+            Some(t) if p >= t.at.min(t.landing) - 0.1 && p <= t.at.max(t.landing) + 0.1 => t.at,
+            _ => p,
         }
     }
 
@@ -349,8 +379,8 @@ impl Mpv {
             EVENT_END_FILE => out.push(Change::Ended),
             EVENT_SEEK => out.push(Change::Seeking),
             EVENT_PLAYBACK_RESTART => {
-                if let Some((t, at, _)) = self.target.get() {
-                    self.target.set(Some((t, at, true)));
+                if let Some(t) = self.target.get() {
+                    self.target.set(Some(Target { done: true, ..t }));
                 }
                 out.push(Change::Restarted)
             }

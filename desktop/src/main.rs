@@ -58,7 +58,7 @@ const WHEEL_MOTION: Duration = Duration::from_millis(350);
 const SUB_MARGIN: i32 = 46;
 
 enum Message {
-    Indexed { path: String, external: Option<String>, tracks: Vec<bioplay_core::Track> },
+    Indexed { path: String, external: Option<String>, tracks: Vec<bioplay_core::Track>, keyframes: Vec<f64> },
     Picked(String),
     Folder(PathBuf),
 }
@@ -84,6 +84,9 @@ struct App {
     shown: [f64; 4],
     /// Image en attente : `overlay_done` au moment où mpv n'avait pas encore lu le tampon.
     overlay_wait: Option<u64>,
+    /// Mesure : envoi du dernier saut, et durées appui → reprise de l'image.
+    seek_clock: Option<Instant>,
+    seek_times: Vec<f64>,
     /// Aperçu des sous-titres affiché (incrustation mpv).
     preview_on: bool,
     /// La lecture tournait à l'ouverture du tiroir : elle reprend à sa fermeture.
@@ -130,8 +133,11 @@ impl App {
         }
         let (tx, waker) = (self.tx.clone(), self.waker);
         std::thread::spawn(move || {
+            // Images clés d'abord (index du fichier, ≈ 1 ms) : les sauts rapides marchent tout de
+            // suite, même pendant l'index des sous-titres.
+            let keyframes = if external.is_none() { std::fs::File::open(&path).map(bioplay_core::keyframes).unwrap_or_default() } else { Vec::new() };
             let tracks = std::fs::File::open(&path).ok().and_then(|f| bioplay_core::index(f).ok()).unwrap_or_default();
-            let _ = tx.send(Message::Indexed { path, external, tracks });
+            let _ = tx.send(Message::Indexed { path, external, tracks, keyframes });
             waker.wake();
         });
     }
@@ -226,13 +232,14 @@ impl App {
         let p = &mut self.player;
         match name {
             // Flèches : ligne suivante / précédente (au plus 10 s) ; Ctrl : 10 s tout court.
-            "right" => p.step_line_or_ten(1, state.starts_with('r')),
-            "left" => p.step_line_or_ten(-1, state.starts_with('r')),
+            "right" => p.step_line_or_ten(1),
+            "left" => p.step_line_or_ten(-1),
             "ctrl-right" | "ctrl-left" => {
                 let dir = if name == "ctrl-right" { 1.0 } else { -1.0 };
-                let target = p.mpv.pos() + 10.0 * dir;
-                p.mpv.seek(target, !state.starts_with('r'));
-                p.say_seek(dir, target, player::delta(10.0 * dir));
+                let from = p.mpv.pos();
+                p.seek_span(from, from + 10.0 * dir);
+                let target = p.mpv.target.get().map_or(from, |t| t.at);
+                p.say_seek(dir, target, player::delta(target - from));
             }
             "sub-bigger" => p.sub_size(1),
             "sub-smaller" => p.sub_size(-1),
@@ -283,6 +290,8 @@ impl App {
             mpv::Change::Binding(name, state) => self.binding(&name, &state),
             mpv::Change::Loaded => {
                 self.player.loaded_at = Some(Instant::now());
+                self.player.keyframes.clear();
+                self.player.mpv.target.set(None);
                 self.player.apply_subs();
                 let path = self.player.mpv.state.path.clone();
                 if Path::new(&path).is_file() {
@@ -299,6 +308,9 @@ impl App {
             }
             // Saut venu d'un raccourci mpv (flèches haut/bas…) : annoncé dans une bulle.
             mpv::Change::Restarted => {
+                if let Some(t) = self.seek_clock.take() {
+                    self.seek_times.push(t.elapsed().as_secs_f64() * 1000.0);
+                }
                 if let Some(before) = self.seek_from.take() {
                     let d = self.player.mpv.state.position - before;
                     if d.abs() >= 0.9 && self.player.loaded_at.is_some_and(|t| t.elapsed() > Duration::from_secs(1)) {
@@ -403,7 +415,7 @@ impl App {
 
     fn on_message(&mut self, m: Message) {
         match m {
-            Message::Indexed { path, external, tracks } => {
+            Message::Indexed { path, external, tracks, keyframes } => {
                 let p = &mut self.player;
                 match external {
                     Some(f) => {
@@ -414,6 +426,7 @@ impl App {
                     }
                     None if path == p.mpv.state.path => {
                         p.embedded = tracks.into_iter().map(|t| (t.number as i64, t)).collect();
+                        p.keyframes = keyframes;
                         p.indexing = false;
                     }
                     None => {}
@@ -723,6 +736,8 @@ fn main() {
         last_frame: Instant::now(),
         shown: [0.0; 4],
         overlay_wait: None,
+        seek_clock: None,
+        seek_times: Vec::new(),
         visible: false,
         shader_opts: String::new(),
         hover_section: false,
@@ -810,6 +825,8 @@ fn bench_play(app: &mut App) {
             }
         }
         let threads0 = threads_ms();
+        app.seek_times.clear();
+        app.seek_clock = None;
         let (w0, f0, s0, (c0, m0)) = (app.wakeups, app.frames, app.overlay.sends, cpu_ms());
         let start = Instant::now();
         let mut key = start;
@@ -822,6 +839,9 @@ fn bench_play(app: &mut App) {
                     let every = if phase.contains("30") { 33 } else { 500 };
                     if Instant::now() >= key {
                         let state = if phase.contains("30") && key > start { "r" } else { "d" };
+                        if app.seek_clock.is_none() {
+                            app.seek_clock = Some(Instant::now());
+                        }
                         app.binding("right", state);
                         app.dirty = true;
                         key += Duration::from_millis(every);
@@ -841,6 +861,11 @@ fn bench_play(app: &mut App) {
             (m1 - m0) / el / 10.0,
             app.player.mpv.state.position,
         );
+        if !app.seek_times.is_empty() {
+            let mut v = app.seek_times.clone();
+            v.sort_by(|a, b| a.total_cmp(b));
+            println!("{:24}   saut appui → image : médiane {:.0} ms, 90 % {:.0} ms ({} sauts)", "", v[v.len() / 2], v[v.len() * 9 / 10], v.len());
+        }
         // Fils les plus coûteux (par nom), en % d'un cœur.
         let mut by: std::collections::HashMap<String, f64> = Default::default();
         for (tid, (name, ms)) in threads_ms() {
