@@ -473,7 +473,7 @@ impl App {
         let prims = self.ctx.tessellate(std::mem::take(&mut out.shapes), out.pixels_per_point / reduce as f32);
         let t2 = Instant::now();
         let home = !self.player.has_file();
-        self.overlay.present(&self.player.mpv, &prims, &mut out.textures_delta, [w as u32, h as u32], out.pixels_per_point, home, &self.player.thumbs, reduce);
+        let presented = self.overlay.present(&self.player.mpv, &prims, &mut out.textures_delta, [w as u32, h as u32], out.pixels_per_point, home, &self.player.thumbs, reduce);
         if let Some(p) = &mut self.profile {
             let ms = |a: Instant, b: Instant| (b - a).as_secs_f64() * 1000.0;
             p.push([ms(t0, t1), ms(t1, t2), ms(t2, Instant::now())]);
@@ -552,6 +552,11 @@ impl App {
             .map(|v| v.repaint_delay)
             .filter(|d| *d < Duration::from_secs(3600))
             .map(|d| Instant::now() + d.max(Duration::from_millis(8)));
+        // Image pas encore posée (mpv n'avait pas lu la précédente) : on réessaie très vite.
+        if !presented {
+            let soon = Instant::now() + Duration::from_millis(8);
+            self.next_frame = Some(self.next_frame.map_or(soon, |n| n.min(soon)));
+        }
         // Image nette à la fin du mouvement.
         if let Some(t) = self.last_wheel {
             let end = t + WHEEL_MOTION;
@@ -756,6 +761,8 @@ fn bench(app: &mut App, mode: &str) {
                 source: egui::MouseWheelSource::Wheel,
             });
         }
+        // Réponses de mpv (image précédente lue), comme la vraie boucle.
+        let _ = app.player.mpv.wait(0.005);
         screen(app);
         app.frame();
     }

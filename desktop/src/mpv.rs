@@ -52,6 +52,9 @@ const FORMAT_INT64: c_int = 4;
 const FORMAT_DOUBLE: c_int = 5;
 
 const EVENT_SHUTDOWN: c_int = 1;
+const EVENT_COMMAND_REPLY: c_int = 5;
+/// Réponses aux `overlay-add` : `OVERLAY_TAG + numéro d'envoi`.
+pub const OVERLAY_TAG: u64 = 1 << 62;
 const EVENT_END_FILE: c_int = 7;
 const EVENT_FILE_LOADED: c_int = 8;
 const EVENT_CLIENT_MESSAGE: c_int = 16;
@@ -155,6 +158,8 @@ pub struct Mpv {
     pub state: State,
     /// Sauts lancés par bioplay (les autres viennent des raccourcis : annoncés dans une bulle).
     pub own_seeks: std::cell::Cell<u32>,
+    /// Dernier `overlay-add` traité par mpv (il lit l'image à ce moment-là, pas avant).
+    pub overlay_done: std::cell::Cell<u64>,
 }
 
 fn cs(s: &str) -> CString {
@@ -169,7 +174,7 @@ impl Mpv {
         if h.is_null() {
             return Err("mpv_create a échoué".into());
         }
-        let mut m = Self { h, state: State { speed: 1.0, scale: 1.0, ..Default::default() }, own_seeks: Default::default() };
+        let mut m = Self { h, state: State { speed: 1.0, scale: 1.0, ..Default::default() }, own_seeks: Default::default(), overlay_done: Default::default() };
         // mpv ouvre et dessine sa propre fenêtre en gpu-next : même image, même coût que mpv
         // (Dolby Vision et HDR compris). bioplay y ajoute son interface en superposition.
         for (k, v) in [
@@ -262,6 +267,14 @@ impl Mpv {
         unsafe { mpv_command_async(self.h, 0, ptrs.as_mut_ptr()) };
     }
 
+    /// Commande asynchrone dont la fin est signalée par `EVENT_COMMAND_REPLY` (`reply`).
+    pub fn command_reply(&self, reply: u64, args: &[&str]) {
+        let owned: Vec<CString> = args.iter().map(|a| cs(a)).collect();
+        let mut ptrs: Vec<*const c_char> = owned.iter().map(|c| c.as_ptr()).collect();
+        ptrs.push(ptr::null());
+        unsafe { mpv_command_async(self.h, reply, ptrs.as_mut_ptr()) };
+    }
+
     /// Commande synchrone (pour `quit` et l'écriture de la position).
     pub fn command_sync(&self, args: &[&str]) {
         let owned: Vec<CString> = args.iter().map(|a| cs(a)).collect();
@@ -314,6 +327,10 @@ impl Mpv {
     fn handle(&mut self, e: &Event, out: &mut Vec<Change>) {
         match e.event_id {
             EVENT_SHUTDOWN => out.push(Change::Shutdown),
+            EVENT_COMMAND_REPLY if e.reply_userdata >= OVERLAY_TAG => {
+                let n = e.reply_userdata - OVERLAY_TAG;
+                self.overlay_done.set(self.overlay_done.get().max(n));
+            }
             EVENT_FILE_LOADED => out.push(Change::Loaded),
             EVENT_END_FILE => out.push(Change::Ended),
             EVENT_SEEK => out.push(Change::Seeking),

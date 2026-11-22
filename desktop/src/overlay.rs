@@ -8,7 +8,7 @@ use std::collections::HashMap;
 use egui::epaint::{ImageData, Primitive, TextureId, Vertex};
 use egui::{Color32, Rect};
 
-use crate::mpv::Mpv;
+use crate::mpv::{Mpv, OVERLAY_TAG};
 
 /// Trois tampons en rotation : mpv lit la superposition au rendu, on n'écrit jamais dans
 /// celui qu'il affiche.
@@ -41,6 +41,10 @@ struct Last {
 pub struct Overlay {
     textures: HashMap<TextureId, Texture>,
     buffers: [Vec<u8>; BUFFERS],
+    /// Numéro d'envoi de chaque tampon : mpv le lit en traitant la commande, plus tard ; on n'y
+    /// touche pas (ni réécriture ni réallocation) avant sa réponse.
+    sent: [u64; BUFFERS],
+    seq: u64,
     next: usize,
     shown: bool,
     last: Option<Last>,
@@ -65,6 +69,8 @@ impl Overlay {
         Ok(Self {
             textures: HashMap::new(),
             buffers: Default::default(),
+            sent: [0; BUFFERS],
+            seq: 0,
             next: 0,
             shown: false,
             last: None,
@@ -112,7 +118,7 @@ impl Overlay {
         home: bool,
         thumbs: &[Thumb],
         reduce: u32,
-    ) {
+    ) -> bool {
         if !home && !self.scaled.is_empty() {
             self.scaled = HashMap::new();
         }
@@ -121,6 +127,11 @@ impl Overlay {
         // l'image nette suit dès l'arrêt. `prims` sont déjà découpés à cette échelle.
         let r = reduce.max(1);
         let rsize = [size[0].div_ceil(r), size[1].div_ceil(r)];
+        if self.sent[self.next] > mpv.overlay_done.get() {
+            // mpv n'a pas encore lu ce tampon (cœur occupé : saut, ouverture…) : on attend.
+            self.update_textures(textures);
+            return false;
+        }
         let t0 = std::time::Instant::now();
         let drawn = self.render(prims, textures, rsize, ppp / r as f32, home, thumbs);
         let t1 = std::time::Instant::now();
@@ -129,12 +140,14 @@ impl Overlay {
             Drawn::Empty => self.hide(mpv),
             Drawn::Same => {}
             Drawn::New { x, y, w, h } => {
-                let buf = &self.buffers[self.last.as_ref().map_or(0, |l| l.buffer)];
-                let addr = format!("&{}", buf.as_ptr() as usize);
+                let i = self.last.as_ref().map_or(0, |l| l.buffer);
+                let addr = format!("&{}", self.buffers[i].as_ptr() as usize);
                 let (dx, dy, dw, dh) = (x * r as i32, y * r as i32, w * r as usize, h * r as usize);
-                // Sans attendre : mpv copie l'image en traitant la commande, et ce tampon ne sera
-                // réécrit que deux images plus tard (trois en rotation).
-                mpv.command(&[
+                // Sans attendre : mpv copie l'image en traitant la commande ; le tampon reste
+                // intact jusqu'à sa réponse (voir `sent`).
+                self.seq += 1;
+                self.sent[i] = self.seq;
+                mpv.command_reply(OVERLAY_TAG + self.seq, &[
                     "overlay-add", "0", &dx.to_string(), &dy.to_string(), &addr, "0", "bgra",
                     &w.to_string(), &h.to_string(), &(w * 4).to_string(), &dw.to_string(), &dh.to_string(),
                 ]);
@@ -144,6 +157,7 @@ impl Overlay {
                 }
             }
         }
+        true
     }
 
     /// Remplit le prochain tampon ; ne touche pas à mpv.
@@ -407,6 +421,8 @@ impl Overlay {
             for b in &mut self.buffers {
                 *b = Vec::new();
             }
+            // `overlay-remove` attendu : mpv a traité tous les envois précédents.
+            self.sent = [0; BUFFERS];
         }
     }
 
