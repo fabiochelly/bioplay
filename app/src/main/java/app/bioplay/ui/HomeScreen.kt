@@ -26,6 +26,8 @@ import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.navigationBars
+import androidx.compose.foundation.layout.union
 import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListState
@@ -117,7 +119,8 @@ fun HomeScreen(
     val focusOn = { k: Any -> if (k == focusKey) Modifier.focusRequester(itemFocus) else Modifier }
     // Fond sobre : noir vers un bleu nuit très sombre, sans lumières.
     Box(Modifier.fillMaxSize().background(Brush.verticalGradient(listOf(Color.Black, Color(0xFF0A1322))))) {
-        Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.displayCutout)) {
+        // Au-dessus de la barre de navigation (laissée visible sur l'accueil).
+        Column(Modifier.fillMaxSize().windowInsetsPadding(WindowInsets.displayCutout.union(WindowInsets.navigationBars))) {
             NavBar(library, onOpen, navFocus, onFolders = { folders = true })
             val videos = library.videos
             when {

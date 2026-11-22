@@ -150,6 +150,7 @@ class MainActivity : ComponentActivity() {
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_SENSOR_LANDSCAPE
         library.hold = true
         playing = true
+        immersive()
         session.open(uri)
     }
 
@@ -162,14 +163,24 @@ class MainActivity : ComponentActivity() {
         if (fromOutside) finish() else {
             requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_USER
             playing = false
+            immersive()
             homeVersion++
         }
     }
 
+    /**
+     * Lecture : plein écran (barres système masquées, rappelées d'un glissement). Bibliothèque :
+     * barre de navigation présente (pratique pour quitter), barre d'état masquée.
+     */
     private fun immersive() {
         window.insetsController?.apply {
-            hide(WindowInsets.Type.systemBars())
             systemBarsBehavior = WindowInsetsController.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
+            if (playing) {
+                hide(WindowInsets.Type.systemBars())
+            } else {
+                hide(WindowInsets.Type.statusBars())
+                show(WindowInsets.Type.navigationBars())
+            }
         }
     }
 
