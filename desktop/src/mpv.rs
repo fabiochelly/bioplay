@@ -115,6 +115,7 @@ pub struct State {
     pub margin_top: f64,
     pub margin_bottom: f64,
     pub scale: f64,
+    pub hdr: bool,
     /// Souris dans la fenêtre (pixels), None si elle en est sortie.
     pub mouse: Option<(f64, f64)>,
 }
@@ -150,6 +151,7 @@ const OBSERVED: &[(&str, c_int)] = &[
     ("osd-dimensions", FORMAT_STRING),
     ("mouse-pos", FORMAT_STRING),
     ("display-hidpi-scale", FORMAT_DOUBLE),
+    ("video-params/gamma", FORMAT_STRING),
 ];
 
 #[derive(Clone, Copy)]
@@ -491,6 +493,8 @@ impl Mpv {
             "media-title" => s.title = string().unwrap_or_default(),
             "path" => s.path = string().unwrap_or_default(),
             "display-hidpi-scale" => s.scale = double().filter(|v| *v > 0.0).unwrap_or(1.0),
+            // Vidéo HDR (PQ, HLG) : mpv éclaircit et sature alors les couleurs de l'interface.
+            "video-params/gamma" => s.hdr = string().is_some_and(|g| g == "pq" || g == "hlg"),
             "osd-dimensions" => {
                 if let Some(v) = string().and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok()) {
                     let f = |k: &str| v.get(k).and_then(|x| x.as_f64()).unwrap_or(0.0);

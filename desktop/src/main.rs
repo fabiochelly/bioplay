@@ -1050,6 +1050,12 @@ fn glass_test(app: &mut App) {
                 return;
             }
         }
+        // Image de la fenêtre rendue par mpv lui-même (vidéo et interface), pour vérifier les
+        // couleurs affichées : `BIOPLAY_SHOT=fichier.png`.
+        if let Ok(f) = std::env::var("BIOPLAY_SHOT") {
+            let f = if opaque { f.replace(".png", "-opaque.png") } else { f };
+            app.player.mpv.command_sync(&["screenshot-to-file", &f, "window"]);
+        }
         let (d0, l0) = (num(app, "frame-drop-count"), num(app, "vo-delayed-frame-count"));
         let start = Instant::now();
         while start.elapsed() < Duration::from_secs(6) {

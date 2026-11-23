@@ -24,6 +24,22 @@ pub const ACCENT: Color32 = Color32::from_rgb(143, 216, 255);
 /// Partie lue de la barre de progression : bleu électrique, plus saturé que l'accent (un trait
 /// fin sur une piste claire paraissait trop pâle).
 pub const PROGRESS: Color32 = Color32::from_rgb(0x2E, 0x9B, 0xFF);
+/// Le même bleu pendant une vidéo HDR : mpv y éclaircit et sature les couleurs de l'interface
+/// (#2E9BFF virait au cyan). Cette couleur, ainsi transformée, s'affiche (45, 154, 255) : mesuré
+/// sur Rain Man (HDR Dolby Vision) par une grille de cases rendue par mpv (`BIOPLAY_SWATCHES`).
+pub const PROGRESS_HDR: Color32 = Color32::from_rgb(55, 115, 160);
+/// L'accent clair pendant une vidéo HDR : ainsi transformé par mpv, il s'affiche (142, 216, 255),
+/// comme ACCENT en SDR (mesuré de même sur Rain Man).
+pub const ACCENT_HDR: Color32 = Color32::from_rgb(145, 170, 215);
+
+/// Vidéo HDR en cours (mis à jour à chaque image) : couleurs compensées.
+static HDR: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// L'accent (textes, icônes, coches, curseurs) tel qu'il doit s'afficher, vidéo HDR comprise.
+/// Les teintes très transparentes et le liseré gardent ACCENT.
+fn accent() -> Color32 {
+    if HDR.load(std::sync::atomic::Ordering::Relaxed) { ACCENT_HDR } else { ACCENT }
+}
 
 pub fn fonts(ctx: &egui::Context) {
     // Inter seule : les polices par défaut d'egui (Ubuntu, Hack, emoji) ne sont pas chargées.
@@ -110,6 +126,7 @@ impl Plates {
 
 pub fn draw(ctx: &egui::Context, p: &mut Player, ppp: f32) -> (Vec<Plate>, Vec<Action>) {
     let painter = ctx.layer_painter(egui::LayerId::new(Order::Background, Id::new("plates")));
+    HDR.store(p.has_file() && p.mpv.state.hdr, std::sync::atomic::Ordering::Relaxed);
     let mut plates = Plates { list: Vec::new(), ppp, alpha: 1.0, painter, opaque: !p.has_file() || p.force_opaque };
     let mut actions = Vec::new();
     let screen = ctx.content_rect();
@@ -146,7 +163,43 @@ pub fn draw(ctx: &egui::Context, p: &mut Player, ppp: f32) -> (Vec<Plate>, Vec<A
     } else {
         toast(ctx, p, &mut plates, screen);
     }
+    swatches(ctx);
     (plates.list, actions)
+}
+
+/// Mesure (`BIOPLAY_SWATCHES=r0-r1/pas,g0-g1/pas,b0-b1/pas`) : une grille de cases de couleurs
+/// connues, en haut à gauche (cases de 24 points, 12 par ligne, à partir de (40, 40)), pour
+/// relever dans une image rendue par mpv ce que chaque couleur y devient.
+fn swatches(ctx: &egui::Context) {
+    static GRID: std::sync::OnceLock<Option<Vec<Color32>>> = std::sync::OnceLock::new();
+    let Some(colors) = GRID.get_or_init(|| {
+        let v = std::env::var("BIOPLAY_SWATCHES").ok()?;
+        let axes: Vec<Vec<u8>> = v
+            .split(',')
+            .map(|a| {
+                let (range, step) = a.split_once('/').unwrap_or((a, "1"));
+                let (lo, hi) = range.split_once('-').unwrap_or((range, range));
+                let (lo, hi, step): (u32, u32, u32) = (lo.parse().unwrap_or(0), hi.parse().unwrap_or(0), step.parse().unwrap_or(1).max(1));
+                (lo..=hi).step_by(step as usize).map(|x| x.min(255) as u8).collect()
+            })
+            .collect();
+        let mut out = Vec::new();
+        for &r in &axes[0] {
+            for &g in &axes[1] {
+                for &b in &axes[2] {
+                    out.push(Color32::from_rgb(r, g, b));
+                }
+            }
+        }
+        Some(out)
+    }) else {
+        return;
+    };
+    let painter = ctx.layer_painter(egui::LayerId::new(Order::Foreground, Id::new("swatches")));
+    for (i, c) in colors.iter().enumerate() {
+        let (col, row) = (i % 12, i / 12);
+        painter.rect_filled(Rect::from_min_size(pos2(40.0 + col as f32 * 24.0, 40.0 + row as f32 * 24.0), vec2(24.0, 24.0)), 0.0, *c);
+    }
 }
 
 // --- Surface vidéo : glissé par crans, clics transmis à mpv ------------------------------------
@@ -258,13 +311,13 @@ fn bar(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, actions: &mut V
         }
         rx -= 44.0;
         let zoomed = p.mpv.state.zoom.abs() > 0.01;
-        if icon_button_tint(ui, Rect::from_min_size(pos2(rx, cy - 20.0), vec2(40.0, 40.0)), Icon::Zoom, if zoomed { ACCENT } else { INK }).clicked() {
+        if icon_button_tint(ui, Rect::from_min_size(pos2(rx, cy - 20.0), vec2(40.0, 40.0)), Icon::Zoom, if zoomed { accent() } else { INK }).clicked() {
             toggle(p, Panel::Zoom);
         }
         let sp = speed_label(p.mpv.state.speed);
         let sw = pill_width(ui, &sp, true);
         rx -= sw + 4.0;
-        let tint = if (p.mpv.state.speed - 1.0).abs() > 0.001 { ACCENT } else { INK };
+        let tint = if (p.mpv.state.speed - 1.0).abs() > 0.001 { accent() } else { INK };
         if pill(ui, Rect::from_min_size(pos2(rx, cy - 20.0), vec2(sw, 40.0)), Some(Icon::Speed), &sp, tint).clicked() {
             toggle(p, Panel::Speed);
         }
@@ -336,7 +389,7 @@ fn tracks_button(ui: &mut Ui, r: Rect, audio: &str, sub: Option<&str>) -> Respon
     painter.line_segment([pos2(x, cy - 10.0), pos2(x, cy + 10.0)], Stroke::new(1.0, Color32::from_white_alpha(50)));
     x += 14.0;
     let (ic, col, label) = match sub {
-        Some(s) => (Icon::Tracks, ACCENT, s.to_owned()),
+        Some(s) => (Icon::Tracks, accent(), s.to_owned()),
         None => (Icon::SubtitlesOff, INK2, tr("Aucun", "Off").to_owned()),
     };
     icon(painter, pos2(x + TB_ICON / 2.0, cy), TB_ICON, ic, col);
@@ -381,7 +434,8 @@ fn seekbar(ui: &mut Ui, p: &mut Player, rect: Rect) {
     // Partie lue : à plat, bleu électrique ; le curseur n'apparaît qu'au survol.
     let x = track.min.x + track.width() * f;
     if f > 0.0 {
-        painter.rect_filled(Rect::from_min_max(track.min, pos2(x.max(track.min.x + h), track.max.y)), cr, PROGRESS);
+        let fill = if HDR.load(std::sync::atomic::Ordering::Relaxed) { PROGRESS_HDR } else { PROGRESS };
+        painter.rect_filled(Rect::from_min_max(track.min, pos2(x.max(track.min.x + h), track.max.y)), cr, fill);
     }
     if hover {
         painter.circle_filled(pos2(x, track.center().y), h * 1.3, Color32::WHITE);
@@ -573,7 +627,7 @@ fn chip(ui: &mut Ui, label: &str, selected: bool) -> Response {
     let cr = CornerRadius::same((size.y / 2.0) as u8);
     let hover = resp.hovered();
     if selected {
-        ui.painter().rect_filled(r, cr, ACCENT);
+        ui.painter().rect_filled(r, cr, accent());
     } else {
         ui.painter().rect_filled(r, cr, Color32::from_white_alpha(if hover { 34 } else { 22 }));
         ui.painter().rect_stroke(r, cr, Stroke::new(1.0, Color32::from_white_alpha(36)), StrokeKind::Inside);
@@ -594,7 +648,7 @@ fn choice(ui: &mut Ui, selected: bool, title: &str, detail: &str, flag: Option<&
     } else if resp.hovered() {
         ui.painter().rect_filled(r, cr, Color32::from_white_alpha(16));
     }
-    let color = if selected { ACCENT } else { INK };
+    let color = if selected { accent() } else { INK };
     let mut x = r.min.x + 14.0;
     if let Some(f) = flag {
         crate::flags::draw(ui.painter(), Rect::from_min_size(pos2(x, r.center().y - 9.0), vec2(27.0, 18.0)), f, if selected { 1.0 } else { 0.8 });
@@ -608,7 +662,7 @@ fn choice(ui: &mut Ui, selected: bool, title: &str, detail: &str, flag: Option<&
     }
     if selected {
         let c = pos2(r.max.x - 20.0, r.center().y);
-        ui.painter().add(Shape::line(vec![c + vec2(-6.0, 0.0), c + vec2(-2.0, 4.0), c + vec2(6.0, -5.0)], Stroke::new(2.2, ACCENT)));
+        ui.painter().add(Shape::line(vec![c + vec2(-6.0, 0.0), c + vec2(-2.0, 4.0), c + vec2(6.0, -5.0)], Stroke::new(2.2, accent())));
     }
     resp
 }
@@ -634,7 +688,7 @@ fn language_switch(ui: &mut Ui) {
         }
         let flag = Rect::from_min_size(pos2(seg.min.x + 11.0, seg.center().y - 8.0), vec2(24.0, 16.0));
         crate::flags::draw(&painter, flag, if french { "fr" } else { "en" }, if selected { 1.0 } else { 0.55 });
-        painter.text(pos2(flag.max.x + 7.0, seg.center().y), Align2::LEFT_CENTER, code, semi(12.5), if selected { ACCENT } else { INK2 });
+        painter.text(pos2(flag.max.x + 7.0, seg.center().y), Align2::LEFT_CENTER, code, semi(12.5), if selected { accent() } else { INK2 });
         if resp.clicked() && !selected {
             crate::i18n::toggle();
         }
@@ -793,7 +847,7 @@ fn stepper(ui: &mut Ui, label: &str, value: &str, active: bool, less: Icon, more
             ui.add_space(((full.height() - 42.0) / 2.0).max(0.0));
             ui.spacing_mut().item_spacing.y = 2.0;
             ui.label(egui::RichText::new(label).font(semi(13.0)).color(INK2));
-            let r = ui.add(egui::Label::new(egui::RichText::new(value).font(semi(17.0)).color(if active { ACCENT } else { INK })).sense(Sense::click()));
+            let r = ui.add(egui::Label::new(egui::RichText::new(value).font(semi(17.0)).color(if active { accent() } else { INK })).sense(Sense::click()));
             if r.clicked() {
                 out = Some(0);
             }
@@ -817,7 +871,7 @@ fn big_value(ui: &mut Ui, title: &str, hint: &str, value: &str, active: bool) {
             ui.label(egui::RichText::new(hint).font(med(12.0)).color(FAINT));
         });
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            ui.label(egui::RichText::new(value).font(semi(34.0)).color(if active { ACCENT } else { INK }));
+            ui.label(egui::RichText::new(value).font(semi(34.0)).color(if active { accent() } else { INK }));
         });
     });
     ui.add_space(10.0);
@@ -831,7 +885,7 @@ fn slider(ui: &mut Ui, value: f64, min: f64, max: f64, step: f64, marks: &[f64])
     let painter = ui.painter();
     painter.rect_filled(track, CornerRadius::same(4), Color32::from_white_alpha(40));
     if f > 0.0 {
-        painter.rect_filled(Rect::from_min_size(track.min, vec2((track.width() * f).max(h), h)), CornerRadius::same(4), ACCENT);
+        painter.rect_filled(Rect::from_min_size(track.min, vec2((track.width() * f).max(h), h)), CornerRadius::same(4), accent());
     }
     for m in marks {
         let x = track.min.x + track.width() * ((m - min) / (max - min)) as f32;
@@ -932,7 +986,7 @@ fn list_panel(ui: &mut Ui, p: &mut Player, max_height: f32) {
             } else if resp.hovered() {
                 ui.painter().rect_filled(r, CornerRadius::same(14), Color32::from_white_alpha(14));
             }
-            ui.painter().text(pos2(r.min.x + 12.0, r.center().y), Align2::LEFT_CENTER, clock(c.start as f64 / 1000.0), semi(13.0), if now { ACCENT } else { FAINT });
+            ui.painter().text(pos2(r.min.x + 12.0, r.center().y), Align2::LEFT_CENTER, clock(c.start as f64 / 1000.0), semi(13.0), if now { accent() } else { FAINT });
             let text = c.text.replace('\n', "  ");
             let clip = ui.painter().with_clip_rect(Rect::from_min_max(pos2(r.min.x + 84.0, r.min.y), pos2(r.max.x - 10.0, r.max.y)));
             clip.text(pos2(r.min.x + 84.0, r.center().y), Align2::LEFT_CENTER, text, if now { semi(15.0) } else { med(15.0) }, if now { INK } else { INK2 });
@@ -995,7 +1049,7 @@ fn toast(ctx: &egui::Context, p: &mut Player, plates: &mut Plates, screen: Rect)
         };
         segment(inner.min.x, w100, 0.0, 100.0, INK);
         if over {
-            segment(inner.min.x + w100 + gap, inner.width() - w100 - gap, 100.0, max, ACCENT);
+            segment(inner.min.x + w100 + gap, inner.width() - w100 - gap, 100.0, max, accent());
         }
     } else {
         let detail = if p.seek_dir.is_some() { p.seek_detail.clone() } else { String::new() };
@@ -1051,7 +1105,7 @@ fn bubble(ctx: &egui::Context, plates: &mut Plates, screen: Rect, a: f32, dir: O
             let (h, w, gap) = (11.0f32, 5.5f32, 6.0f32);
             let cy = top + g.size().y / 2.0;
             let x0 = rect.min.x + 21.0;
-            let stroke = Stroke::new(1.6, ACCENT);
+            let stroke = Stroke::new(1.6, accent());
             for k in 0..2 {
                 let x = x0 + k as f32 * gap;
                 let (tip, base) = if dir > 0 { (x + w, x) } else { (x, x + w) };

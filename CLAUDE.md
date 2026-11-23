@@ -26,7 +26,11 @@ Lecteur vidéo minimal (Android + bureau) construit sur libmpv, interface « ver
   par bandes, une par cœur ; pendant un défilement, en demi-résolution agrandie par mpv (`dw/dh`).
   Accueil sans verre (boutons opaques, texte blanc net) ; le verre est pour la vidéo (mesuré :
   ≈ 0,5 ms de carte graphique par image, aucune image perdue, `BIOPLAY_GLASSTEST=1 bioplay film`).
-  Barre de lecture sans fondu (apparition/disparition instantanées) ; partie lue en bleu électrique. Tuiles en
+  Barre de lecture sans fondu (apparition/disparition instantanées) ; partie lue en bleu électrique.
+  Vidéo HDR (`video-params/gamma` pq/hlg) : mpv éclaircit et sature l'interface (le bleu virait au
+  cyan) ; bioplay envoie alors des couleurs compensées (`PROGRESS_HDR`, `ACCENT_HDR`, `accent()`)
+  trouvées par mesure : `BIOPLAY_SWATCHES=r0-r1/pas,g…,b… BIOPLAY_SHOT=f.png BIOPLAY_GLASSTEST=1
+  bioplay film_hdr` (grille de cases rendue par mpv lui-même, `screenshot-to-file … window`). Tuiles en
   cache (`overlay::Sprite`, `ui::Rec`) : titre, durée, avancée, liseré, dossier dessinés une fois
   par aspect puis recopiés (tronçons non transparents) ; seule la zone qui change est refaite,
   le reste recopié de l'image précédente. Fond uni : miniatures (coins mélangés au fond) et tuiles opaques, simplement recopiées. Mesure en
