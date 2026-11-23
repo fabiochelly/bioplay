@@ -56,3 +56,13 @@ Lecteur vidéo minimal (Android + bureau) construit sur libmpv, interface « ver
 
 Règles : la position de lecture est toujours mémorisée (clé nom+taille du fichier) et reprise.
 Textes de l'interface en français.
+
+- Distribution Linux : paquet autonome (bioplay, libmpv et ffmpeg réduits au nécessaire, libplacebo
+  7.360 + Dolby Vision, dav1d ; 18 bibliothèques, ≈ 19 Mo compressé) construit dans Ubuntu 22.04 par
+  `packaging/linux/build.sh` (bibliothèque C 2.35 : toute distribution de 2022 ou plus récente ;
+  chemin relatif `$ORIGIN` inscrit dans les programmes). Bibliothèque C, pilotes graphiques, Wayland/X11,
+  son et polices viennent du système. Essai local (4 cœurs, dépendances gardées entre essais) :
+  `docker run --rm --cpus 4 -v $PWD:/src:ro -v /tmp/out:/out -v /tmp/deps:/opt/deps ubuntu:22.04
+  /src/packaging/linux/build.sh`. Publié par `.github/workflows/release.yml` à chaque étiquette `v…` ;
+  installé par `install.sh` (curl … | sh, dans ~/.local, sans droits administrateur). libmpv est
+  chargée au démarrage (`mpv::load`, liaison différée) : rien à la compilation, message clair si absente.

@@ -47,6 +47,7 @@ version = "0.1.0"
 dependencies = [
  "bioplay-core",
  "egui",
+ "libloading",
  "png",
  "rfd",
  "serde_json",

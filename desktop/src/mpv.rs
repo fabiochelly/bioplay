@@ -28,22 +28,82 @@ struct EventProperty {
     data: *mut c_void,
 }
 
-#[link(name = "mpv")]
-extern "C" {
-    fn mpv_create() -> *mut mpv_handle;
-    fn mpv_initialize(h: *mut mpv_handle) -> c_int;
-    fn mpv_terminate_destroy(h: *mut mpv_handle);
-    fn mpv_set_option_string(h: *mut mpv_handle, name: *const c_char, data: *const c_char) -> c_int;
-    fn mpv_set_property(h: *mut mpv_handle, name: *const c_char, format: c_int, data: *mut c_void) -> c_int;
-    fn mpv_get_property_string(h: *mut mpv_handle, name: *const c_char) -> *mut c_char;
-    fn mpv_command_async(h: *mut mpv_handle, reply: u64, args: *mut *const c_char) -> c_int;
-    fn mpv_command(h: *mut mpv_handle, args: *mut *const c_char) -> c_int;
-    fn mpv_observe_property(h: *mut mpv_handle, reply: u64, name: *const c_char, format: c_int) -> c_int;
-    fn mpv_set_property_async(h: *mut mpv_handle, reply: u64, name: *const c_char, format: c_int, data: *mut c_void) -> c_int;
-    fn mpv_wait_event(h: *mut mpv_handle, timeout: c_double) -> *mut Event;
-    fn mpv_free(data: *mut c_void);
-    fn mpv_wakeup(h: *mut mpv_handle);
+// libmpv est chargée au démarrage (`load`), pas liée à la compilation : le binaire se construit
+// sur une distribution ancienne (bibliothèque C compatible partout) et cherche ici
+// `libmpv.so.2` ; sans elle, ou trop ancienne, un message clair plutôt qu'un échec du chargeur.
+macro_rules! mpv_api {
+    ($($name:ident($($arg:ident: $ty:ty),*) $(-> $ret:ty)?;)*) => {
+        #[allow(non_snake_case)]
+        struct Api {
+            _lib: libloading::Library,
+            $($name: unsafe extern "C" fn($($ty),*) $(-> $ret)?,)*
+        }
 
+        impl Api {
+            fn open() -> Result<Api, String> {
+                let mut last = String::new();
+                for file in ["libmpv.so.2", "libmpv.so"] {
+                    // Liaison différée (RTLD_LAZY), comme le chargeur du système : une liaison
+                    // immédiate des ~200 bibliothèques de mpv coûtait 110 à 190 ms au lancement.
+                    let opened = unsafe { libloading::os::unix::Library::open(Some(file), libloading::os::unix::RTLD_LAZY | libloading::os::unix::RTLD_LOCAL) };
+                    match opened.map(libloading::Library::from) {
+                        Ok(lib) => unsafe {
+                            $(let $name = *lib
+                                .get::<unsafe extern "C" fn($($ty),*) $(-> $ret)?>(concat!(stringify!($name), "\0").as_bytes())
+                                .map_err(|e| format!("{} : {e} (mpv trop ancien)", stringify!($name)))?;)*
+                            return Ok(Api { _lib: lib, $($name,)* });
+                        },
+                        Err(e) => last = e.to_string(),
+                    }
+                }
+                Err(format!("libmpv introuvable ({last})"))
+            }
+        }
+
+        $(
+            #[allow(clippy::missing_safety_doc)]
+            unsafe fn $name($($arg: $ty),*) $(-> $ret)? {
+                unsafe { (api().$name)($($arg),*) }
+            }
+        )*
+    };
+}
+
+mpv_api! {
+    mpv_create() -> *mut mpv_handle;
+    mpv_initialize(h: *mut mpv_handle) -> c_int;
+    mpv_terminate_destroy(h: *mut mpv_handle);
+    mpv_set_option_string(h: *mut mpv_handle, name: *const c_char, data: *const c_char) -> c_int;
+    mpv_set_property(h: *mut mpv_handle, name: *const c_char, format: c_int, data: *mut c_void) -> c_int;
+    mpv_get_property_string(h: *mut mpv_handle, name: *const c_char) -> *mut c_char;
+    mpv_command_async(h: *mut mpv_handle, reply: u64, args: *mut *const c_char) -> c_int;
+    mpv_command(h: *mut mpv_handle, args: *mut *const c_char) -> c_int;
+    mpv_observe_property(h: *mut mpv_handle, reply: u64, name: *const c_char, format: c_int) -> c_int;
+    mpv_set_property_async(h: *mut mpv_handle, reply: u64, name: *const c_char, format: c_int, data: *mut c_void) -> c_int;
+    mpv_wait_event(h: *mut mpv_handle, timeout: c_double) -> *mut Event;
+    mpv_free(data: *mut c_void);
+    mpv_wakeup(h: *mut mpv_handle);
+    mpv_client_api_version() -> std::os::raw::c_ulong;
+}
+
+static API: std::sync::OnceLock<Result<Api, String>> = std::sync::OnceLock::new();
+
+fn api() -> &'static Api {
+    API.get_or_init(Api::open).as_ref().expect("libmpv chargée (voir `load`)")
+}
+
+/// Version minimale de l'API client : libmpv 2 (mpv 0.35 et suivants ; 0.38 ou plus récent
+/// recommandé, non vérifié ici en détail).
+
+/// Charge libmpv et vérifie sa version ; message lisible sinon.
+pub fn load() -> Result<(), String> {
+    API.get_or_init(Api::open).as_ref().map_err(Clone::clone)?;
+    let v = unsafe { mpv_client_api_version() } as u64;
+    let (major, minor) = (v >> 16, v & 0xffff);
+    if major < 2 {
+        return Err(format!("mpv trop ancien (API {major}.{minor} ; il faut mpv 0.35 ou plus récent, 0.38 recommandé)"));
+    }
+    Ok(())
 }
 
 const FORMAT_STRING: c_int = 1;

@@ -1,0 +1,27 @@
+# Paquet autonome Linux publié dans les Releases à chaque étiquette « v… » (ex. v0.1.0).
+# Construit dans Ubuntu 22.04 (voir packaging/linux/build.sh) ; install.sh le télécharge.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  linux:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+      - name: Paquet autonome (construit dans Ubuntu 22.04)
+        run: |
+          mkdir -p out
+          docker run --rm -v "$PWD":/src:ro -v "$PWD/out":/out ubuntu:22.04 /src/packaging/linux/build.sh
+      - name: Publication
+        uses: softprops/action-gh-release@v2
+        with:
+          files: out/bioplay-linux-x86_64.tar.gz
+          generate_release_notes: true

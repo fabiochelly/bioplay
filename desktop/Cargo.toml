@@ -10,3 +10,6 @@ egui = { version = "0.37", default-features = false }
 png = { version = "0.18", default-features = false }
 rfd = { version = "0.18", default-features = false, features = ["xdg-portal", "pollster", "wayland"] }
 serde_json = "1"
+# libmpv chargée au démarrage (pas liée à la compilation) : le binaire se construit sur une
+# distribution ancienne et tourne partout où mpv récent est installé ; message clair sinon.
+libloading = "0.8"

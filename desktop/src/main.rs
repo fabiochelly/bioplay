@@ -876,6 +876,20 @@ fn runtime_dir() -> PathBuf {
 
 fn main() {
     i18n::init();
+    // libmpv d'abord : sans elle, rien ne peut marcher. Message dans le terminal et, lancé depuis
+    // le menu (sans terminal), en notification.
+    let t_load = Instant::now();
+    let loaded = mpv::load();
+    if std::env::var_os("BIOPLAY_DEBUG_LOAD").is_some() {
+        eprintln!("chargement de libmpv : {:.1} ms", t_load.elapsed().as_secs_f64() * 1e3);
+        std::process::exit(0);
+    }
+    if let Err(e) = loaded {
+        let msg = format!("bioplay : {e}. Installez mpv (et ffmpeg) avec le gestionnaire de paquets de votre distribution.");
+        eprintln!("{msg}");
+        let _ = std::process::Command::new("notify-send").args(["bioplay", &msg]).status();
+        std::process::exit(1);
+    }
     let mpv = mpv::Mpv::new().expect("libmpv");
     // Options mpv en ligne de commande, comme mpv : `bioplay --mute=yes --start=20 film.mkv`.
     let mut files = Vec::new();
@@ -1057,7 +1071,7 @@ fn glass_test(app: &mut App) {
             app.player.mpv.command_sync(&["screenshot-to-file", &f, "window"]);
         }
         let (d0, l0) = (num(app, "frame-drop-count"), num(app, "vo-delayed-frame-count"));
-        let start = Instant::now();
+        let (start, cpu0) = (Instant::now(), cpu_ms().0);
         while start.elapsed() < Duration::from_secs(6) {
             app.player.activity = Instant::now();
             if !app.step(Some(Duration::from_millis(50))) {
@@ -1065,6 +1079,7 @@ fn glass_test(app: &mut App) {
             }
         }
         let (d1, l1) = (num(app, "frame-drop-count"), num(app, "vo-delayed-frame-count"));
+        println!("{name:7} : processeur {:.0} % d'un cœur", (cpu_ms().0 - cpu0) / 60.0);
         let mut total = 0.0;
         let mut glass = 0.0;
         if let Some(v) = app.player.mpv.get("vo-passes").and_then(|j| serde_json::from_str::<serde_json::Value>(&j).ok()) {
@@ -1077,7 +1092,8 @@ fn glass_test(app: &mut App) {
                 }
             }
         }
-        println!("{name:7} : carte graphique {total:.2} ms par image (verre {glass:.2} ms) ; images sautées {:.0}, en retard {:.0} en 6 s", d1 - d0, l1 - l0);
+        let rss = std::fs::read_to_string("/proc/self/status").ok().and_then(|s| s.lines().find_map(|l| l.strip_prefix("VmRSS:").map(|v| v.trim().to_owned()))).unwrap_or_default();
+        println!("{name:7} : carte graphique {total:.2} ms par image (verre {glass:.2} ms) ; images sautées {:.0}, en retard {:.0} en 6 s ; décodage {} ; mémoire {rss}", d1 - d0, l1 - l0, app.player.mpv.get("hwdec-current").unwrap_or_default());
     }
     app.player.mpv.command(&["quit"]);
     while app.step(Some(Duration::from_millis(50))) {}

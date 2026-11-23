@@ -462,7 +462,7 @@ fn prune(list: &[Video]) {
 
 /// Durée en secondes (ffprobe), 0 si inconnue.
 fn probe(path: &str) -> f64 {
-    Command::new("ffprobe")
+    Command::new(tool("ffprobe"))
         .args(["-v", "error", "-show_entries", "format=duration", "-of", "csv=p=0", path])
         .stderr(Stdio::null())
         .output()
@@ -480,7 +480,9 @@ fn make_thumb(path: &str, dur: f64, out: &Path) {
     for f in [0.15, 0.32, 0.5] {
         let at = format!("{:.2}", dur * f);
         let ok = Command::new("nice")
-            .args(["-n", "19", "ffmpeg", "-v", "error", "-y", "-ss", &at, "-i", path, "-frames:v", "1", "-an", "-sn"])
+            .args(["-n", "19"])
+            .arg(tool("ffmpeg"))
+            .args(["-v", "error", "-y", "-ss", &at, "-i", path, "-frames:v", "1", "-an", "-sn"])
             .args(["-vf", &format!("scale={THUMB_W}:-2"), "-f", "image2", "-c:v", "png"])
             .arg(&tmp)
             .stdin(Stdio::null())
@@ -578,6 +580,16 @@ fn cache_dir() -> PathBuf {
 
 fn folders_file() -> PathBuf {
     state_dir().join("folders")
+}
+
+/// `ffmpeg` / `ffprobe` : ceux du paquet autonome (à côté de bioplay) s'ils y sont, sinon ceux
+/// du système.
+fn tool(name: &str) -> PathBuf {
+    std::env::current_exe()
+        .ok()
+        .and_then(|e| e.parent().map(|d| d.join(name)))
+        .filter(|p| p.is_file())
+        .unwrap_or_else(|| PathBuf::from(name))
 }
 
 fn thumbs_dir() -> PathBuf {
