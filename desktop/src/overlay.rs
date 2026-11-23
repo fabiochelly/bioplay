@@ -231,8 +231,12 @@ impl Overlay {
         sprites: &[Sprite],
         reduce: u32,
     ) -> bool {
-        if !home && !self.scaled.is_empty() {
+        // Vidéo en cours : tout ce qui ne sert qu'à la bibliothèque est rendu (miniatures à
+        // l'échelle, tuiles en cache, fond) ; recréé en quelques millisecondes au retour.
+        if !home && (!self.scaled.is_empty() || !self.sprites.is_empty() || !self.backdrop.is_empty()) {
             self.scaled = HashMap::new();
+            self.sprites = HashMap::new();
+            self.backdrop = Vec::new();
         }
         // En mouvement (défilement), image dessinée en résolution réduite (`reduce` = 2 : quatre
         // fois moins de pixels à dessiner et à envoyer) et agrandie par mpv sur la carte graphique ;
